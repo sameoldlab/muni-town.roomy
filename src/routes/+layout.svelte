@@ -2,7 +2,7 @@
 	import '../app.css';
   import Icon from "@iconify/svelte";
   import { AvatarPixel } from 'svelte-boring-avatars';
-  import { Avatar, Button, Collapsible, ToggleGroup } from "bits-ui";
+  import { Accordion, Avatar, Button, Collapsible, ToggleGroup } from "bits-ui";
     import { slide } from 'svelte/transition';
 
 	let { children } = $props();
@@ -12,10 +12,34 @@
   let currentServer: string = $state("muni");
 
   // TODO: set current channel on url based on server
-  let channels = [
-    { id: "abc", name: "general" },
-    { id: "xyz", name: "announcements" },
-    { id: "qwe", name: "introductions" }
+  let categories = [
+    {
+      id: "123",
+      name: "Information", 
+      channels: [
+        { id: "abc", name: "general" },
+        { id: "xyz", name: "announcements" },
+        { id: "qwe", name: "introductions" }
+      ]
+    },
+    {
+      id: "456",
+      name: "Internal", 
+      channels: [
+        { id: "zxc", name: "dev-tools" },
+        { id: "jkl", name: "releases" },
+        { id: "rty", name: "gh-bot" }
+      ]
+    },
+    {
+      id: "789",
+      name: "Content", 
+      channels: [
+        { id: "iop", name: "blogs" },
+        { id: "bnm", name: "drafts" },
+        { id: "cvb", name: "suggestions" }
+      ]
+    }
   ];
   let currentChannel: string = $state("abc");
 </script>
@@ -69,33 +93,39 @@
     <hr />
 
     <!-- Category and Channels -->
-    <Collapsible.Root>
-      <Collapsible.Trigger class="flex w-full text-white items-center justify-between hover:bg-white/5 p-2 rounded-lg active:scale-95 hover:scale-105 transition-all duration-150">
-        <h2 class="font-bold">Information</h2>
-        <Icon icon="ph:caret-up-down-bold" />
-      </Collapsible.Trigger>
-      <Collapsible.Content transition={slide}>
-        <hr class="mt-2"/>
-        <ToggleGroup.Root 
-          bind:value={currentChannel}
-          type="single"
-          class="flex flex-col gap-4 items-center py-4"
-        > 
-          {#each channels as channel}
-            <ToggleGroup.Item 
-              onclick={() => currentChannel = channel.id}
-              value={channel.id} 
-              class="w-full text-white/50 text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 data-[state=on]:text-white text-white p-2 rounded-md"
-            >
-              <h3>{channel.name}</h3>
-            </ToggleGroup.Item>
-          {/each}
-        </ToggleGroup.Root>
-      </Collapsible.Content>
-    </Collapsible.Root>
+    <Accordion.Root multiple class="flex flex-col gap-4 w-full text-white">
+      {#each categories as category}
+        <Accordion.Item value={category.id}>
+          <Accordion.Header>
+            <Accordion.Trigger class="w-full flex justify-between items-center px-2 py-4 rounded-lg hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5">
+              <h2>{category.name}</h2>
+              <Icon icon="ph:caret-up-down-bold" />
+            </Accordion.Trigger>
+          </Accordion.Header>
+          <Accordion.Content transition={slide}>
+            <hr class="mb-4" />
+            <ToggleGroup.Root 
+              bind:value={currentChannel}
+              type="single"
+              class="flex flex-col gap-4 items-center"
+            > 
+              {#each category.channels as channel}
+                <ToggleGroup.Item 
+                  onclick={() => currentChannel = channel.id}
+                  value={channel.id} 
+                  class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
+                >
+                  <h3>{channel.name}</h3>
+                </ToggleGroup.Item>
+              {/each}
+            </ToggleGroup.Root>
+          </Accordion.Content>
+        </Accordion.Item>
+      {/each}
+    </Accordion.Root>
   </nav>
 
-  <!-- Events/Room Content; TODO: Setting content -->
+  <!-- Events/Room Content -->
   <main class="flex flex-grow bg-violet-950 rounded-lg">
     {@render children()}
   </main>
