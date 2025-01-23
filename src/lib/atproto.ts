@@ -2,7 +2,7 @@ import { dev } from "$app/environment";
 import { BrowserOAuthClient } from "@atproto/oauth-client-browser";
 
 // TODO: change to permanent public URL
-const publicUrl = "https://pigeon.muni.town"
+const publicUrl = "https://roomy.muni.town"
 // localhost resolves to either 127.0.0.1 or [::1] (if ipv6)
 const url = dev ? "http://[::1]:5173" : publicUrl;
 
@@ -13,9 +13,8 @@ const clientId = !dev ? `${publicUrl}/client-metadata.json`
     encodeURIComponent(`atproto transition:generic`)
   }`;
 
-/**
 export const clientMetadata = {
-  client_name: "Pigeon",
+  client_name: "Roomy",
   client_uri: url,
   application_type: "web",
   redirect_uris: [`${url}/oauth/callback`], 
@@ -25,17 +24,13 @@ export const clientMetadata = {
   dpop_bound_access_tokens: true,
   response_types: ["code"]
 };
-**/
 
 
 export async function createAtProtoClient() {
-  const client = BrowserOAuthClient.load({
+  const client = await BrowserOAuthClient.load({
     clientId,
-    handleResolver,
-    responseMode,
-    plcDirectoryUrl,
-    fetch,
-    allowHttp,
-    signal,
+    handleResolver: "https://bsky.social"
   });
+
+  return client;
 }
