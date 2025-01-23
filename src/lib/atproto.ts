@@ -26,11 +26,7 @@ export const clientMetadata = {
 };
 
 
-export async function createAtProtoClient() {
-  const client = await BrowserOAuthClient.load({
-    clientId,
-    handleResolver: "https://bsky.social"
-  });
-
-  return client;
-}
+export const atprotoClient = await BrowserOAuthClient.load({
+  clientId,
+  handleResolver: "https://bsky.social"
+});

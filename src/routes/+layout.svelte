@@ -1,11 +1,15 @@
 <script lang="ts">
 	import '../app.css';
   import Icon from "@iconify/svelte";
-  import { AvatarBeam, AvatarPixel } from 'svelte-boring-avatars';
-  import { Accordion, Avatar, Button, ScrollArea, ToggleGroup } from "bits-ui";
-  import { slide } from 'svelte/transition';
+  import { userStore } from '$lib/user.svelte';
+  import { fade, slide } from 'svelte/transition';
+  import { AvatarPixel } from 'svelte-boring-avatars';
+  import type { OAuthSession } from '@atproto/oauth-client-browser';
+  import { Accordion, Avatar, Button, Dialog, Separator, ToggleGroup } from "bits-ui";
 
 	let { children } = $props();
+
+  let handleInput = $state("");
 
   // TODO: set servers/rooms based on user
   let servers = ["muni", "barrel_of_monkeys", "offishal"]
@@ -79,15 +83,38 @@
       <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
         <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
       </Button.Root>
-      <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
-        <Avatar.Root>
-          <!-- TODO: set images based on user -->
-          <Avatar.Image />
-          <Avatar.Fallback>
-            <AvatarPixel name="pigeon" />
-          </Avatar.Fallback>
-        </Avatar.Root>
-      </Button.Root>
+      <Dialog.Root>
+        <Dialog.Trigger class="hover:scale-105 active:scale-95 transition-all duration-150">
+          <Avatar.Root>
+            <!-- TODO: set images based on user -->
+            <Avatar.Image />
+            <Avatar.Fallback>
+              <AvatarPixel name="pigeon" />
+            </Avatar.Fallback>
+          </Avatar.Root>
+        </Dialog.Trigger>
+        <Dialog.Portal>
+          <Dialog.Overlay
+            transition={fade}
+            transitionConfig={{ duration: 150 }}
+            class="fixed inset-0 z-50 bg-black/80"
+          />
+          <Dialog.Content>
+            <Dialog.Title>User</Dialog.Title>
+            <Separator.Root />
+            {#if userStore.session}
+              <p>Logged in as {(userStore.session as OAuthSession).did}</p>
+            {:else}
+              <section>
+                <input type="url" class="w-full" bind:value={handleInput} />
+                <Button.Root onclick={() => userStore.loginWithHandle(handleInput)}>
+                  Login
+                </Button.Root>
+              </section>
+            {/if}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </section>
   </aside>
 

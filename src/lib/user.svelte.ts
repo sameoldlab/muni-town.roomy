@@ -1,14 +1,13 @@
 import { redirect } from "@sveltejs/kit";
-import { createAtProtoClient } from "./atproto";
+import { atprotoClient } from "./atproto";
+import type { OAuthSession } from "@atproto/oauth-client-browser";
 
-async function createUserStore() {
-  let state = $state();
-  let session = $state();
+function createUserStore() {
+  let state: string | null = $state(null);
+  let session: OAuthSession | undefined = $state();
 
-  const client = await createAtProtoClient();
-
-  async function initClient() {
-    const result = await client.init();
+  async function init() {
+    const result = await atprotoClient.init();
     if (result && 'state' in result) {
       session = result.session;
       state = result.state;
@@ -16,7 +15,7 @@ async function createUserStore() {
   }
 
   async function loginWithHandle(handle: string) {
-    const url = await client.authorize(handle, {
+    const url = await atprotoClient.authorize(handle, {
       scope: "atproto transition:generic"
     });
     redirect(301, url.toString());
@@ -25,9 +24,9 @@ async function createUserStore() {
   return {
     get state() { return state },
     get session() { return session },
-    initClient,
+    init,
     loginWithHandle
   }
 }
 
-export const userStore = await createUserStore();
+export const userStore = createUserStore();
