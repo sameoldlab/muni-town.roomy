@@ -4,7 +4,7 @@ import { BrowserOAuthClient } from "@atproto/oauth-client-browser";
 // TODO: change to permanent public URL
 const publicUrl = "https://roomy.muni.town"
 // localhost resolves to either 127.0.0.1 or [::1] (if ipv6)
-const url = dev ? "http://[::1]:5173" : publicUrl;
+const url = dev ? "http://127.0.0.1:5173" : publicUrl;
 
 const clientId = !dev ? `${publicUrl}/client-metadata.json`
   : `http://localhost?redirect_uri=${

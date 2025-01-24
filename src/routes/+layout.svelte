@@ -1,7 +1,9 @@
 <script lang="ts">
 	import '../app.css';
+  import { page } from '$app/state';
   import Icon from "@iconify/svelte";
-  import { userStore } from '$lib/user.svelte';
+  import { atprotoClient } from '$lib/atproto';
+  import { userStore } from "$lib/user.svelte";
   import { fade, slide } from 'svelte/transition';
   import { AvatarPixel } from 'svelte-boring-avatars';
   import type { OAuthSession } from '@atproto/oauth-client-browser';
@@ -10,6 +12,15 @@
 	let { children } = $props();
 
   let handleInput = $state("");
+  let searchParams = $derived(new URLSearchParams(page.url.toString().split("#")[1]));
+  $inspect({ userStore, searchParams });
+
+  $effect(() => {
+    atprotoClient.callback(searchParams).then((result) => {
+      userStore.session = result.session;
+      userStore.state = result.state;
+    });
+  });
 
   // TODO: set servers/rooms based on user
   let servers = ["muni", "barrel_of_monkeys", "offishal"]
@@ -99,15 +110,17 @@
             transitionConfig={{ duration: 150 }}
             class="fixed inset-0 z-50 bg-black/80"
           />
-          <Dialog.Content>
+          <Dialog.Content
+            class="fixed text-white left-[50%] top-[50%] z-50 w-full max-w-[94%] translate-x-[-50%] translate-y-[-50%] rounded-card-lg border bg-background p-5 shadow-popover outline-none sm:max-w-[490px] md:w-full"
+          >
             <Dialog.Title>User</Dialog.Title>
             <Separator.Root />
             {#if userStore.session}
               <p>Logged in as {(userStore.session as OAuthSession).did}</p>
             {:else}
               <section>
-                <input type="url" class="w-full" bind:value={handleInput} />
-                <Button.Root onclick={() => userStore.loginWithHandle(handleInput)}>
+                <input type="url" class="w-full text-black" bind:value={handleInput} />
+                <Button.Root onclick={async () => await userStore.loginWithHandle(handleInput)}>
                   Login
                 </Button.Root>
               </section>
