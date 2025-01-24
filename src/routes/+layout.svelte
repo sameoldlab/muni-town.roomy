@@ -2,8 +2,8 @@
 	import '../app.css';
   import { page } from '$app/state';
   import Icon from "@iconify/svelte";
-  import { atprotoClient } from '$lib/atproto';
   import { userStore } from "$lib/user.svelte";
+  import { atprotoClient } from '$lib/atproto';
   import { fade, slide } from 'svelte/transition';
   import { AvatarPixel } from 'svelte-boring-avatars';
   import type { OAuthSession } from '@atproto/oauth-client-browser';
@@ -13,13 +13,15 @@
 
   let handleInput = $state("");
   let searchParams = $derived(new URLSearchParams(page.url.toString().split("#")[1]));
-  $inspect({ userStore, searchParams });
 
   $effect(() => {
-    atprotoClient.callback(searchParams).then((result) => {
-      userStore.session = result.session;
-      userStore.state = result.state;
-    });
+    // only update if the URL has searchParams from `/oauth/callback`
+    if (searchParams.has('state') && (searchParams.has('code') && !searchParams.has('error'))) {
+      atprotoClient.callback(searchParams).then((result) => {
+        userStore.session = result.session;
+        userStore.state = result.state;
+      });
+    }
   });
 
   // TODO: set servers/rooms based on user
@@ -117,6 +119,9 @@
             <Separator.Root />
             {#if userStore.session}
               <p>Logged in as {(userStore.session as OAuthSession).did}</p>
+              <Button.Root onclick={userStore.logout}>
+                Logout
+              </Button.Root>
             {:else}
               <section>
                 <input type="url" class="w-full text-black" bind:value={handleInput} />
