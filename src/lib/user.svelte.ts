@@ -1,15 +1,20 @@
 import { atprotoClient } from "./atproto";
 import { agentStore } from "./agent.svelte";
 import type { OAuthSession } from "@atproto/oauth-client-browser";
+import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 
 function createUserStore() {
   let state: string | null = $state(null);
   let session: OAuthSession | undefined = $state();
-  let profile = $derived.by(async () => {
+  let profile: ProfileViewDetailed | undefined = $derived.by(() => {
     if (session) {
-      agentStore.initAgent(session)
-      return await agentStore.agent?.getProfile({ actor: agentStore.agent.assertDid });
+      let data;
+      agentStore.initAgent(session);
+      agentStore.agent?.getProfile({ actor: agentStore.agent.assertDid })
+        .then((res) => data = res.data);
+      return data;
     }
+    else return undefined;
   });
 
   async function loginWithHandle(handle: string) {
