@@ -5,14 +5,16 @@
   import { userStore } from "$lib/user.svelte";
   import { atprotoClient } from '$lib/atproto';
   import { fade, slide } from 'svelte/transition';
-  import { AvatarPixel } from 'svelte-boring-avatars';
-  import type { OAuthSession } from '@atproto/oauth-client-browser';
+  import { AvatarBeam, AvatarPixel } from 'svelte-boring-avatars';
   import { Accordion, Avatar, Button, Dialog, Separator, ToggleGroup } from "bits-ui";
 
 	let { children } = $props();
 
   let handleInput = $state("");
   let searchParams = $derived(new URLSearchParams(page.url.toString().split("#")[1]));
+  let isLoginDialogOpen = $derived(!userStore.session);
+
+  $inspect(userStore);
 
   $effect(() => {
     // only update if the URL has searchParams from `/oauth/callback`
@@ -112,13 +114,12 @@
       <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
         <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
       </Button.Root>
-      <Dialog.Root>
+      <Dialog.Root open={isLoginDialogOpen}>
         <Dialog.Trigger class="hover:scale-105 active:scale-95 transition-all duration-150">
           <Avatar.Root>
-            <!-- TODO: set images based on user -->
-            <Avatar.Image />
+            <Avatar.Image src={userStore.profile.data?.avatar} class="rounded-full" />
             <Avatar.Fallback>
-              <AvatarPixel name="pigeon" />
+              <AvatarBeam name="pigeon" />
             </Avatar.Fallback>
           </Avatar.Root>
         </Dialog.Trigger>
@@ -129,20 +130,33 @@
             class="fixed inset-0 z-50 bg-black/80"
           />
           <Dialog.Content
-            class="fixed text-white left-[50%] top-[50%] z-50 w-full max-w-[94%] translate-x-[-50%] translate-y-[-50%] rounded-card-lg border bg-background p-5 shadow-popover outline-none sm:max-w-[490px] md:w-full"
+            class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-screen-sm left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
           >
-            <Dialog.Title>User</Dialog.Title>
-            <Separator.Root />
+            <Dialog.Title class="text-bold font-bold text-xl">User</Dialog.Title>
+            <Separator.Root class="border border-white"/>
             {#if userStore.session}
-              <p>Logged in as {(userStore.session as OAuthSession).did}</p>
-              <Button.Root onclick={userStore.logout}>
-                Logout
-              </Button.Root>
+              <section class="flex flex-col gap-4">
+                <p>Logged in as {userStore.profile.data?.handle}</p>
+                <Button.Root 
+                  onclick={userStore.logout}
+                  class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
+                >
+                  Logout
+                </Button.Root>
+              </section>
             {:else}
-              <section>
-                <input type="url" class="w-full text-black" bind:value={handleInput} />
-                <Button.Root onclick={async () => await userStore.loginWithHandle(handleInput)}>
-                  Login
+              <section class="flex flex-col gap-4">
+                <input 
+                  type="url" 
+                  bind:value={handleInput} 
+                  placeholder="Handle (eg alice.bsky.social)"
+                  class="w-full outline-none border border-white px-4 py-2 rounded bg-transparent"
+                />
+                <Button.Root 
+                  class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
+                  onclick={async () => await userStore.loginWithHandle(handleInput)}
+                >
+                  Login with Bluesky
                 </Button.Root>
               </section>
             {/if}

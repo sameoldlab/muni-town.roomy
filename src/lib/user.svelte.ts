@@ -6,15 +6,20 @@ import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsk
 function createUserStore() {
   let state: string | null = $state(null);
   let session: OAuthSession | undefined = $state();
-  let profile: ProfileViewDetailed | undefined = $derived.by(() => {
+  let profile: { data: ProfileViewDetailed | undefined } = $derived.by(() => {
+    let data: ProfileViewDetailed | undefined = $state();
     if (session) {
-      let data;
       agentStore.initAgent(session);
-      agentStore.agent?.getProfile({ actor: agentStore.agent.assertDid })
-        .then((res) => data = res.data);
-      return data;
+      agentStore.agent!.getProfile({ actor: agentStore.agent!.assertDid })
+        .then((res) => {
+          data = res.data;
+          console.log("Session Exists!", { data });
+        });
     }
-    else return undefined;
+
+    return {
+      get data() { return data; }
+    };
   });
 
   async function loginWithHandle(handle: string) {
