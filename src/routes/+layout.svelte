@@ -24,6 +24,22 @@
     }
   });
 
+  $effect(() => {
+    // store the user's DID on login
+    if (userStore.session) {
+      localStorage.setItem("did", userStore.session.did);
+    }
+  });
+
+  $effect(() => {
+    // if there's a stored DID on localStorage and no session
+    // restore the session
+    const storedDid = localStorage.getItem("did");
+    if (!userStore.session && storedDid) {
+      atprotoClient.restore(storedDid).then((s) => userStore.session = s);
+    }
+  });
+
   // TODO: set servers/rooms based on user
   let servers = ["muni", "barrel_of_monkeys", "offishal"]
   let currentServer: string = $state("muni");

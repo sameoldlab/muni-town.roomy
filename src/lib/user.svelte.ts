@@ -34,9 +34,9 @@ function createUserStore() {
   }
 
   function logout() {
+    localStorage.removeItem("did");
     session = undefined;
     state = null;
-    // TODO: remove session from indexedDB
   }
 
   return {
