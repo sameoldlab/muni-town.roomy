@@ -36,7 +36,7 @@ function createUserStore() {
       setTimeout(
         reject,
         10000,
-        new Error("User navigated back from the authorization page")
+        new Error("User navigated back from the authorization page"),
       );
     });
   }

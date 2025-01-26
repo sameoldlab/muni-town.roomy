@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { ScrollArea } from 'bits-ui';
-  import { AvatarBeam } from 'svelte-boring-avatars';
+  import { ScrollArea } from "bits-ui";
+  import { AvatarBeam } from "svelte-boring-avatars";
 
   // TODO: use Matrix spec for MessageEvent
   type MessageEvent = {
@@ -15,62 +15,62 @@
     {
       content: "anybody up for gaming?",
       timestamp: new Date().setMinutes(0),
-      user: { name: "alice" }
+      user: { name: "alice" },
     },
     {
       content: "im down",
       timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" }
+      user: { name: "jeremy" },
     },
     {
       content: "brb",
       timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" }
+      user: { name: "zeu" },
     },
     {
       content: "coolio",
       timestamp: new Date().setMinutes(13),
-      user: { name: "bob" }
+      user: { name: "bob" },
     },
     {
       content: "anybody up for gaming?",
       timestamp: new Date().setMinutes(0),
-      user: { name: "alice" }
+      user: { name: "alice" },
     },
     {
       content: "im down",
       timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" }
+      user: { name: "jeremy" },
     },
     {
       content: "brb",
       timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" }
+      user: { name: "zeu" },
     },
     {
       content: "coolio",
       timestamp: new Date().setMinutes(13),
-      user: { name: "bob" }
+      user: { name: "bob" },
     },
     {
       content: "anybody up for gaming?",
       timestamp: new Date().setMinutes(0),
-      user: { name: "alice" }
+      user: { name: "alice" },
     },
     {
       content: "im down",
       timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" }
+      user: { name: "jeremy" },
     },
     {
       content: "brb",
       timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" }
+      user: { name: "zeu" },
     },
     {
       content: "coolio",
       timestamp: new Date().setMinutes(13),
-      user: { name: "bob" }
+      user: { name: "bob" },
     },
   ];
 
@@ -91,7 +91,9 @@
     <div class="flex flex-col gap-2 text-white">
       <section class="flex gap-2">
         <h5 class="font-bold">{event.user.name}</h5>
-        <time class="text-zinc-400">{new Date(event.timestamp).toLocaleString()}</time>
+        <time class="text-zinc-400"
+          >{new Date(event.timestamp).toLocaleString()}</time
+        >
       </section>
       <p class="text-lg">{event.content}</p>
     </div>
@@ -99,9 +101,9 @@
 {/snippet}
 
 <div class="flex flex-col gap-4 h-full place-content-end">
-  <ScrollArea.Root> 
+  <ScrollArea.Root>
     <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
-      <ScrollArea.Content> 
+      <ScrollArea.Content>
         <ol class="flex flex-col gap-8 justify-end">
           {#each messages as message}
             {@render messageEventDisplay(message)}
@@ -120,5 +122,9 @@
     <ScrollArea.Corner />
   </ScrollArea.Root>
 
-  <input type="text" class="w-full px-4 py-2 rounded-lg bg-violet-900" placeholder="Say something..." />
+  <input
+    type="text"
+    class="w-full px-4 py-2 rounded-lg bg-violet-900"
+    placeholder="Say something..."
+  />
 </div>

@@ -7,7 +7,7 @@ import {
 } from "@atproto/oauth-client-browser";
 
 const baseUrl = new URL(
-  dev ? "http://127.0.0.1:5173" : globalThis.location.href
+  dev ? "http://127.0.0.1:5173" : globalThis.location.href,
 );
 baseUrl.hash = "";
 baseUrl.pathname = "/";
@@ -22,7 +22,7 @@ if (dev) {
     redirect_uris: [redirectUri],
     scope,
     client_id: `http://localhost?redirect_uri=${encodeURIComponent(
-      redirectUri
+      redirectUri,
     )}&scope=${encodeURIComponent(scope)}`,
   };
 } else {
