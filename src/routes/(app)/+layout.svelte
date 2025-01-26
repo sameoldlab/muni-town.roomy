@@ -1,39 +1,21 @@
 <script lang="ts">
-	import '../app.css';
-  import { page } from '$app/state';
+	import '../../app.css';
   import Icon from "@iconify/svelte";
   import { userStore } from "$lib/user.svelte";
   import { atprotoClient } from '$lib/atproto';
   import { fade, slide } from 'svelte/transition';
   import { AvatarBeam, AvatarPixel } from 'svelte-boring-avatars';
   import { Accordion, Avatar, Button, Dialog, Separator, ToggleGroup } from "bits-ui";
+  import { onMount } from 'svelte';
 
 	let { children } = $props();
 
   let handleInput = $state("");
-  let searchParams = $derived(new URLSearchParams(page.url.toString().split("#")[1]));
   let isLoginDialogOpen = $derived(!userStore.session);
 
   $inspect(userStore);
 
-  $effect(() => {
-    // only update if the URL has searchParams from `/oauth/callback`
-    if (searchParams.has('state') && (searchParams.has('code') && !searchParams.has('error'))) {
-      atprotoClient.callback(searchParams).then((result) => {
-        userStore.session = result.session;
-        userStore.state = result.state;
-      });
-    }
-  });
-
-  $effect(() => {
-    // store the user's DID on login
-    if (userStore.session) {
-      localStorage.setItem("did", userStore.session.did);
-    }
-  });
-
-  $effect(() => {
+  onMount(() => {
     // if there's a stored DID on localStorage and no session
     // restore the session
     const storedDid = localStorage.getItem("did");

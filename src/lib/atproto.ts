@@ -1,32 +1,39 @@
 import { dev } from "$app/environment";
-import { BrowserOAuthClient } from "@atproto/oauth-client-browser";
+import {
+  atprotoLoopbackClientMetadata,
+  BrowserOAuthClient,
+  buildLoopbackClientId,
+  type OAuthClientMetadataInput,
+} from "@atproto/oauth-client-browser";
 
-// TODO: change to permanent public URL
-const publicUrl = "https://roomy.muni.town"
-// localhost resolves to either 127.0.0.1 or [::1] (if ipv6)
-const url = dev ? "http://127.0.0.1:5173" : publicUrl;
+const baseUrl = new URL(
+  dev ? "http://127.0.0.1:5173" : globalThis.location.href
+);
+baseUrl.hash = "";
+baseUrl.pathname = "/";
 
-const clientId = !dev ? `${publicUrl}/client-metadata.json`
-  : `http://localhost?redirect_uri=${
-    encodeURIComponent(`${url}/oauth/callback`)
-  }&scope=${
-    encodeURIComponent(`atproto transition:generic`)
-  }`;
+export const scope = "atproto transition:generic transition:chat.bsky";
 
-export const clientMetadata = {
-  client_name: "Roomy",
-  client_uri: url,
-  application_type: "web",
-  redirect_uris: [`${url}/oauth/callback`], 
-  scope: "atproto transition:generic",
-  grant_types: ["authorization_code", "refresh_token"],
-  token_endpoint_auth_method: "none",
-  dpop_bound_access_tokens: true,
-  response_types: ["code"]
-};
+let clientMetadata: OAuthClientMetadataInput;
+const redirectUri = baseUrl.href + "oauth/callback";
+if (dev) {
+  clientMetadata = {
+    ...atprotoLoopbackClientMetadata(buildLoopbackClientId(baseUrl)),
+    redirect_uris: [redirectUri],
+    scope,
+    client_id: `http://localhost?redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&scope=${encodeURIComponent(scope)}`,
+  };
+} else {
+  const resp = await fetch("/client-metadata.json", {
+    headers: [["accept", "application/json"]],
+  });
+  clientMetadata = await resp.json();
+}
 
-
-export const atprotoClient = await BrowserOAuthClient.load({
-  clientId,
-  handleResolver: "https://bsky.social"
+export const atprotoClient = new BrowserOAuthClient({
+  responseMode: "query",
+  handleResolver: "https://bsky.social",
+  clientMetadata,
 });

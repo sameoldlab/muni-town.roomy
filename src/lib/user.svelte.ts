@@ -1,4 +1,4 @@
-import { atprotoClient } from "./atproto";
+import { atprotoClient, scope } from "./atproto";
 import { agentStore } from "./agent.svelte";
 import type { OAuthSession } from "@atproto/oauth-client-browser";
 import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
@@ -10,7 +10,8 @@ function createUserStore() {
     let data: ProfileViewDetailed | undefined = $state();
     if (session) {
       agentStore.initAgent(session);
-      agentStore.agent!.getProfile({ actor: agentStore.agent!.assertDid })
+      agentStore
+        .agent!.getProfile({ actor: agentStore.agent!.assertDid })
         .then((res) => {
           data = res.data;
           console.log("Session Exists!", { data });
@@ -18,23 +19,25 @@ function createUserStore() {
     }
 
     return {
-      get data() { return data; }
+      get data() {
+        return data;
+      },
     };
   });
 
   async function loginWithHandle(handle: string) {
     const url = await atprotoClient.authorize(handle, {
-      scope: "atproto transition:generic"
+      scope,
     });
-    window.open(url, '_self', 'noopener');
+    window.open(url, "_self", "noopener");
 
     // Protect against browser's back-forward cache
     await new Promise<never>((resolve, reject) => {
       setTimeout(
         reject,
         10000,
-        new Error('User navigated back from the authorization page'),
-      )
+        new Error("User navigated back from the authorization page")
+      );
     });
   }
 
@@ -45,14 +48,24 @@ function createUserStore() {
   }
 
   return {
-    get state() { return state },
-    get session() { return session },
-    get profile() { return profile },
-    set state(newState) { state = newState; },
-    set session(newSession) { session = newSession; },
+    get state() {
+      return state;
+    },
+    get session() {
+      return session;
+    },
+    get profile() {
+      return profile;
+    },
+    set state(newState) {
+      state = newState;
+    },
+    set session(newSession) {
+      session = newSession;
+    },
     loginWithHandle,
-    logout
-  }
+    logout,
+  };
 }
 
 export const userStore = createUserStore();
