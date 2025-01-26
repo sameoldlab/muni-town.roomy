@@ -1,12 +1,46 @@
 <script lang="ts">
 	import '../app.css';
+  import { page } from '$app/state';
   import Icon from "@iconify/svelte";
+  import { userStore } from "$lib/user.svelte";
+  import { atprotoClient } from '$lib/atproto';
+  import { fade, slide } from 'svelte/transition';
   import { AvatarBeam, AvatarPixel } from 'svelte-boring-avatars';
-  import { Accordion, Avatar, Button, ScrollArea, ToggleGroup } from "bits-ui";
-  import { slide } from 'svelte/transition';
-    import { tick } from 'svelte';
+  import { Accordion, Avatar, Button, Dialog, Separator, ToggleGroup } from "bits-ui";
 
 	let { children } = $props();
+
+  let handleInput = $state("");
+  let searchParams = $derived(new URLSearchParams(page.url.toString().split("#")[1]));
+  let isLoginDialogOpen = $derived(!userStore.session);
+
+  $inspect(userStore);
+
+  $effect(() => {
+    // only update if the URL has searchParams from `/oauth/callback`
+    if (searchParams.has('state') && (searchParams.has('code') && !searchParams.has('error'))) {
+      atprotoClient.callback(searchParams).then((result) => {
+        userStore.session = result.session;
+        userStore.state = result.state;
+      });
+    }
+  });
+
+  $effect(() => {
+    // store the user's DID on login
+    if (userStore.session) {
+      localStorage.setItem("did", userStore.session.did);
+    }
+  });
+
+  $effect(() => {
+    // if there's a stored DID on localStorage and no session
+    // restore the session
+    const storedDid = localStorage.getItem("did");
+    if (!userStore.session && storedDid) {
+      atprotoClient.restore(storedDid).then((s) => userStore.session = s);
+    }
+  });
 
   // TODO: set servers/rooms based on user
   let servers = ["muni", "barrel_of_monkeys", "offishal"]
@@ -47,88 +81,6 @@
     { id: "abc", name: "general" }
   );
 
-  // TODO: use Matrix spec for MessageEvent
-  type MessageEvent = {
-    content: string;
-    timestamp: number;
-    user: {
-      name: string;
-    };
-  };
-
-  const messages = [
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" }
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" }
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" }
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" }
-    },
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" }
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" }
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" }
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" }
-    },
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" }
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" }
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" }
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" }
-    },
-  ];
-
-  // ScrollArea
-  let viewport: HTMLDivElement | undefined = $state();
-
-
-  // Go to the end of the ScrollArea
-  $effect(() => {
-    if (viewport) {
-      viewport.scrollTop = viewport.scrollHeight;
-    }
-  });
 </script>
 
 <!-- Container -->
@@ -162,15 +114,55 @@
       <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
         <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
       </Button.Root>
-      <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
-        <Avatar.Root>
-          <!-- TODO: set images based on user -->
-          <Avatar.Image />
-          <Avatar.Fallback>
-            <AvatarPixel name="pigeon" />
-          </Avatar.Fallback>
-        </Avatar.Root>
-      </Button.Root>
+      <Dialog.Root open={isLoginDialogOpen}>
+        <Dialog.Trigger class="hover:scale-105 active:scale-95 transition-all duration-150">
+          <Avatar.Root>
+            <Avatar.Image src={userStore.profile.data?.avatar} class="rounded-full" />
+            <Avatar.Fallback>
+              <AvatarBeam name="pigeon" />
+            </Avatar.Fallback>
+          </Avatar.Root>
+        </Dialog.Trigger>
+        <Dialog.Portal>
+          <Dialog.Overlay
+            transition={fade}
+            transitionConfig={{ duration: 150 }}
+            class="fixed inset-0 z-50 bg-black/80"
+          />
+          <Dialog.Content
+            class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-screen-sm left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
+          >
+            <Dialog.Title class="text-bold font-bold text-xl">User</Dialog.Title>
+            <Separator.Root class="border border-white"/>
+            {#if userStore.session}
+              <section class="flex flex-col gap-4">
+                <p>Logged in as {userStore.profile.data?.handle}</p>
+                <Button.Root 
+                  onclick={userStore.logout}
+                  class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
+                >
+                  Logout
+                </Button.Root>
+              </section>
+            {:else}
+              <section class="flex flex-col gap-4">
+                <input 
+                  type="url" 
+                  bind:value={handleInput} 
+                  placeholder="Handle (eg alice.bsky.social)"
+                  class="w-full outline-none border border-white px-4 py-2 rounded bg-transparent"
+                />
+                <Button.Root 
+                  class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
+                  onclick={async () => await userStore.loginWithHandle(handleInput)}
+                >
+                  Login with Bluesky
+                </Button.Root>
+              </section>
+            {/if}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </section>
   </aside>
 
@@ -213,48 +205,11 @@
   </nav>
 
   <!-- Events/Room Content -->
-  <main class="relative flex flex-grow flex-col gap-4 bg-violet-950 rounded-lg p-4">
+  <main class="relative flex flex-grow items-stretch flex-col gap-4 bg-violet-950 rounded-lg p-4">
     <section class="flex justify-between">
       <h4 class="text-white text-lg font-bold">{currentChannel.name}</h4>
     </section>
     <hr />
-    
-    {#snippet messageEventDisplay(event: MessageEvent)}
-      <li class="w-full h-fit flex gap-4">
-        <AvatarBeam name={event.user.name} />
-        <div class="flex flex-col gap-2 text-white">
-          <section class="flex gap-2">
-            <h5 class="font-bold">{event.user.name}</h5>
-            <time class="text-zinc-400">{new Date(event.timestamp).toLocaleString()}</time>
-          </section>
-          <p class="text-lg">{event.content}</p>
-        </div>
-      </li>
-    {/snippet}
-    
-    <ScrollArea.Root class="relative"> 
-      <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
-        <ScrollArea.Content> 
-          <ol class="flex flex-col gap-8 justify-end">
-            {#each messages as message}
-              {@render messageEventDisplay(message)}
-            {/each}
-          </ol>
-        </ScrollArea.Content>
-      </ScrollArea.Viewport>
-      <ScrollArea.Scrollbar
-        orientation="vertical"
-        class="flex h-full w-2.5 touch-none select-none rounded-full border-l border-l-transparent p-px transition-all hover:w-3 hover:bg-dark-10"
-      >
-        <ScrollArea.Thumb
-          class="relative flex-1 rounded-full bg-muted-foreground opacity-40 transition-opacity hover:opacity-100"
-        />
-      </ScrollArea.Scrollbar>
-      <ScrollArea.Corner />
-    </ScrollArea.Root>
-
-    <input type="text" class="w-full px-4 py-2 rounded-lg bg-violet-900" placeholder="Say something..." />
-
     {@render children()}
   </main>
 </div>
