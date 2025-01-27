@@ -1,7 +1,6 @@
 <script lang="ts">
   import "../../app.css";
   import Icon from "@iconify/svelte";
-  import { atproto } from "$lib/atproto.svelte";
   import { fade, slide } from "svelte/transition";
   import { AvatarBeam, AvatarPixel } from "svelte-boring-avatars";
   import {
@@ -19,8 +18,6 @@
 
   let handleInput = $state("");
   let isLoginDialogOpen = $derived(!user.session);
-
-  $inspect(user);
 
   onMount(async () => {
     await user.init();

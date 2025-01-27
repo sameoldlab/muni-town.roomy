@@ -2,6 +2,16 @@ import { atproto } from "./atproto.svelte";
 import type { OAuthSession } from "@atproto/oauth-client-browser";
 import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 import { Agent } from "@atproto/api";
+import { Repo } from "@automerge/automerge-repo";
+import { dev } from "$app/environment";
+import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
+import { lexicons } from "./lexicons";
+import { decodeBase32 } from "./base32";
+
+type Keypair = {
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+};
 
 let session: OAuthSession | undefined = $state();
 let agent: Agent | undefined = $state();
@@ -17,6 +27,41 @@ let profile: { data: ProfileViewDetailed | undefined } = $derived.by(() => {
       return data;
     },
   };
+});
+
+let keypair: {
+  value: Keypair | undefined;
+} = $derived.by(() => {
+  let value: Keypair | undefined = $state();
+  if (session && agent) {
+    agent
+      .call("key.v0.roomy.muni.town", undefined, undefined, {
+        headers: {
+          "atproto-proxy": "did:web:keyserver.roomy.muni.town#roomy_keyserver",
+        },
+      })
+      .then((resp) => {
+        value = {
+          publicKey: new Uint8Array(decodeBase32(resp.data.publicKey)),
+          privateKey: new Uint8Array(decodeBase32(resp.data.publicKey)),
+        };
+      });
+  }
+  return {
+    get value() {
+      return value;
+    },
+  };
+});
+
+let repo = $derived.by(() => {
+  if (!session) return;
+  const did = session.did;
+
+  return new Repo({
+    isEphemeral: false,
+    storage: new IndexedDBStorageAdapter(did, "automerge-repo"),
+  });
 });
 
 /** The user store. */
@@ -36,12 +81,16 @@ export const user = {
     return session;
   },
   set session(newSession) {
+    session = newSession;
     if (newSession) {
       // Store the user's DID on login
       localStorage.setItem("did", newSession.did);
+      agent = new Agent(newSession);
+      lexicons.forEach((l) => agent!.lex.add(l));
+    } else {
+      agent = undefined;
+      localStorage.removeItem("did");
     }
-    session = newSession;
-    agent = newSession && new Agent(newSession);
   },
 
   /**
@@ -51,11 +100,25 @@ export const user = {
     return profile;
   },
 
+  get keypair() {
+    return keypair;
+  },
+
+  /** Interface to the user's chat data. */
+  get repo() {
+    return repo;
+  },
+
   /**
    * Initialize the user store, setting up the oauth client, and restoring previous session if
    * necessary.
    * */
   async init() {
+    // Add the user store to the global scope so it can easily be accessed in dev tools
+    if (dev) {
+      (globalThis as any).user = this;
+    }
+
     // Initialize oauth client.
     await atproto.init();
 
