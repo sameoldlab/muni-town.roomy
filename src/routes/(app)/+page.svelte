@@ -100,31 +100,29 @@
   </li>
 {/snippet}
 
-<div class="flex flex-col gap-4 h-full place-content-end">
-  <ScrollArea.Root>
-    <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
-      <ScrollArea.Content>
-        <ol class="flex flex-col gap-8 justify-end">
-          {#each messages as message}
-            {@render messageEventDisplay(message)}
-          {/each}
-        </ol>
-      </ScrollArea.Content>
-    </ScrollArea.Viewport>
-    <ScrollArea.Scrollbar
-      orientation="vertical"
-      class="flex h-full w-2.5 touch-none select-none rounded-full border-l border-l-transparent p-px transition-all hover:w-3 hover:bg-dark-10"
-    >
-      <ScrollArea.Thumb
-        class="relative flex-1 rounded-full bg-muted-foreground opacity-40 transition-opacity hover:opacity-100"
-      />
-    </ScrollArea.Scrollbar>
-    <ScrollArea.Corner />
-  </ScrollArea.Root>
+<ScrollArea.Root>
+  <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
+    <ScrollArea.Content>
+      <ol class="flex flex-col gap-8">
+        {#each messages as message}
+          {@render messageEventDisplay(message)}
+        {/each}
+      </ol>
+    </ScrollArea.Content>
+  </ScrollArea.Viewport>
+  <ScrollArea.Scrollbar
+    orientation="vertical"
+    class="flex h-full w-2.5 touch-none select-none rounded-full border-l border-l-transparent p-px transition-all hover:w-3 hover:bg-dark-10"
+  >
+    <ScrollArea.Thumb
+      class="relative flex-1 rounded-full bg-muted-foreground opacity-40 transition-opacity hover:opacity-100"
+    />
+  </ScrollArea.Scrollbar>
+  <ScrollArea.Corner />
+</ScrollArea.Root>
 
-  <input
-    type="text"
-    class="w-full px-4 py-2 rounded-lg bg-violet-900"
-    placeholder="Say something..."
-  />
-</div>
+<input
+  type="text"
+  class="w-full px-4 py-2 rounded-lg bg-violet-900 flex-none"
+  placeholder="Say something..."
+/>

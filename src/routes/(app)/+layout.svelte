@@ -20,8 +20,6 @@
   let handleInput = $state("");
   let isLoginDialogOpen = $derived(!userStore.session);
 
-  $inspect(userStore);
-
   onMount(async () => {
     await initAtprotoClient();
 
@@ -211,12 +209,12 @@
 
   <!-- Events/Room Content -->
   <main
-    class="relative flex grow items-stretch flex-col gap-4 bg-violet-950 rounded-lg p-4"
+    class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4"
   >
-    <section class="flex justify-between">
+    <section class="flex flex-none justify-between border-b-1 pb-4">
       <h4 class="text-white text-lg font-bold">{currentChannel.name}</h4>
     </section>
-    <hr />
+
     {@render children()}
   </main>
 </div>
