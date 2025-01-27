@@ -5,8 +5,8 @@
 
   let error = $state("");
 
-  onMount(() => {
-    initAtprotoClient();
+  onMount(async () => {
+    await initAtprotoClient();
     const searchParams = new URL(globalThis.location.href).searchParams;
 
     atprotoClient
