@@ -13,6 +13,7 @@
   } from "bits-ui";
   import { onMount } from "svelte";
   import { user } from "$lib/user.svelte";
+  import { encodeBase32 } from "$lib/base32";
 
   let { children } = $props();
 
@@ -127,6 +128,14 @@
             {#if user.session}
               <section class="flex flex-col gap-4">
                 <p>Logged in as {user.profile.data?.handle}</p>
+                {#if user.keypair.value}
+                  <p>
+                    <strong>PublicKey: </strong>
+                    {encodeBase32(
+                      user.keypair.value?.publicKey || new Uint8Array(),
+                    )}
+                  </p>
+                {/if}
                 <Button.Root
                   onclick={user.logout}
                   class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"

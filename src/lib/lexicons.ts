@@ -3,7 +3,7 @@ import { type LexiconDoc } from "@atproto/lexicon";
 export const lexicons: LexiconDoc[] = [
   {
     lexicon: 1,
-    id: "key.v0.roomy.muni.town",
+    id: "town.muni.roomy.v0.key",
     defs: {
       main: {
         type: "query",
@@ -27,7 +27,7 @@ export const lexicons: LexiconDoc[] = [
 
   {
     lexicon: 1,
-    id: "public.key.v0.roomy.muni.town",
+    id: "town.muni.roomy.v0.key.public",
     defs: {
       main: {
         type: "query",

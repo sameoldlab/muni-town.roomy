@@ -35,7 +35,7 @@ let keypair: {
   let value: Keypair | undefined = $state();
   if (session && agent) {
     agent
-      .call("key.v0.roomy.muni.town", undefined, undefined, {
+      .call("town.muni.roomy.v0.key", undefined, undefined, {
         headers: {
           "atproto-proxy": "did:web:keyserver.roomy.muni.town#roomy_keyserver",
         },
