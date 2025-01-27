@@ -30,7 +30,7 @@ export async function initAtprotoClient() {
       )}&scope=${encodeURIComponent(scope)}`,
     };
   } else {
-    const resp = await fetch("/client-metadata.json", {
+    const resp = await fetch("/oauth-client.json", {
       headers: [["accept", "application/json"]],
     });
     clientMetadata = await resp.json();
