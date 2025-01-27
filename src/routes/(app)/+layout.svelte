@@ -129,7 +129,7 @@
             class="fixed inset-0 z-50 bg-black/80"
           />
           <Dialog.Content
-            class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-screen-sm left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
+            class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-(--breakpoint-sm) left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
           >
             <Dialog.Title class="text-bold font-bold text-xl">User</Dialog.Title
             >
@@ -150,7 +150,7 @@
                   type="url"
                   bind:value={handleInput}
                   placeholder="Handle (eg alice.bsky.social)"
-                  class="w-full outline-none border border-white px-4 py-2 rounded bg-transparent"
+                  class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
                 />
                 <Button.Root
                   class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
@@ -211,7 +211,7 @@
 
   <!-- Events/Room Content -->
   <main
-    class="relative flex flex-grow items-stretch flex-col gap-4 bg-violet-950 rounded-lg p-4"
+    class="relative flex grow items-stretch flex-col gap-4 bg-violet-950 rounded-lg p-4"
   >
     <section class="flex justify-between">
       <h4 class="text-white text-lg font-bold">{currentChannel.name}</h4>
