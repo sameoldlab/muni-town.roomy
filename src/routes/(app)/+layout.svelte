@@ -1,8 +1,7 @@
 <script lang="ts">
   import "../../app.css";
   import Icon from "@iconify/svelte";
-  import { userStore } from "$lib/user.svelte";
-  import { atprotoClient, initAtprotoClient } from "$lib/atproto";
+  import { atproto } from "$lib/atproto.svelte";
   import { fade, slide } from "svelte/transition";
   import { AvatarBeam, AvatarPixel } from "svelte-boring-avatars";
   import {
@@ -14,21 +13,17 @@
     ToggleGroup,
   } from "bits-ui";
   import { onMount } from "svelte";
+  import { user } from "$lib/user.svelte";
 
   let { children } = $props();
 
   let handleInput = $state("");
-  let isLoginDialogOpen = $derived(!userStore.session);
+  let isLoginDialogOpen = $derived(!user.session);
+
+  $inspect(user);
 
   onMount(async () => {
-    await initAtprotoClient();
-
-    // if there's a stored DID on localStorage and no session
-    // restore the session
-    const storedDid = localStorage.getItem("did");
-    if (!userStore.session && storedDid) {
-      atprotoClient.restore(storedDid).then((s) => (userStore.session = s));
-    }
+    await user.init();
   });
 
   // TODO: set servers/rooms based on user
@@ -112,7 +107,7 @@
         >
           <Avatar.Root>
             <Avatar.Image
-              src={userStore.profile.data?.avatar}
+              src={user.profile.data?.avatar}
               class="rounded-full"
             />
             <Avatar.Fallback>
@@ -132,11 +127,11 @@
             <Dialog.Title class="text-bold font-bold text-xl">User</Dialog.Title
             >
             <Separator.Root class="border border-white" />
-            {#if userStore.session}
+            {#if user.session}
               <section class="flex flex-col gap-4">
-                <p>Logged in as {userStore.profile.data?.handle}</p>
+                <p>Logged in as {user.profile.data?.handle}</p>
                 <Button.Root
-                  onclick={userStore.logout}
+                  onclick={user.logout}
                   class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
                 >
                   Logout
@@ -152,8 +147,7 @@
                 />
                 <Button.Root
                   class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
-                  onclick={async () =>
-                    await userStore.loginWithHandle(handleInput)}
+                  onclick={async () => await user.loginWithHandle(handleInput)}
                 >
                   Login with Bluesky
                 </Button.Root>
@@ -208,9 +202,7 @@
   </nav>
 
   <!-- Events/Room Content -->
-  <main
-    class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4"
-  >
+  <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
     <section class="flex flex-none justify-between border-b-1 pb-4">
       <h4 class="text-white text-lg font-bold">{currentChannel.name}</h4>
     </section>

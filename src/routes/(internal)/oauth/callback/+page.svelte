@@ -1,22 +1,18 @@
 <script lang="ts">
-  import { atprotoClient, initAtprotoClient } from "$lib/atproto";
-  import { userStore } from "$lib/user.svelte";
+  import { atproto } from "$lib/atproto.svelte";
+  import { user } from "$lib/user.svelte";
   import { onMount } from "svelte";
 
   let error = $state("");
 
   onMount(async () => {
-    await initAtprotoClient();
+    await atproto.init();
     const searchParams = new URL(globalThis.location.href).searchParams;
 
-    atprotoClient
+    atproto.oauth
       .callback(searchParams)
       .then((result) => {
-        userStore.session = result.session;
-        userStore.state = result.state;
-
-        // store the user's DID on login
-        localStorage.setItem("did", userStore.session.did);
+        user.session = result.session;
 
         window.location.href = "/";
       })
