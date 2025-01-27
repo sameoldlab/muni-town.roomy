@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { atprotoClient } from "$lib/atproto";
+  import { atprotoClient, initAtprotoClient } from "$lib/atproto";
   import { userStore } from "$lib/user.svelte";
   import { onMount } from "svelte";
 
   let error = $state("");
 
   onMount(() => {
+    initAtprotoClient();
     const searchParams = new URL(globalThis.location.href).searchParams;
 
     atprotoClient

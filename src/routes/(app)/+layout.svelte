@@ -2,7 +2,7 @@
   import "../../app.css";
   import Icon from "@iconify/svelte";
   import { userStore } from "$lib/user.svelte";
-  import { atprotoClient } from "$lib/atproto";
+  import { atprotoClient, initAtprotoClient } from "$lib/atproto";
   import { fade, slide } from "svelte/transition";
   import { AvatarBeam, AvatarPixel } from "svelte-boring-avatars";
   import {
@@ -22,7 +22,9 @@
 
   $inspect(userStore);
 
-  onMount(() => {
+  onMount(async () => {
+    await initAtprotoClient();
+
     // if there's a stored DID on localStorage and no session
     // restore the session
     const storedDid = localStorage.getItem("did");
