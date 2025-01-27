@@ -11,4 +11,7 @@ export default defineConfig({
     sveltekit(),
     tailwindcss(),
   ] as PluginOption[],
+  build: {
+    target: "es2022",
+  },
 });
