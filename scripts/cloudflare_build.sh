@@ -1,15 +1,19 @@
 #!/bin/env bash
 
+# Install deno
 curl -fsSL https://deno.land/install.sh | sh
+deno="$HOME/.deno/bin/deno"
 
+# Install dependencies
 deno install
 deno run build
 
+# Add oauth-client configuration
 echo '{
   "client_id": "https://roomy.muni.town/oauth-client.json",
   "client_name": "Roomy",
   "client_uri": "https://roomy.muni.town",
-  "logo_uri": "https://roomy.muni.town/public/favicon.ico",
+  "logo_uri": "https://roomy.muni.town/favicon.png",
   "tos_uri": "https://roomy.muni.town",
   "policy_uri": "https://roomy.muni.town",
   "redirect_uris": ["https://roomy.muni.town/oauth/callback"],
