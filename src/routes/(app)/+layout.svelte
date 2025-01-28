@@ -28,16 +28,17 @@
   let servers = ["muni", "barrel_of_monkeys", "offishal"];
   let currentServer: string = $state("muni");
 
+  let index = $derived(user.index.value);
+
   // TODO: set current channel on url based on server
-  let categories = [
+  let categories = $derived([
     {
       id: "123",
-      name: "Information",
-      channels: [
-        { id: "abc", name: "general" },
-        { id: "xyz", name: "announcements" },
-        { id: "qwe", name: "introductions" },
-      ],
+      name: "Direct Messages",
+      channels: Object.entries($index?.dms || {}).map(([did, doc]) => ({
+        id: did,
+        name: did,
+      })),
     },
     {
       id: "456",
@@ -57,7 +58,7 @@
         { id: "cvb", name: "suggestions" },
       ],
     },
-  ];
+  ]);
 
   let currentChannel: { id: string; name: string } = $state({
     id: "abc",

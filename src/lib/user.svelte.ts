@@ -2,11 +2,16 @@ import { atproto } from "./atproto.svelte";
 import type { OAuthSession } from "@atproto/oauth-client-browser";
 import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 import { Agent } from "@atproto/api";
-import { Repo } from "@automerge/automerge-repo";
-import { dev } from "$app/environment";
+import {
+  DocHandle,
+  Repo,
+  type AnyDocumentId,
+  type AutomergeUrl,
+} from "@automerge/automerge-repo";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { lexicons } from "./lexicons";
 import { decodeBase32 } from "./base32";
+import { reactiveDoc, type ReactiveDoc } from "./automergeUtils.svelte";
 
 type Keypair = {
   publicKey: Uint8Array;
@@ -15,6 +20,8 @@ type Keypair = {
 
 let session: OAuthSession | undefined = $state();
 let agent: Agent | undefined = $state();
+
+/** The user's atproto profile information. */
 let profile: { data: ProfileViewDetailed | undefined } = $derived.by(() => {
   let data: ProfileViewDetailed | undefined = $state();
   if (session && agent) {
@@ -29,10 +36,12 @@ let profile: { data: ProfileViewDetailed | undefined } = $derived.by(() => {
   };
 });
 
+/** The user's Roomy keypair. */
 let keypair: {
   value: Keypair | undefined;
 } = $derived.by(() => {
   let value: Keypair | undefined = $state();
+
   if (session && agent) {
     agent
       .call("town.muni.roomy.v0.key", undefined, undefined, {
@@ -54,6 +63,7 @@ let keypair: {
   };
 });
 
+/** The user's automerge repository. */
 let repo = $derived.by(() => {
   if (!session) return;
   const did = session.did;
@@ -62,6 +72,114 @@ let repo = $derived.by(() => {
     isEphemeral: false,
     storage: new IndexedDBStorageAdapter(did, "automerge-repo"),
   });
+});
+
+/**
+ * The type of the user's "index", the list of all of the chat spaces / direct messages they're
+ * apart of. */
+export type Index = {
+  /**
+   * The list of direct messages, mapping the DID of the user they are messaging with the automerge
+   * document URL.
+   * */
+  dms: { [did: string]: string };
+};
+
+/** The user's "index" listing all of their chat rooms and direct messages they've joined. */
+let index: {
+  value: ReactiveDoc<Index> | undefined;
+} = $derived.by(() => {
+  let value: ReactiveDoc<Index> | undefined = $state();
+
+  const uploadIndex = async (repo: Repo, id: AnyDocumentId) => {
+    // Export it to binary
+    const exp = await repo.export(id);
+    // Upload it to the PDS.
+    const upResp = await agent!.com.atproto.repo.uploadBlob(exp);
+    if (!upResp || !upResp.success)
+      throw "Could not upload index export to PDS.";
+    const blobId = upResp.data.blob;
+
+    // Add the record to the PDS
+    const putResp = await agent!.com.atproto.repo.putRecord({
+      collection: "town.muni.roomy.v0.index",
+      repo: agent!.assertDid,
+      rkey: "self",
+      record: {
+        id: id,
+        data: blobId,
+      },
+    });
+    if (!putResp.success) throw "Could not set index record on PDS";
+  };
+
+  const uploadDocWhenChanged = (repo: Repo, doc: DocHandle<Index>) => {
+    doc.on("change", () => {
+      uploadIndex(repo, doc.url);
+    });
+  };
+
+  const createNewIndex = async (repo: Repo) => {
+    // Create the document
+    const indexHandle = repo.create<Index>({ dms: {} });
+    // Upload it to the PDS
+    await uploadIndex(repo, indexHandle.url);
+    // Re-upload when changed
+    uploadDocWhenChanged(repo, indexHandle);
+    // And set the value
+    value = reactiveDoc(indexHandle);
+  };
+
+  if (session && agent && repo) {
+    agent.com.atproto.repo
+      .getRecord({
+        collection: "town.muni.roomy.v0.index",
+        repo: session.did,
+        rkey: "self",
+      })
+      .then(async (resp) => {
+        if (!resp.success) {
+          return createNewIndex(repo);
+        }
+        const v = resp.data.value as {
+          id: string;
+          data: { ref: { toString(): string } };
+        };
+        const blob = await agent!.com.atproto.sync.getBlob({
+          cid: v.data.ref.toString(),
+          did: agent!.assertDid,
+        });
+        if (!blob.success) throw "Could not download index export from PDS";
+        let indexHandle = repo.find<Index>(v.id as AutomergeUrl);
+        console.log("Loaded local index", await indexHandle.doc());
+
+        const imported = repo.import<Index>(blob.data);
+        let handle: DocHandle<Index>;
+        if (indexHandle.docSync()) {
+          console.log("Imported index from PDS", await imported.doc());
+          indexHandle.merge(imported);
+          console.log("Merged index into local", await indexHandle.doc());
+          repo.delete(imported.url);
+          handle = indexHandle;
+        } else {
+          console.log('Using imported handle', await imported.doc());
+          handle = imported;
+        }
+
+        uploadDocWhenChanged(repo, handle);
+        console.log('output', await handle.doc());
+        value = reactiveDoc(handle);
+      })
+      // If we don't have an index, we need to create one.
+      .catch(async () => {
+        createNewIndex(repo);
+      });
+  }
+  return {
+    get value() {
+      return value;
+    },
+  };
 });
 
 /** The user store. */
@@ -100,6 +218,10 @@ export const user = {
     return profile;
   },
 
+  get index() {
+    return index;
+  },
+
   get keypair() {
     return keypair;
   },
@@ -115,9 +237,7 @@ export const user = {
    * */
   async init() {
     // Add the user store to the global scope so it can easily be accessed in dev tools
-    if (dev) {
-      (globalThis as any).user = this;
-    }
+    (globalThis as any).user = this;
 
     // Initialize oauth client.
     await atproto.init();
