@@ -40,6 +40,7 @@
       });
 
       newDmDialogOpen = false;
+      newDmInput = "";
     } catch (e) {
       newDmError = `Could not find account with handle: @${newDmInput}`;
     } finally {
