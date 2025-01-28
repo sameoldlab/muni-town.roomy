@@ -3,8 +3,8 @@ import type { OAuthSession } from "@atproto/oauth-client-browser";
 import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 import { Agent } from "@atproto/api";
 import {
-  DocHandle,
   Repo,
+  type DocHandle,
   type AnyDocumentId,
   type AutomergeUrl,
 } from "@automerge/automerge-repo";

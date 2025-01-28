@@ -13,5 +13,6 @@ export default defineConfig({
   ] as PluginOption[],
   build: {
     target: "es2022",
+    chunkSizeWarningLimit: 2048,
   },
 });
