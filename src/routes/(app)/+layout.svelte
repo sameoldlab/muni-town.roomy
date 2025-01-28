@@ -14,14 +14,35 @@
   let loginLoading = $state(false);
   let handleInput = $state("");
   let isLoginDialogOpen = $derived(!user.session);
+  let deleteLoading = $state(false);
 
   onMount(async () => {
     await user.init();
   });
 
+  async function deleteData(kind: "all" | "local") {
+    deleteLoading = true;
+
+    if (kind == "all") {
+      await user.agent!.com.atproto.repo.deleteRecord({
+        repo: user.agent!.assertDid,
+        collection: "town.muni.roomy.v0.index",
+        rkey: "self",
+      });
+    }
+
+    localStorage.clear();
+    indexedDB.databases().then((dbs) => {
+      dbs.forEach((db) => {
+        if (db.name) indexedDB.deleteDatabase(db.name);
+      });
+    });
+
+    window.location.reload();
+  }
+
   // TODO: set servers/rooms based on user
   let servers = ["barrel_of_monkeys", "offishal"];
-  let currentServer: string = $state("muni");
 </script>
 
 <!-- Container -->
@@ -67,6 +88,71 @@
       >
         <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
       </Button.Root>
+      <Dialog.Root>
+        <Dialog.Trigger
+          class="hover:scale-105 active:scale-95 transition-all duration-150"
+        >
+          <Button.Root
+            class="hover:scale-105 active:scale-95 transition-all duration-150"
+          >
+            <Icon icon="ri:alarm-warning-fill" color="white" class="text-2xl" />
+          </Button.Root>
+        </Dialog.Trigger>
+        <Dialog.Portal>
+          <Dialog.Overlay
+            transition={fade}
+            transitionConfig={{ duration: 150 }}
+            class="fixed inset-0 z-50 bg-black/80"
+          />
+          <Dialog.Content
+            class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-(--breakpoint-sm) left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
+          >
+            <Dialog.Title
+              class="text-bold font-bold text-xl flex items-center justify-center gap-4"
+            >
+              <Icon icon="ri:alarm-warning-fill" color="red" class="text-2xl" />
+              <span> Delete Data </span>
+              <Icon icon="ri:alarm-warning-fill" color="red" class="text-2xl" />
+            </Dialog.Title>
+            <Separator.Root class="border border-white" />
+            <div class="flex flex-col items-center gap-4">
+              <p>
+                <strong>Warning:</strong> This will delete the Roomy data from this
+                device and from your AtProto PDS if you chose.
+              </p>
+              <p>
+                Roomy is currently <em>extremely</em> experimental, so until it gets
+                a little more stable it may be necessary to reset all of your data
+                in order to fix a problem after an update of Roomy is published.
+              </p>
+              <Button.Root
+                onclick={() => deleteData("local")}
+                class={`flex items-center gap-3  px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150 ${
+                  deleteLoading ? "contrast-50" : "hover:scale-[102%]"
+                }`}
+                disabled={deleteLoading}
+              >
+                Delete Local Data {#if deleteLoading}<Icon
+                    icon="ri:loader-4-fill"
+                    class="animate-spin"
+                  />{/if}
+              </Button.Root>
+              <Button.Root
+                onclick={() => deleteData("all")}
+                class={`flex items-center gap-3 px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150 ${
+                  deleteLoading ? "contrast-50" : "hover:scale-[102%]"
+                }`}
+                disabled={deleteLoading}
+              >
+                Delete Local and PDS Data {#if deleteLoading}<Icon
+                    icon="ri:loader-4-fill"
+                    class="animate-spin"
+                  />{/if}
+              </Button.Root>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
       <Dialog.Root open={isLoginDialogOpen}>
         <Dialog.Trigger
           class="hover:scale-105 active:scale-95 transition-all duration-150"
