@@ -168,8 +168,8 @@ let index: {
           if (indexHandle.diff(imported).length > 0) {
             indexHandle.merge(imported);
             await uploadIndex(repo, indexHandle.url);
+            console.log("Merged remote index into local");
           }
-          console.log("Merged remote index into local");
           repo.delete(imported.url);
           handle = indexHandle;
         } else {
