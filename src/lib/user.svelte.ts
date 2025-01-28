@@ -82,7 +82,11 @@ export type Index = {
    * The list of direct messages, mapping the DID of the user they are messaging with the automerge
    * document URL.
    * */
-  dms: { [did: string]: string };
+  dms: {
+    [did: string]: {
+      handle: string;
+    };
+  };
 };
 
 /** The user's "index" listing all of their chat rooms and direct messages they've joined. */
@@ -162,12 +166,12 @@ let index: {
           repo.delete(imported.url);
           handle = indexHandle;
         } else {
-          console.log('Using imported handle', await imported.doc());
+          console.log("Using imported handle", await imported.doc());
           handle = imported;
         }
 
         uploadDocWhenChanged(repo, handle);
-        console.log('output', await handle.doc());
+        console.log("output", await handle.doc());
         value = reactiveDoc(handle);
       })
       // If we don't have an index, we need to create one.

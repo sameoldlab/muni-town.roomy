@@ -1,26 +1,104 @@
 <script lang="ts">
-  import { ToggleGroup } from "bits-ui";
+  import { Button, Dialog, Separator, ToggleGroup } from "bits-ui";
 
   import { user } from "$lib/user.svelte";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
+  import Icon from "@iconify/svelte";
+  import { fade } from "svelte/transition";
 
   let { children } = $props();
 
   let index = $derived(user.index.value);
 
   let dms = $derived(
-    Object.entries($index?.dms || {}).map(([did, _doc]) => ({
+    Object.entries($index?.dms || {}).map(([did, dm]) => ({
       id: did,
-      name: did,
+      name: dm.handle,
     })),
   );
+
+  let newDmDialogOpen = $state(false);
+  let newDmInput = $state("");
+  let newDmLoading = $state(false);
+  let newDmError = $state(undefined) as undefined | string;
+
+  async function createDm() {
+    if (newDmLoading) return;
+    newDmError = undefined;
+    newDmLoading = true;
+    try {
+      const resp = await user.agent!.resolveHandle({ handle: newDmInput });
+      if (!resp.success) {
+        throw "Could not resolve";
+      }
+
+      user.index.value!.change((doc) => {
+        doc.dms[resp.data.did] = {
+          handle: newDmInput,
+        };
+      });
+
+      newDmDialogOpen = false;
+    } catch (e) {
+      newDmError = `Could not find account with handle: @${newDmInput}`;
+    } finally {
+      newDmLoading = false;
+    }
+  }
 </script>
 
 <!-- Room Selector; TODO: Sub Menu (eg Settings) -->
 <nav class="flex flex-col gap-4 p-4 h-full w-72 bg-violet-950 rounded-lg">
-  <h1 class="text-2xl font-extrabold text-white px-2 py-1 text-ellipsis">
+  <h1
+    class="text-2xl font-extrabold text-white px-2 py-1 text-ellipsis flex items-center justify-between"
+  >
     Direct Messages
+
+    <Dialog.Root bind:open={newDmDialogOpen}>
+      <Dialog.Trigger>
+        <Icon
+          icon="ri:add-fill"
+          class="hover:scale-125 active:scale-95 transition-all duration-150"
+        />
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          transition={fade}
+          transitionConfig={{ duration: 150 }}
+          class="fixed inset-0 z-50 bg-black/80"
+        />
+        <Dialog.Content
+          class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-(--breakpoint-sm) left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
+        >
+          <Dialog.Title class="text-bold font-bold text-xl">
+            New Direct Message
+          </Dialog.Title>
+          <Separator.Root class="border border-white" />
+          <Dialog.Description />
+          {#if newDmError}
+            <div class="text-red-500">
+              {newDmError}
+            </div>
+          {/if}
+          <form class="flex flex-col gap-4" onsubmit={createDm}>
+            <input
+              bind:value={newDmInput}
+              placeholder="Handle (eg alice.bsky.social)"
+              class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
+            />
+            <Button.Root
+              class={`px-4 py-2 bg-white text-black rounded-lg  active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 ${newDmLoading ? "contrast-50" : "hover:scale-[102%]"}`}
+            >
+              Open Direct Message {#if newDmLoading}<Icon
+                  icon="ri:loader-4-fill"
+                  class="animate-spin"
+                />{/if}
+            </Button.Root>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   </h1>
   <hr />
 
@@ -41,7 +119,9 @@
 <!-- Events/Room Content -->
 <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
   <section class="flex flex-none justify-between border-b-1 pb-4">
-    <h4 class="text-white text-lg font-bold">{page.params.handle}</h4>
+    <h4 class="text-white text-lg font-bold">
+      {$index?.dms[page.params.did]?.handle}
+    </h4>
   </section>
 
   {@render children()}

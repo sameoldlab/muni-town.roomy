@@ -11,6 +11,7 @@
 
   let { children } = $props();
 
+  let loginLoading = $state(false);
   let handleInput = $state("");
   let isLoginDialogOpen = $derived(!user.session);
 
@@ -111,20 +112,28 @@
                 </Button.Root>
               </section>
             {:else}
-              <section class="flex flex-col gap-4">
+              <form
+                class="flex flex-col gap-4"
+                onsubmit={async () => {
+                  loginLoading = true;
+                  await user.loginWithHandle(handleInput);
+                }}
+              >
                 <input
-                  type="url"
                   bind:value={handleInput}
                   placeholder="Handle (eg alice.bsky.social)"
                   class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
                 />
                 <Button.Root
-                  class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
-                  onclick={async () => await user.loginWithHandle(handleInput)}
+                  class={`px-4 py-2 bg-white text-black rounded-lg  active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 ${loginLoading ? "contrast-50" : "hover:scale-[102%]"}`}
                 >
                   Login with Bluesky
+                  {#if loginLoading}<Icon
+                      icon="ri:loader-4-fill"
+                      class="animate-spin"
+                    />{/if}
                 </Button.Root>
-              </section>
+              </form>
             {/if}
           </Dialog.Content>
         </Dialog.Portal>
