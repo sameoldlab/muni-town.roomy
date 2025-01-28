@@ -132,6 +132,8 @@ let index: {
     uploadDocWhenChanged(repo, indexHandle);
     // And set the value
     value = reactiveDoc(indexHandle);
+    // Remember the index locally
+    localStorage.setItem("roomy:index", indexHandle.url);
   };
 
   if (session && agent && repo) {
@@ -154,15 +156,20 @@ let index: {
           did: agent!.assertDid,
         });
         if (!blob.success) throw "Could not download index export from PDS";
-        let indexHandle = repo.find<Index>(v.id as AutomergeUrl);
+        let indexHandle = repo.find<Index>(
+          (localStorage.getItem("roomy:index") || v.id) as AutomergeUrl,
+        );
         console.log("Loaded local index", await indexHandle.doc());
 
         const imported = repo.import<Index>(blob.data);
         let handle: DocHandle<Index>;
         if (indexHandle.docSync()) {
           console.log("Imported index from PDS", await imported.doc());
-          indexHandle.merge(imported);
-          console.log("Merged index into local", await indexHandle.doc());
+          if (indexHandle.diff(imported).length > 0) {
+            indexHandle.merge(imported);
+            await uploadIndex(repo, indexHandle.url);
+          }
+          console.log("Merged remote index into local");
           repo.delete(imported.url);
           handle = indexHandle;
         } else {
@@ -171,12 +178,19 @@ let index: {
         }
 
         uploadDocWhenChanged(repo, handle);
-        console.log("output", await handle.doc());
+        console.log("Resulting index", await handle.doc());
         value = reactiveDoc(handle);
+        localStorage.setItem("roomy:index", handle.url);
       })
-      // If we don't have an index, we need to create one.
+      // If we don't have an index on the PDS, we need to create one or load the local one.
       .catch(async () => {
-        createNewIndex(repo);
+        const indexUrl = localStorage.getItem("roomy:index");
+        if (!indexUrl) {
+          createNewIndex(repo);
+        } else {
+          value = reactiveDoc(repo.find(indexUrl as AutomergeUrl));
+          await uploadIndex(repo, indexUrl as AutomergeUrl);
+        }
       });
   }
   return {
