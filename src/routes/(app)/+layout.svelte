@@ -54,7 +54,7 @@
     <ToggleGroup.Root type="single" class="flex flex-col gap-4 items-center">
       <ToggleGroup.Item
         value="dm"
-        on:click={() => goto("/dm")}
+        onclick={() => goto("/dm")}
         class="capitalize hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white p-4 rounded-md"
       >
         <Avatar.Root>
@@ -65,6 +65,9 @@
           </Avatar.Fallback>
         </Avatar.Root>
       </ToggleGroup.Item>
+
+      <div class="border-white border-t-1 w-[80%]"></div>
+
       {#each servers as server}
         <ToggleGroup.Item
           onclick={() => goto(`/space/${server}`)}
@@ -153,6 +156,7 @@
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+
       <Dialog.Root open={isLoginDialogOpen}>
         <Dialog.Trigger
           class="hover:scale-105 active:scale-95 transition-all duration-150"
