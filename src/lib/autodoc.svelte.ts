@@ -100,7 +100,7 @@ export class Autodoc<T> {
     this.storage = storage && new StorageManager(storage);
     this.slowStorage = slowStorage && new StorageManager(slowStorage);
     this.sync = sync;
-    this.slowStorageWriteInterval = slowStorageWriteInterval || 60 * 1000;
+    this.slowStorageWriteInterval = slowStorageWriteInterval || 10 * 1000;
 
     this.start();
     onDestroy(() => {
