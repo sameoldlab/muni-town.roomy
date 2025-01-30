@@ -7,7 +7,18 @@ declare global {
     // interface PageData {}
     // interface PageState {}
     // interface Platform {}
+    
   }
+
+  // WIP Message type for Chats
+  // TODO: finalize with lexicon
+  interface ChatEvent {
+    content: string;
+    timestamp: number;
+    user: {
+      name: string;
+    };
+  };
 }
 
 export {};

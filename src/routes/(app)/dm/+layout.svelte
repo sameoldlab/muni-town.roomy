@@ -1,16 +1,16 @@
 <script lang="ts">
+  import Icon from "@iconify/svelte";
   import { Button, Dialog, Separator, ToggleGroup } from "bits-ui";
 
-  import { user } from "$lib/user.svelte";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
-  import Icon from "@iconify/svelte";
-  import indexInit from "$lib/schemas/index.bin?uint8array&base64";
   import { fade } from "svelte/transition";
+
+  import { user } from "$lib/user.svelte";
   import { Autodoc } from "$lib/autodoc.svelte";
   import type { Index } from "$lib/schemas/types";
-  import { namespacedSubstorage, RoomyPdsStorageAdapter } from "$lib/storage";
-  import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
+  import indexInit from "$lib/schemas/index.bin?uint8array&base64";
+  import { namespacedSubstorage, PdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 
@@ -19,11 +19,7 @@
       return new Autodoc<Index>({
         init: indexInit,
         storage: namespacedSubstorage(
-          new IndexedDBStorageAdapter("roomy", "autodoc"),
-          "index",
-        ),
-        slowStorage: namespacedSubstorage(
-          new RoomyPdsStorageAdapter(user.agent),
+          new PdsStorageAdapter(user.agent),
           "index",
         ),
       });
