@@ -45,7 +45,6 @@ type Chunk = { data: Uint8Array } & ChunkInfo;
 
 const garbageCollector = new FinalizationRegistry(
   (callbacks: (() => void)[]) => {
-    console.info("Garbage collecting an autodoc");
     for (const callback of callbacks) {
       callback();
     }
@@ -65,39 +64,64 @@ export class Autodoc<T> {
   storage?: AutodocStorageInterface;
   sync?: AutodocSyncChannel;
 
+  firstLoad = $state(true);
   loadedChunks: ChunkInfo[] = [];
+  loadedHeads: Automerge.next.Heads = [];
 
   constructor({ init, storage, sync }: AutodocInit) {
     this.view = Automerge.load(init);
     this.storage = storage;
     this.sync = sync;
+
     const cleanupStorageTask = this.startStorage();
     const cleanupSyncTask = this.startSync();
     garbageCollector.register(this, [cleanupStorageTask, cleanupSyncTask]);
   }
 
-  change = (changer: Automerge.ChangeFn<T>) => {
+  change(changer: Automerge.ChangeFn<T>) {
     this.view = Automerge.change(this.view, changer);
-  };
+  }
 
-  merge = (other: Doc<T>) => {
+  merge(other: Doc<T>) {
     this.view = Automerge.merge(this.view, other);
-  };
+  }
 
-  export = (): Uint8Array => {
+  heads(): Automerge.next.Heads {
+    return Automerge.getHeads(this.view);
+  }
+
+  export(): Uint8Array {
     return Automerge.save(this.view);
-  };
+  }
 
-  loadIncremental = (data: Uint8Array) => {
+  loadIncremental(data: Uint8Array) {
     this.view = Automerge.loadIncremental(this.view, data);
-  };
+  }
 
-  saveToStorage = async () => {
+  async saveToStorage() {
     if (!this.storage) throw "Cannot save to storage: storage adapter not set.";
+
+    // NOTE: copying the loaded chunks, immediately at the time of triggering the save, is very
+    // important to make sure that a concurrent call to loadFromStorage doesn't change the loaded
+    // chunks and cause us to delete chunks that we have just loaded and not included in the data
+    // being saved in this function.
+    let toDelete = [...this.loadedChunks];
+
+    const heads = this.heads();
+    const needsSave =
+      Automerge.diff(this.view, this.loadedHeads, heads).length > 0;
+
+    if (!needsSave) {
+      return;
+    }
+
     const binary = this.export();
     const hash = await sha256Base32(binary);
+
+    toDelete = toDelete.filter((x) => x.hash !== hash);
+
     await this.storage.save(["data", "snapshot", hash], binary);
-    const toDelete = [...this.loadedChunks.filter((x) => x.hash !== hash)];
+
     for (const chunk of toDelete) {
       await this.storage!.remove(["data", chunk.kind, chunk.hash]);
     }
@@ -108,9 +132,9 @@ export class Autodoc<T> {
         size: binary.length,
       },
     ];
-  };
+  }
 
-  loadFromStorage = async () => {
+  async loadFromStorage() {
     if (!this.storage) return;
 
     // Load chunks from storage
@@ -130,30 +154,46 @@ export class Autodoc<T> {
     // Load the data into our doc
     this.loadIncremental(binary);
 
-    // Update loaded chunks
+    // Update loaded chunks & heads
     this.loadedChunks = chunks.map((x) => ({ ...x, data: undefined }));
-  };
+    this.loadedHeads = this.heads();
 
-  startStorage = (): (() => void) => {
+    this.firstLoad = false;
+  }
+
+  startStorage(): () => void {
     if (!this.storage) return () => {};
-
-    const cleanupEffect = $effect.root(() => {
-      $effect(() => {
-        // Save to storage when the document changes
-        this.saveToStorage();
-      });
-    });
 
     // Spawn a task to load doc from storage
     this.loadFromStorage();
 
-    return cleanupEffect;
-  };
+    // NOTE: It is very important that we pass a weak ref into this effect so that it doesn't
+    // prevent garbage collection of `this` because it still exists in the effect callback.
+    const weakThis = new WeakRef(this);
+    const cleanupEffect = $effect.root(() => {
+      $effect(() => {
+        const self = weakThis.deref();
+        if (self && self.view && !self.firstLoad) {
+          // Save to storage when the document changes
+          self.saveToStorage();
+        }
+      });
+    });
 
-  startSync = (): (() => void) => {
+    return cleanupEffect;
+  }
+
+  startSync(): () => void {
     if (!this.sync) return () => {};
-    const cleanupEffect = $effect.root(() => {});
+    // NOTE: It is very important that we pass a weak ref into this effect so that it doesn't
+    // prevent garbage collection of `this` because it still exists in the effect callback.
+    const weakThis = new WeakRef(this);
+    const cleanupEffect = $effect.root(() => {
+      const self = weakThis.deref();
+      if (self) {
+      }
+    });
 
     return cleanupEffect;
-  };
+  }
 }

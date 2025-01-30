@@ -2,6 +2,7 @@
   "version": "4",
   "specifiers": {
     "npm:@atproto/api@~0.13.31": "0.13.31",
+    "npm:@atproto/common-web@~0.3.2": "0.3.2",
     "npm:@atproto/lexicon@~0.4.5": "0.4.5",
     "npm:@atproto/oauth-client-browser@~0.3.7": "0.3.7",
     "npm:@automerge/automerge-repo-storage-indexeddb@2.0.0-alpha.20": "2.0.0-alpha.20_typescript@5.7.3",
@@ -17,6 +18,7 @@
     "npm:base32-decode@1": "1.0.0",
     "npm:base32-encode@2": "2.0.0",
     "npm:bits-ui@0.22": "0.22.0_svelte@5.19.3__acorn@8.14.0",
+    "npm:js-base64@^3.7.7": "3.7.7",
     "npm:prettier-plugin-svelte@3.3.3": "3.3.3_prettier@3.4.2_svelte@5.19.3__acorn@8.14.0",
     "npm:prettier@3.4.2": "3.4.2",
     "npm:svelte-boring-avatars@^1.2.6": "1.2.6",
@@ -915,6 +917,9 @@
     "jose@5.9.6": {
       "integrity": "sha512-AMlnetc9+CV9asI19zHmrgS/WYsWUwCn2R7RzlbJWD7F9eWYUTGyBmU9o6PxngtLGOiDGPRu+Uc4fhKzbpteZQ=="
     },
+    "js-base64@3.7.7": {
+      "integrity": "sha512-7rCnleh0z2CkXhH67J8K1Ytz0b2Y+yxTPL+/KOJoa20hfnVQ/3/T6W/KflYI4bRHRagNeXeU2bkNGI3v1oS/lw=="
+    },
     "kleur@4.1.5": {
       "integrity": "sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ=="
     },
@@ -1295,6 +1300,7 @@
         "npm:base32-decode@1",
         "npm:base32-encode@2",
         "npm:bits-ui@0.22",
+        "npm:js-base64@^3.7.7",
         "npm:prettier-plugin-svelte@3.3.3",
         "npm:prettier@3.4.2",
         "npm:svelte-boring-avatars@^1.2.6",

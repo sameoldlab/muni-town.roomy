@@ -63,6 +63,12 @@ export const lexicons: LexiconDoc[] = [
         record: {
           type: "object",
           properties: {
+            key: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+            },
             data: {
               type: "blob",
               description:

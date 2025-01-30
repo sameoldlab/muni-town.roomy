@@ -1,5 +1,6 @@
 import type { Agent } from "@atproto/api";
 import type { AutodocStorageInterface } from "./autodoc.svelte";
+import * as base64 from "js-base64";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
 /** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
@@ -33,18 +34,18 @@ export function namespacedSubstorage(
 export class PdsStorageAdapter implements AutodocStorageInterface {
   agent: Agent;
 
+  static async buildKey(key: string[]): Promise<string> {
+    if (key.some((x) => x.includes("\0")))
+      throw "Cannot encode paths containing null bytes";
+    const data = new Uint8Array(new TextEncoder().encode(key.join("\0")));
+    const hash = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new Uint8Array(data)),
+    );
+    return base64.fromUint8Array(hash, true);
+  }
+
   constructor(agent: Agent) {
     this.agent = agent;
-  }
-
-  static buildKey(path: string[]): string {
-    if (path.some((x) => x.includes("\0")))
-      throw "Strings may not contain null bytes.";
-    return btoa(path.join("\0"));
-  }
-
-  static parseKey(key: string): string[] {
-    return atob(key).split("\0");
   }
 
   static async *listRecords(
@@ -64,21 +65,21 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
       cursor = resp.data.cursor;
 
       for (const record of resp.data.records) {
-        const uriSplit = record.uri.split("/");
-        const rkey = uriSplit[uriSplit.length - 1];
-        const key = PdsStorageAdapter.parseKey(rkey);
-
+        const rdata = record.value as {
+          key: string[];
+          data: { ref: { toString(): string } };
+        };
         let prefixMatches = true;
         for (let i = 0; i < prefix.length; i++) {
-          if (prefix[i] != key[i]) {
+          if (prefix[i] != rdata.key[i]) {
             prefixMatches = false;
             break;
           }
         }
         if (prefixMatches) {
           yield {
-            blobCid: (record.value as any).data.ref.toString(),
-            key,
+            blobCid: rdata.data.ref.toString(),
+            key: rdata.key,
           };
         }
       }
@@ -89,7 +90,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     const resp = await this.agent.com.atproto.repo.getRecord({
       collection: "town.muni.roomy.v0.store",
       repo: this.agent.assertDid,
-      rkey: PdsStorageAdapter.buildKey(key),
+      rkey: await PdsStorageAdapter.buildKey(key),
     });
     if (!resp.success) return undefined;
     const blob = await this.agent.com.atproto.sync.getBlob({
@@ -106,8 +107,9 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     const putResp = await this.agent.com.atproto.repo.putRecord({
       collection: "town.muni.roomy.v0.store",
       repo: this.agent.assertDid,
-      rkey: PdsStorageAdapter.buildKey(key),
+      rkey: await PdsStorageAdapter.buildKey(key),
       record: {
+        key,
         data: resp.data.blob,
       },
     });
@@ -117,7 +119,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     const resp = await this.agent.com.atproto.repo.deleteRecord({
       collection: "town.muni.roomy.v0.store",
       repo: this.agent.assertDid,
-      rkey: PdsStorageAdapter.buildKey(key),
+      rkey: await PdsStorageAdapter.buildKey(key),
     });
     if (!resp.success)
       throw `Error deleting record from PDS ( \`${key}\` ): ${resp}`;
@@ -144,7 +146,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
       const resp = await this.agent.com.atproto.repo.deleteRecord({
         repo: this.agent.assertDid,
         collection: "town.muni.roomy.v0.store",
-        rkey: PdsStorageAdapter.buildKey(record.key),
+        rkey: await PdsStorageAdapter.buildKey(record.key),
       });
       if (!resp.success) console.warn("Error deleting record", resp.data);
     }
