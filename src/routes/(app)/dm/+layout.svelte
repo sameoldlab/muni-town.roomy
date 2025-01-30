@@ -5,16 +5,30 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import Icon from "@iconify/svelte";
+  import indexInit from "$lib/schemas/index.bin?uint8array&base64";
   import { fade } from "svelte/transition";
+  import { Autodoc, namespacedSubstorage } from "$lib/autodoc.svelte";
+  import type { Index } from "$lib/schemas/types";
+  import { PdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 
-  let index = $derived(user.index.value);
+  let index = $derived.by(() => {
+    if (user.agent) {
+      return new Autodoc<Index>({
+        init: indexInit,
+        storage: namespacedSubstorage(
+          new PdsStorageAdapter(user.agent),
+          "index",
+        ),
+      });
+    }
+  });
 
   let dms = $derived(
-    Object.entries($index?.dms || {}).map(([did, dm]) => ({
+    Object.entries(index?.view.dms || {}).map(([did, dm]) => ({
       id: did,
-      name: dm.handle,
+      name: dm.name,
     })),
   );
 
@@ -33,9 +47,9 @@
         throw "Could not resolve";
       }
 
-      user.index.value!.change((doc) => {
+      index?.change((doc) => {
         doc.dms[resp.data.did] = {
-          handle: newDmInput,
+          name: newDmInput,
         };
       });
 
@@ -51,7 +65,9 @@
 
 <!-- Room Selector; TODO: Sub Menu (eg Settings) -->
 <nav class="flex flex-col gap-4 p-4 h-full w-72 bg-violet-950 rounded-lg">
-  <h1 class="text-2xl font-extrabold text-white px-2 py-1 text-ellipsis flex items-center justify-between">
+  <h1
+    class="text-2xl font-extrabold text-white px-2 py-1 text-ellipsis flex items-center justify-between"
+  >
     Direct Messages
   </h1>
 
@@ -59,7 +75,9 @@
 
   <Dialog.Root bind:open={newDmDialogOpen}>
     <Dialog.Trigger>
-      <Button.Root class="bg-white w-full h-fit font-medium px-4 py-2 flex gap-2 items-center justify-center rounded-lg hover:scale-105 active:scale-95 transition-all duration-150">
+      <Button.Root
+        class="bg-white w-full h-fit font-medium px-4 py-2 flex gap-2 items-center justify-center rounded-lg hover:scale-105 active:scale-95 transition-all duration-150"
+      >
         <Icon icon="ri:add-fill" class="text-lg" />
         Create DM
       </Button.Root>
@@ -98,11 +116,8 @@
           >
             Open Direct Message
             {#if newDmLoading}
-              {" "} 
-              <Icon
-                icon="ri:loader-4-fill"
-                class="animate-spin"
-              />
+              {" "}
+              <Icon icon="ri:loader-4-fill" class="animate-spin" />
             {/if}
           </Button.Root>
         </form>
@@ -128,8 +143,8 @@
 <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
   <section class="flex flex-none justify-between border-b-1 pb-4">
     <h4 class="text-white text-lg font-bold">
-      {#if $index?.dms[page.params.did]?.handle}
-        {$index?.dms[page.params.did]?.handle}
+      {#if index?.view.dms[page.params.did]?.name}
+        {index?.view.dms[page.params.did]?.name}
       {:else}
         Select Direct Message
       {/if}

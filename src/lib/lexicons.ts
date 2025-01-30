@@ -56,19 +56,13 @@ export const lexicons: LexiconDoc[] = [
 
   {
     lexicon: 1,
-    id: "town.muni.roomy.v0.index",
-    description:
-      "The id and data for the automerge document containing the user's \"index\". i.e. all of the chat rooms / direct messages they've joined.",
+    id: "town.muni.roomy.v0.store",
     defs: {
       main: {
         type: "record",
         record: {
           type: "object",
           properties: {
-            id: {
-              type: "string",
-              description: "The automerge URL of the user's index.",
-            },
             data: {
               type: "blob",
               description:

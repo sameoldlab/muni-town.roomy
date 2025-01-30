@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "format": "prettier . --write",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "generate-schemas": "deno run -A src/lib/schemas/generate.ts"
   },
   "dependencies": {
     "@atproto/api": "^0.13.31",
@@ -21,8 +22,8 @@
   },
   "devDependencies": {
     "@atproto/lexicon": "^0.4.5",
-    "@automerge/automerge-repo": "2.0.0-alpha.20",
     "@automerge/automerge-repo-storage-indexeddb": "2.0.0-alpha.20",
+    "@automerge/automerge": "2.2.8",
     "base32-decode": "^1.0.0",
     "base32-encode": "^2.0.0",
     "prettier": "3.4.2",
@@ -37,6 +38,7 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.0.0",
     "vite": "^6.0.11",
+    "vite-plugin-arraybuffer": "^0.0.8",
     "vite-plugin-top-level-await": "^1.4.4",
     "vite-plugin-wasm": "^3.4.1"
   }
