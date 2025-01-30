@@ -8,6 +8,7 @@
   import { user } from "$lib/user.svelte";
   import { encodeBase32 } from "$lib/base32";
   import { goto } from "$app/navigation";
+  import { PdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 
@@ -24,11 +25,7 @@
     deleteLoading = true;
 
     if (kind == "all") {
-      await user.agent!.com.atproto.repo.deleteRecord({
-        repo: user.agent!.assertDid,
-        collection: "town.muni.roomy.v0.index",
-        rkey: "self",
-      });
+      await new PdsStorageAdapter(user.agent!).removeRange([]);
     }
 
     localStorage.clear();
