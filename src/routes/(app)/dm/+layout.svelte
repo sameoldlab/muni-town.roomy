@@ -9,7 +9,8 @@
   import { fade } from "svelte/transition";
   import { Autodoc } from "$lib/autodoc.svelte";
   import type { Index } from "$lib/schemas/types";
-  import { namespacedSubstorage, PdsStorageAdapter } from "$lib/storage";
+  import { namespacedSubstorage, RoomyPdsStorageAdapter } from "$lib/storage";
+  import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
   let { children } = $props();
 
@@ -18,7 +19,11 @@
       return new Autodoc<Index>({
         init: indexInit,
         storage: namespacedSubstorage(
-          new PdsStorageAdapter(user.agent),
+          new IndexedDBStorageAdapter("roomy", "autodoc"),
+          "index",
+        ),
+        slowStorage: namespacedSubstorage(
+          new RoomyPdsStorageAdapter(user.agent),
           "index",
         ),
       });

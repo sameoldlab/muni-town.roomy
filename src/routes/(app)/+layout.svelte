@@ -8,7 +8,7 @@
   import { user } from "$lib/user.svelte";
   import { encodeBase32 } from "$lib/base32";
   import { goto } from "$app/navigation";
-  import { PdsStorageAdapter } from "$lib/storage";
+  import { RoomyPdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 
@@ -25,7 +25,7 @@
     deleteLoading = true;
 
     if (kind == "all") {
-      await new PdsStorageAdapter(user.agent!).removeRange([]);
+      await new RoomyPdsStorageAdapter(user.agent!).removeRange([]);
     }
 
     localStorage.clear();

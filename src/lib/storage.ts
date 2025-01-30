@@ -31,7 +31,7 @@ export function namespacedSubstorage(
   };
 }
 
-export class PdsStorageAdapter implements AutodocStorageInterface {
+export class RoomyPdsStorageAdapter implements AutodocStorageInterface {
   agent: Agent;
 
   static async buildKey(key: string[]): Promise<string> {
@@ -90,7 +90,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     const resp = await this.agent.com.atproto.repo.getRecord({
       collection: "town.muni.roomy.v0.store",
       repo: this.agent.assertDid,
-      rkey: await PdsStorageAdapter.buildKey(key),
+      rkey: await RoomyPdsStorageAdapter.buildKey(key),
     });
     if (!resp.success) return undefined;
     const blob = await this.agent.com.atproto.sync.getBlob({
@@ -107,7 +107,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     const putResp = await this.agent.com.atproto.repo.putRecord({
       collection: "town.muni.roomy.v0.store",
       repo: this.agent.assertDid,
-      rkey: await PdsStorageAdapter.buildKey(key),
+      rkey: await RoomyPdsStorageAdapter.buildKey(key),
       record: {
         key,
         data: resp.data.blob,
@@ -119,7 +119,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     const resp = await this.agent.com.atproto.repo.deleteRecord({
       collection: "town.muni.roomy.v0.store",
       repo: this.agent.assertDid,
-      rkey: await PdsStorageAdapter.buildKey(key),
+      rkey: await RoomyPdsStorageAdapter.buildKey(key),
     });
     if (!resp.success)
       throw `Error deleting record from PDS ( \`${key}\` ): ${resp}`;
@@ -128,7 +128,10 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     key: string[],
   ): Promise<{ key: string[]; data: Uint8Array | undefined }[]> {
     const records: { key: string[]; data: Uint8Array | undefined }[] = [];
-    for await (const record of PdsStorageAdapter.listRecords(this.agent, key)) {
+    for await (const record of RoomyPdsStorageAdapter.listRecords(
+      this.agent,
+      key,
+    )) {
       const resp = await this.agent.com.atproto.sync.getBlob({
         cid: record.blobCid,
         did: this.agent.assertDid,
@@ -142,40 +145,16 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
     return records;
   }
   async removeRange(key: string[]): Promise<void> {
-    for await (const record of PdsStorageAdapter.listRecords(this.agent, key)) {
+    for await (const record of RoomyPdsStorageAdapter.listRecords(
+      this.agent,
+      key,
+    )) {
       const resp = await this.agent.com.atproto.repo.deleteRecord({
         repo: this.agent.assertDid,
         collection: "town.muni.roomy.v0.store",
-        rkey: await PdsStorageAdapter.buildKey(record.key),
+        rkey: await RoomyPdsStorageAdapter.buildKey(record.key),
       });
       if (!resp.success) console.warn("Error deleting record", resp.data);
     }
-  }
-}
-
-export class LocalAndPdsStorageAdapter implements AutodocStorageInterface {
-  agent: Agent;
-  local: AutodocStorageInterface;
-
-  constructor(storeName: string, agent: Agent) {
-    this.agent = agent;
-    this.local = new IndexedDBStorageAdapter(agent.assertDid, storeName);
-  }
-  load(key: string[]): Promise<Uint8Array | undefined> {
-    throw new Error("Method not implemented.");
-  }
-  save(key: string[], data: Uint8Array): Promise<void> {
-    throw new Error("Method not implemented.");
-  }
-  remove(key: string[]): Promise<void> {
-    throw new Error("Method not implemented.");
-  }
-  loadRange(
-    key: string[],
-  ): Promise<{ key: string[]; data: Uint8Array | undefined }[]> {
-    throw new Error("Method not implemented.");
-  }
-  removeRange(key: string[]): Promise<void> {
-    throw new Error("Method not implemented.");
   }
 }

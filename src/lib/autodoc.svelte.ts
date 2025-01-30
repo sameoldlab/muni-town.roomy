@@ -1,7 +1,9 @@
 import type { Doc } from "@automerge/automerge";
 import * as Automerge from "@automerge/automerge";
 import { encodeBase32 } from "./base32";
+import { onDestroy, untrack } from "svelte";
 
+/** The realtime sync interface for `Autodoc`. */
 export interface AutodocSyncChannel {}
 
 /** Concatenate Uint8Arrays */
@@ -26,7 +28,9 @@ async function sha256Base32(data: Uint8Array): Promise<string> {
   );
 }
 
+/** A key in the storage interface. */
 type StorageKey = string[];
+/** The storage interface for `Autodoc` */
 export interface AutodocStorageInterface {
   load(key: StorageKey): Promise<Uint8Array | undefined>;
   save(key: StorageKey, data: Uint8Array): Promise<void>;
@@ -36,6 +40,7 @@ export interface AutodocStorageInterface {
   ): Promise<{ key: StorageKey; data: Uint8Array | undefined }[]>;
   removeRange(key: StorageKey): Promise<void>;
 }
+
 type ChunkInfo = {
   kind: "snapshot" | "incremental";
   hash: string;
@@ -43,39 +48,78 @@ type ChunkInfo = {
 };
 type Chunk = { data: Uint8Array } & ChunkInfo;
 
-const garbageCollector = new FinalizationRegistry(
-  (callbacks: (() => void)[]) => {
-    for (const callback of callbacks) {
-      callback();
-    }
-  },
-);
-
 type AutodocInit = {
-  /** An exported automerge document to use as the initializer for the document. */
+  /** The Autodoc export for the initial state of the document. */
   init: Uint8Array;
-  /** The storage */
+
+  /** The "fast" local storage adapter that will be synced on every update. */
   storage?: AutodocStorageInterface;
+
+  /** The "slow" probably remote storage adapter that will be synced occasionally as a backup and
+   * loaded from initially. */
+  slowStorage?: AutodocStorageInterface;
+
+  /** How often we should write the current document back to slow storage. */
+  slowStorageWriteInterval?: number;
+
+  /** The realtime network sync adapter. */
   sync?: AutodocSyncChannel;
 };
 
 export class Autodoc<T> {
+  /** The reactive view of the doc's current state. */
   view: Doc<T> = $state.raw() as Doc<T>; // Lie to the type system since we set this in the constructor;
-  storage?: AutodocStorageInterface;
+
+  /** The "fast" local storage adapter that will be synced on every update. */
+  storage?: StorageManager<T>;
+
+  /** The "slow" probably remote storage adapter that will be synced occasionally as a backup and
+   * loaded from initially. */
+  slowStorage?: StorageManager<T>;
+
+  /** The realtime network sync adapter. */
   sync?: AutodocSyncChannel;
 
+  /** Whether we are waiting for the initial load from storage. */
   firstLoad = $state(true);
-  loadedChunks: ChunkInfo[] = [];
-  loadedHeads: Automerge.next.Heads = [];
 
-  constructor({ init, storage, sync }: AutodocInit) {
+  /** The interval that slow storage should be written to when there are changes to the document. */
+  slowStorageWriteInterval: number;
+
+  /** Callbacks that must be run to stop in-progress background tasks. */
+  stopHooks: (() => void)[] = [];
+
+  constructor({
+    init,
+    storage,
+    slowStorage,
+    sync,
+    slowStorageWriteInterval,
+  }: AutodocInit) {
     this.view = Automerge.load(init);
-    this.storage = storage;
+    this.storage = storage && new StorageManager(storage);
+    this.slowStorage = slowStorage && new StorageManager(slowStorage);
     this.sync = sync;
+    this.slowStorageWriteInterval = slowStorageWriteInterval || 60 * 1000;
 
-    const cleanupStorageTask = this.startStorage();
-    const cleanupSyncTask = this.startSync();
-    garbageCollector.register(this, [cleanupStorageTask, cleanupSyncTask]);
+    this.start();
+    onDestroy(() => {
+      this.stop();
+    });
+  }
+
+  /** Start initial load and background sync tasks. */
+  start() {
+    this.stopHooks.push(this.#startStorage());
+    this.stopHooks.push(this.#startSync());
+  }
+
+  /** Stops any background tasks that are running to sync the document. */
+  stop() {
+    const hooks = [...this.stopHooks];
+    hooks.forEach((x) => x());
+    this.stopHooks = [];
+    this.firstLoad = true;
   }
 
   change(changer: Automerge.ChangeFn<T>) {
@@ -98,45 +142,74 @@ export class Autodoc<T> {
     this.view = Automerge.loadIncremental(this.view, data);
   }
 
-  async saveToStorage() {
-    if (!this.storage) throw "Cannot save to storage: storage adapter not set.";
-
-    // NOTE: copying the loaded chunks, immediately at the time of triggering the save, is very
-    // important to make sure that a concurrent call to loadFromStorage doesn't change the loaded
-    // chunks and cause us to delete chunks that we have just loaded and not included in the data
-    // being saved in this function.
-    let toDelete = [...this.loadedChunks];
-
-    const heads = this.heads();
-    const needsSave =
-      Automerge.diff(this.view, this.loadedHeads, heads).length > 0;
-
-    if (!needsSave) {
-      return;
+  async loadFromStorage() {
+    // Load from normal and slow storage
+    for (const storage of [this.storage, this.slowStorage].filter((x) => !!x)) {
+      this.view = Automerge.merge(this.view, await storage.loadFromStorage());
     }
 
-    const binary = this.export();
-    const hash = await sha256Base32(binary);
-
-    toDelete = toDelete.filter((x) => x.hash !== hash);
-
-    await this.storage.save(["data", "snapshot", hash], binary);
-
-    for (const chunk of toDelete) {
-      await this.storage!.remove(["data", chunk.kind, chunk.hash]);
-    }
-    this.loadedChunks = [
-      {
-        hash,
-        kind: "snapshot",
-        size: binary.length,
-      },
-    ];
+    // Allow the sync process to resume after first load
+    this.firstLoad = false;
   }
 
-  async loadFromStorage() {
-    if (!this.storage) return;
+  /**
+   * Save document to storage. If `includeSlow` is `true`, it will also get written to the slow
+   * storage backend.
+   * */
+  async saveToStorage(includeSlow = false) {
+    this.storage?.saveToStorage(this.view);
+    if (includeSlow) this.slowStorage?.saveToStorage(this.view);
+  }
 
+  /** Start initial storage load and reactive sync. */
+  #startStorage(): () => void {
+    untrack(() => {
+      // Spawn a task to load doc from storage
+      this.loadFromStorage();
+    });
+
+    // Create an effect to write to fast storage every time the doc changes.
+    $effect(() => {
+      if (this.view && !this.firstLoad) {
+        // Save to storage when the document changes
+        this.saveToStorage();
+      }
+    });
+
+    // Start task to periodically sync to slow storage
+    let interval: number | undefined;
+    if (this.slowStorage) {
+      interval = setInterval(() => {
+        this.slowStorage?.saveToStorage(this.view);
+      }, this.slowStorageWriteInterval) as unknown as number;
+    }
+
+    // Return the stop hook that will cleanup our interval when we're done.
+    return () => {
+      interval && clearInterval(interval);
+    };
+  }
+
+  /** Start network sync. */
+  #startSync(): () => void {
+    return () => {};
+  }
+}
+
+class StorageManager<T> {
+  /** The backing storage interface for this storage manager. */
+  storage: AutodocStorageInterface;
+
+  constructor(storage: AutodocStorageInterface) {
+    this.storage = storage;
+  }
+
+  /** The chunks that we most-recently loaded from storage. */
+  loadedChunks: ChunkInfo[] = [];
+  /** The heads that we most-recently loaded from storage. */
+  loadedHeads: Automerge.next.Heads = [];
+
+  async loadFromStorage(): Promise<Doc<T>> {
     // Load chunks from storage
     const chunks: Chunk[] = (await this.storage.loadRange(["data"]))
       .filter((x) => !!x.data)
@@ -148,52 +221,66 @@ export class Autodoc<T> {
           data: data!,
         };
       });
+
     // Concatenate the fragments
     let binary = concat(chunks.map((x) => x.data));
 
-    // Load the data into our doc
-    this.loadIncremental(binary);
+    // Load the doc data from storage
+    const loadedDoc = Automerge.loadIncremental<T>(Automerge.init(), binary);
 
     // Update loaded chunks & heads
     this.loadedChunks = chunks.map((x) => ({ ...x, data: undefined }));
-    this.loadedHeads = this.heads();
+    this.loadedHeads = Automerge.getHeads(loadedDoc);
 
-    this.firstLoad = false;
+    // Return the loaded doc
+    return loadedDoc;
   }
 
-  startStorage(): () => void {
-    if (!this.storage) return () => {};
+  async saveToStorage(doc: Doc<T>) {
+    if (!this.storage) return;
 
-    // Spawn a task to load doc from storage
-    this.loadFromStorage();
+    // NOTE: copying the loaded chunks, immediately at the time of triggering the save, is very
+    // important to make sure that a concurrent call to loadFromStorage doesn't change the loaded
+    // chunks and cause us to delete chunks that we have just loaded and not included in the data
+    // being saved in this function.
+    let toDelete = [...this.loadedChunks];
 
-    // NOTE: It is very important that we pass a weak ref into this effect so that it doesn't
-    // prevent garbage collection of `this` because it still exists in the effect callback.
-    const weakThis = new WeakRef(this);
-    const cleanupEffect = $effect.root(() => {
-      $effect(() => {
-        const self = weakThis.deref();
-        if (self && self.view && !self.firstLoad) {
-          // Save to storage when the document changes
-          self.saveToStorage();
-        }
-      });
-    });
+    // Get the heads of the current version of the document
+    const heads = Automerge.getHeads(doc);
 
-    return cleanupEffect;
-  }
+    // Check whether the current version is newer than the last version we loaded from storage.
+    const needsSave = Automerge.diff(doc, this.loadedHeads, heads).length > 0;
 
-  startSync(): () => void {
-    if (!this.sync) return () => {};
-    // NOTE: It is very important that we pass a weak ref into this effect so that it doesn't
-    // prevent garbage collection of `this` because it still exists in the effect callback.
-    const weakThis = new WeakRef(this);
-    const cleanupEffect = $effect.root(() => {
-      const self = weakThis.deref();
-      if (self) {
-      }
-    });
+    // Skip saving if it's already up-to-date
+    if (!needsSave) {
+      return;
+    }
 
-    return cleanupEffect;
+    // Export and hash the document
+    const binary = Automerge.save(doc);
+
+    // TODO: do we only need to hash the document heads and not the binary data?
+    const hash = await sha256Base32(binary);
+
+    // Just in case, make sure we don't delete the file we're about to create.
+    toDelete = toDelete.filter((x) => x.hash !== hash);
+
+    // Safe the document to storage
+    await this.storage.save(["data", "snapshot", hash], binary);
+
+    // Delete previously loaded chunks that we no longer need from storage
+    for (const chunk of toDelete) {
+      await this.storage!.remove(["data", chunk.kind, chunk.hash]);
+    }
+
+    // Update our list of loaded chunks to the snapshot we just exported.
+    this.loadedChunks = [
+      {
+        hash,
+        kind: "snapshot",
+        size: binary.length,
+      },
+    ];
+    this.loadedHeads = heads;
   }
 }
