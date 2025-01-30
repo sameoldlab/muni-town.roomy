@@ -1,5 +1,5 @@
 import * as Automerge from "npm:@automerge/automerge";
-import type { Index } from "./types.ts";
+import type { Catalog } from "./types.ts";
 
 async function exportSchema<T>(name: string, init: (doc: T) => void) {
   const doc = Automerge.init<T>({
@@ -13,6 +13,6 @@ async function exportSchema<T>(name: string, init: (doc: T) => void) {
   await Deno.writeFile(`./src/lib/schemas/${name}.bin`, initDocData);
 }
 
-exportSchema<Index>("index", (doc) => {
+exportSchema<Catalog>("catalog", (doc) => {
   doc.dms = {};
 });

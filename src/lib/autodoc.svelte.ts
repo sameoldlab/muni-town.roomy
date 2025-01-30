@@ -64,6 +64,10 @@ type AutodocInit = {
 
   /** The realtime network sync adapter. */
   sync?: AutodocSyncChannel;
+
+  /** Must be set to true if this is not used in a component, i.e. if it is instantiate in a
+   * .svelte.ts file. */
+  notInComponent?: boolean;
 };
 
 export class Autodoc<T> {
@@ -95,6 +99,7 @@ export class Autodoc<T> {
     slowStorage,
     sync,
     slowStorageWriteInterval,
+    notInComponent,
   }: AutodocInit) {
     this.view = Automerge.load(init);
     this.storage = storage && new StorageManager(storage);
@@ -103,9 +108,11 @@ export class Autodoc<T> {
     this.slowStorageWriteInterval = slowStorageWriteInterval || 10 * 1000;
 
     this.start();
-    onDestroy(() => {
-      this.stop();
-    });
+    if (!notInComponent) {
+      onDestroy(() => {
+        this.stop();
+      });
+    }
   }
 
   /** Start initial load and background sync tasks. */

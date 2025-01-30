@@ -1,5 +1,5 @@
 /** The user's index of all of the chats that they have joined. */
-export type Index = {
+export type Catalog = {
   /** Direct messages to other users. */
   dms: {
     [

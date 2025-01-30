@@ -5,29 +5,13 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { fade } from "svelte/transition";
-
+  import { g } from "$lib/global.svelte";
   import { user } from "$lib/user.svelte";
-  import { Autodoc } from "$lib/autodoc.svelte";
-  import type { Index } from "$lib/schemas/types";
-  import indexInit from "$lib/schemas/index.bin?uint8array&base64";
-  import { namespacedSubstorage, RoomyPdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 
-  let index = $derived.by(() => {
-    if (user.agent) {
-      return new Autodoc<Index>({
-        init: indexInit,
-        storage: namespacedSubstorage(
-          new RoomyPdsStorageAdapter(user.agent),
-          "index",
-        ),
-      });
-    }
-  });
-
   let dms = $derived(
-    Object.entries(index?.view.dms || {}).map(([did, dm]) => ({
+    Object.entries(g.catalog?.view.dms || {}).map(([did, dm]) => ({
       id: did,
       name: dm.name,
     })),
@@ -48,7 +32,7 @@
         throw "Could not resolve";
       }
 
-      index?.change((doc) => {
+      g.catalog?.change((doc) => {
         doc.dms[resp.data.did] = {
           name: newDmInput,
         };
@@ -144,8 +128,8 @@
 <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
   <section class="flex flex-none justify-between border-b-1 pb-4">
     <h4 class="text-white text-lg font-bold">
-      {#if index?.view.dms[page.params.did]?.name}
-        {index?.view.dms[page.params.did]?.name}
+      {#if g.catalog?.view.dms[page.params.did]?.name}
+        {g.catalog?.view.dms[page.params.did]?.name}
       {:else}
         Select Direct Message
       {/if}
