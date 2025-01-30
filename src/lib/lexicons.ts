@@ -71,8 +71,6 @@ export const lexicons: LexiconDoc[] = [
             },
             data: {
               type: "blob",
-              description:
-                "The latest known export of the automerge document for the user's index.",
             },
           },
         },
