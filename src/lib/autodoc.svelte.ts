@@ -4,33 +4,6 @@ import { encodeBase32 } from "./base32";
 
 export interface AutodocSyncChannel {}
 
-/** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
-export function namespacedSubstorage(
-  storage: AutodocStorageInterface,
-  name: string,
-): AutodocStorageInterface {
-  return {
-    load(key) {
-      return storage.load([name, ...key]);
-    },
-    async loadRange(key) {
-      return (await storage.loadRange([name, ...key])).map((x) => ({
-        key: x.key.slice(1),
-        data: x.data,
-      }));
-    },
-    remove(key) {
-      return storage.remove([name, ...key]);
-    },
-    removeRange(key) {
-      return storage.removeRange([name, ...key]);
-    },
-    save(key, value) {
-      return storage.save([name, ...key], value);
-    },
-  };
-}
-
 /** Concatenate Uint8Arrays */
 function concat(uint8arrays: Uint8Array[]) {
   const totalLength = uint8arrays.reduce(
@@ -72,7 +45,7 @@ type Chunk = { data: Uint8Array } & ChunkInfo;
 
 const garbageCollector = new FinalizationRegistry(
   (callbacks: (() => void)[]) => {
-    console.log("Garbage collecting an autodoc");
+    console.info("Garbage collecting an autodoc");
     for (const callback of callbacks) {
       callback();
     }
@@ -124,11 +97,10 @@ export class Autodoc<T> {
     const binary = this.export();
     const hash = await sha256Base32(binary);
     await this.storage.save(["data", "snapshot", hash], binary);
-    await Promise.all(
-      this.loadedChunks.map(async (chunk) => {
-        await this.storage!.remove(["data", chunk.kind, chunk.hash]);
-      }),
-    );
+    const toDelete = [...this.loadedChunks.filter((x) => x.hash !== hash)];
+    for (const chunk of toDelete) {
+      await this.storage!.remove(["data", chunk.kind, chunk.hash]);
+    }
     this.loadedChunks = [
       {
         hash,
@@ -136,6 +108,30 @@ export class Autodoc<T> {
         size: binary.length,
       },
     ];
+  };
+
+  loadFromStorage = async () => {
+    if (!this.storage) return;
+
+    // Load chunks from storage
+    const chunks: Chunk[] = (await this.storage.loadRange(["data"]))
+      .filter((x) => !!x.data)
+      .map(({ key, data }) => {
+        return {
+          kind: key[key.length - 2] == "snapshot" ? "snapshot" : "incremental",
+          hash: key[key.length - 1],
+          size: data!.length,
+          data: data!,
+        };
+      });
+    // Concatenate the fragments
+    let binary = concat(chunks.map((x) => x.data));
+
+    // Load the data into our doc
+    this.loadIncremental(binary);
+
+    // Update loaded chunks
+    this.loadedChunks = chunks.map((x) => ({ ...x, data: undefined }));
   };
 
   startStorage = (): (() => void) => {
@@ -149,27 +145,7 @@ export class Autodoc<T> {
     });
 
     // Spawn a task to load doc from storage
-    (async () => {
-      if (!this.storage) return;
-
-      // Load chunks from storage
-      const chunks: Chunk[] = (await this.storage.loadRange(["data"]))
-        .filter((x) => !!x.data)
-        .map(({ key, data }) => ({
-          kind: key[key.length - 2] == "snapshot" ? "snapshot" : "incremental",
-          hash: key[key.length - 1],
-          size: data!.length,
-          data: data!,
-        }));
-      // Concatenate the fragments
-      let binary = concat(chunks.map((x) => x.data));
-
-      // Load the data into our doc
-      this.loadIncremental(binary);
-
-      // Update loaded chunks
-      this.loadedChunks = chunks.map((x) => ({ ...x, data: undefined }));
-    })();
+    this.loadFromStorage();
 
     return cleanupEffect;
   };

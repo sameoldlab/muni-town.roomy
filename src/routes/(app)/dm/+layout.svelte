@@ -7,9 +7,9 @@
   import Icon from "@iconify/svelte";
   import indexInit from "$lib/schemas/index.bin?uint8array&base64";
   import { fade } from "svelte/transition";
-  import { Autodoc, namespacedSubstorage } from "$lib/autodoc.svelte";
+  import { Autodoc } from "$lib/autodoc.svelte";
   import type { Index } from "$lib/schemas/types";
-  import { PdsStorageAdapter } from "$lib/storage";
+  import { namespacedSubstorage, PdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 

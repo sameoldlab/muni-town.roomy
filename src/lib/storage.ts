@@ -2,6 +2,34 @@ import type { Agent } from "@atproto/api";
 import type { AutodocStorageInterface } from "./autodoc.svelte";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
+/** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
+export function namespacedSubstorage(
+  storage: AutodocStorageInterface,
+  name: string,
+): AutodocStorageInterface {
+  return {
+    load(key) {
+      return storage.load([name, ...key]);
+    },
+    async loadRange(key) {
+      const result = await storage.loadRange([name, ...key]);
+      return result.map((x) => ({
+        key: x.key.slice(1),
+        data: x.data,
+      }));
+    },
+    remove(key) {
+      return storage.remove([name, ...key]);
+    },
+    removeRange(key) {
+      return storage.removeRange([name, ...key]);
+    },
+    save(key, value) {
+      return storage.save([name, ...key], value);
+    },
+  };
+}
+
 export class PdsStorageAdapter implements AutodocStorageInterface {
   agent: Agent;
 
@@ -49,7 +77,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
         }
         if (prefixMatches) {
           yield {
-            blobCid: (record.value as any).data.ref,
+            blobCid: (record.value as any).data.ref.toString(),
             key,
           };
         }
@@ -105,7 +133,7 @@ export class PdsStorageAdapter implements AutodocStorageInterface {
       });
       if (!resp.success) console.warn("Error downloading blob", resp);
       records.push({
-        key,
+        key: record.key,
         data: resp.success ? new Uint8Array(resp.data.buffer) : undefined,
       });
     }
