@@ -10,7 +10,7 @@
   import { Autodoc } from "$lib/autodoc.svelte";
   import type { Index } from "$lib/schemas/types";
   import indexInit from "$lib/schemas/index.bin?uint8array&base64";
-  import { namespacedSubstorage, PdsStorageAdapter } from "$lib/storage";
+  import { namespacedSubstorage, RoomyPdsStorageAdapter } from "$lib/storage";
 
   let { children } = $props();
 
@@ -19,7 +19,7 @@
       return new Autodoc<Index>({
         init: indexInit,
         storage: namespacedSubstorage(
-          new PdsStorageAdapter(user.agent),
+          new RoomyPdsStorageAdapter(user.agent),
           "index",
         ),
       });
