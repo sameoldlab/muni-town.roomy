@@ -27,6 +27,7 @@
     "@types/sanitize-html": "^2.13.0",
     "base32-decode": "^1.0.0",
     "base32-encode": "^2.0.0",
+    "date-fns": "^4.1.0",
     "js-base64": "^3.7.7",
     "marked": "^15.0.6",
     "prettier": "3.4.2",

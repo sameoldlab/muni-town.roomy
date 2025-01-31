@@ -19,6 +19,7 @@
     "npm:base32-decode@1": "1.0.0",
     "npm:base32-encode@2": "2.0.0",
     "npm:bits-ui@0.22": "0.22.0_svelte@5.19.3__acorn@8.14.0",
+    "npm:date-fns@^4.1.0": "4.1.0",
     "npm:js-base64@^3.7.7": "3.7.7",
     "npm:marked@^15.0.6": "15.0.6",
     "npm:prettier-plugin-svelte@3.3.3": "3.3.3_prettier@3.4.2_svelte@5.19.3__acorn@8.14.0",
@@ -808,6 +809,9 @@
     "cssesc@3.0.0": {
       "integrity": "sha512-/Tb/JcjK111nNScGob5MNtsntNM1aCNUDipB/TkwZFhyDrrE47SOx/18wF2bbjgc3ZzCSKW1T5nt5EbFoAz/Vg=="
     },
+    "date-fns@4.1.0": {
+      "integrity": "sha512-Ukq0owbQXxa/U3EGtsdVBkR1w7KOQ5gIBqdH2hkvknzZPYvBxb/aa6E8L7tmjFtkwZBu3UXBbjIgPo/Ez4xaNg=="
+    },
     "debug@4.4.0": {
       "integrity": "sha512-6WTZ/IxCY/T6BALoZHaE4ctp9xm+Z5kY/pzYaCHRFeyVhojxlrm+46y68HA6hr0TcwEssoxNiDEUJQjfPZ/RYA==",
       "dependencies": [
@@ -1370,6 +1374,7 @@
         "npm:base32-decode@1",
         "npm:base32-encode@2",
         "npm:bits-ui@0.22",
+        "npm:date-fns@^4.1.0",
         "npm:js-base64@^3.7.7",
         "npm:marked@^15.0.6",
         "npm:prettier-plugin-svelte@3.3.3",

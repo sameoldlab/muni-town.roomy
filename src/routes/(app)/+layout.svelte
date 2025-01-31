@@ -89,9 +89,7 @@
         <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
       </Button.Root>
       <Dialog.Root>
-        <Dialog.Trigger
-          class="hover:scale-105 active:scale-95 transition-all duration-150"
-        >
+        <Dialog.Trigger> 
           <Button.Root
             class="hover:scale-105 active:scale-95 transition-all duration-150"
           >
