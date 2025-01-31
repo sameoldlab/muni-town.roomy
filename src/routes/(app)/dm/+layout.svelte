@@ -137,14 +137,30 @@
 
 <!-- Events/Room Content -->
 <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
-  <section class="flex flex-none justify-between border-b-1 pb-4">
-    <h4 class="text-white text-lg font-bold">
+  <section class="flex flex-none items-center justify-between border-b-1 pb-4">
+    <div class="flex gap-4 items-center">
       {#if g.catalog?.view.dms[page.params.did]?.name}
-        {g.catalog?.view.dms[page.params.did]?.name}
-      {:else}
-        Select Direct Message
+        <Avatar.Root class="w-8">
+          <Avatar.Image src={g.catalog.view.dms[page.params.did]?.avatar} class="rounded-full" />
+          <Avatar.Fallback>
+            <AvatarBeam name={g.catalog.view.dms[page.params.did]?.name} />
+          </Avatar.Fallback>
+        </Avatar.Root>
       {/if}
-    </h4>
+      <h4 class="text-white text-lg font-bold">
+        {#if g.catalog?.view.dms[page.params.did]?.name}
+          {g.catalog?.view.dms[page.params.did]?.name}
+        {:else}
+          Select Direct Message
+        {/if}
+      </h4>
+    </div>
+
+    <menu>
+      <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
+        <Icon icon="tabler:message-cog" color="white"  class="text-2xl" />
+      </Button.Root>
+    </menu>
   </section>
 
   {@render children()}
