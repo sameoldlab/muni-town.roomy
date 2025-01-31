@@ -9,6 +9,7 @@
   import { encodeBase32 } from "$lib/base32";
   import { goto } from "$app/navigation";
   import { RoomyPdsStorageAdapter } from "$lib/storage";
+  import { page } from "$app/state";
 
   let { children } = $props();
 
@@ -17,8 +18,17 @@
   let isLoginDialogOpen = $derived(!user.session);
   let deleteLoading = $state(false);
 
+  // TODO: set servers/rooms based on user
+  let servers = ["barrel_of_monkeys", "offishal"];
+  let currentCatalog = $state(""); 
+
   onMount(async () => {
     await user.init();
+  });
+  
+  onMount(() => {
+    if (page.params.did) { currentCatalog = "dm"; }
+    else if (page.params.space) { currentCatalog = page.params.space; }
   });
 
   async function deleteData(kind: "all" | "local") {
@@ -37,9 +47,6 @@
 
     window.location.reload();
   }
-
-  // TODO: set servers/rooms based on user
-  let servers = ["barrel_of_monkeys", "offishal"];
 </script>
 
 <!-- Container -->
@@ -48,7 +55,7 @@
   <aside
     class="flex flex-col justify-between w-20 h-full bg-violet-950 rounded-lg px-4 py-8 items-center"
   >
-    <ToggleGroup.Root type="single" class="flex flex-col gap-4 items-center">
+    <ToggleGroup.Root type="single" value={currentCatalog} class="flex flex-col gap-4 items-center">
       <ToggleGroup.Item
         value="dm"
         onclick={() => goto("/dm")}
