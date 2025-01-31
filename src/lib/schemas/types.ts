@@ -11,3 +11,23 @@ export type Catalog = {
     };
   };
 };
+
+export type Channel = {
+  messages: ChatEvent[];
+  threads: [];
+};
+
+// WIP Message type for Chats
+// TODO: finalize with lexicon
+export interface ChatEvent {
+  /** The body of the chat message as CommonMark markdown. */
+  content: string;
+  /** The JS timestamp that the chat was sent at. */
+  timestamp: number;
+  user: {
+    /** The DID of the author of the chat message. */
+    did: string;
+    /** The handle of the author of the chat message when they sent it. */
+    handle: string;
+  };
+}

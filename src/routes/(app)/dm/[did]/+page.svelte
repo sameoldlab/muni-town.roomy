@@ -1,75 +1,44 @@
 <script lang="ts">
+  import type { Autodoc } from "$lib/autodoc.svelte";
   import ChatArea from "$lib/components/ChatArea.svelte";
+  import { g } from "$lib/global.svelte";
+  import type { Channel } from "$lib/schemas/types";
+  import { page } from "$app/state";
+  import { user } from "$lib/user.svelte";
 
-  // TODO: fetch and sync messages with PDS and Automerge 
-  const messages = [
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" },
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" },
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" },
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" },
-    },
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" },
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" },
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" },
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" },
-    },
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" },
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" },
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" },
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" },
-    },
-  ];
+  let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
+
+  let input = $state("");
+
+  function sendMessage(e: SubmitEvent) {
+    e.preventDefault();
+    if (!channel) return;
+
+      console.log(channel.view);
+    channel.change((doc) => {
+      doc.messages.push({
+        content: input,
+        timestamp: Date.now(),
+        user: {
+          did: user.agent?.assertDid!,
+          handle: user.profile.data?.handle!,
+        },
+      });
+    });
+
+    input = "";
+  }
 </script>
 
-<ChatArea {messages} />
+{#if channel}
+  <ChatArea {channel} />
+{/if}
 
-<input
-  type="text"
-  class="w-full px-4 py-2 rounded-lg bg-violet-900 flex-none"
-  placeholder="Say something..."
-/>
+<form onsubmit={sendMessage}>
+  <input
+    type="text"
+    class="w-full px-4 py-2 rounded-lg bg-violet-900 flex-none text-white"
+    placeholder="Say something..."
+    bind:value={input}
+  />
+</form>

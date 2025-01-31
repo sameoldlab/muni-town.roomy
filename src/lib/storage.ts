@@ -1,32 +1,31 @@
 import type { Agent } from "@atproto/api";
 import type { AutodocStorageInterface } from "./autodoc.svelte";
 import * as base64 from "js-base64";
-import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 
 /** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
 export function namespacedSubstorage(
   storage: AutodocStorageInterface,
-  name: string,
+  ...namespaces: string[]
 ): AutodocStorageInterface {
   return {
     load(key) {
-      return storage.load([name, ...key]);
+      return storage.load([...namespaces, ...key]);
     },
     async loadRange(key) {
-      const result = await storage.loadRange([name, ...key]);
+      const result = await storage.loadRange([...namespaces, ...key]);
       return result.map((x) => ({
-        key: x.key.slice(1),
+        key: x.key.slice(namespaces.length),
         data: x.data,
       }));
     },
     remove(key) {
-      return storage.remove([name, ...key]);
+      return storage.remove([...namespaces, ...key]);
     },
     removeRange(key) {
-      return storage.removeRange([name, ...key]);
+      return storage.removeRange([...namespaces, ...key]);
     },
     save(key, value) {
-      return storage.save([name, ...key], value);
+      return storage.save([...namespaces, ...key], value);
     },
   };
 }

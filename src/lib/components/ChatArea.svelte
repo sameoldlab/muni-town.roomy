@@ -1,8 +1,10 @@
 <script lang="ts">
   import { ScrollArea } from "bits-ui";
   import ChatMessage from "./ChatMessage.svelte";
+  import type { Autodoc } from "$lib/autodoc.svelte";
+  import type { Channel } from "$lib/schemas/types";
 
-  let { messages } = $props();
+  let { channel }: { channel: Autodoc<Channel> } = $props();
 
   // ScrollArea
   let viewport: HTMLDivElement | undefined = $state();
@@ -19,7 +21,7 @@
   <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
     <ScrollArea.Content>
       <ol class="flex flex-col gap-8">
-        {#each messages as event}
+        {#each channel.view.messages as event}
           <ChatMessage {event} />
         {/each}
       </ol>
