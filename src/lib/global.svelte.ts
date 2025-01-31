@@ -36,18 +36,22 @@ $effect.root(() => {
       // Create an Autodoc for every direct message in the catalog.
       for (const [did] of Object.entries(g.catalog?.view.dms || {})) {
         if (!Object.hasOwn(g.dms, did)) {
+          let key = [did, user.agent.assertDid];
+          key.sort();
+
           g.dms[did] = new Autodoc<Channel>({
             init: channelInit,
             notInComponent: true,
+            slowStorageWriteInterval: 2000,
             storage: namespacedSubstorage(
               new IndexedDBStorageAdapter("roomy", "autodoc"),
               "dms",
-              did,
+              ...key,
             ),
             slowStorage: namespacedSubstorage(
-              new RoomyPdsStorageAdapter(user.agent),
+              new RoomyPdsStorageAdapter(user.agent, did),
               "dms",
-              did,
+              ...key,
             ),
           });
         }

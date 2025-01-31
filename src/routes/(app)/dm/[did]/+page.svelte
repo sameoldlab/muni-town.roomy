@@ -5,6 +5,7 @@
   import type { Channel } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
+  import { onDestroy } from "svelte";
 
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
 
@@ -14,7 +15,6 @@
     e.preventDefault();
     if (!channel) return;
 
-      console.log(channel.view);
     channel.change((doc) => {
       doc.messages.push({
         content: input,
@@ -28,6 +28,14 @@
 
     input = "";
   }
+
+  let interval = setInterval(() => {
+    channel.loadFromStorage();
+  }, 2000);
+
+  onDestroy(() => {
+    clearInterval(interval);
+  });
 </script>
 
 {#if channel}
