@@ -1,12 +1,13 @@
 <script lang="ts">
   import Icon from "@iconify/svelte";
-  import { Button, Dialog, Separator, ToggleGroup } from "bits-ui";
+  import { Avatar, Button, Dialog, Separator, ToggleGroup } from "bits-ui";
 
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { fade } from "svelte/transition";
   import { g } from "$lib/global.svelte";
   import { user } from "$lib/user.svelte";
+  import { AvatarBeam } from "svelte-boring-avatars";
 
   let { children } = $props();
 
@@ -14,6 +15,7 @@
     Object.entries(g.catalog?.view.dms || {}).map(([did, dm]) => ({
       id: did,
       name: dm.name,
+      avatar: dm.avatar
     })),
   );
 
@@ -32,9 +34,12 @@
         throw "Could not resolve";
       }
 
+      const profile = await user.agent!.getProfile({ actor: newDmInput });
+
       g.catalog?.change((doc) => {
         doc.dms[resp.data.did] = {
           name: newDmInput,
+          avatar: profile.data.avatar
         };
       });
 
@@ -116,8 +121,14 @@
       <ToggleGroup.Item
         onclick={() => goto(`/dm/${dm.id || ""}`)}
         value={dm.id}
-        class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
+        class="flex gap-4 items-center w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
       >
+        <Avatar.Root class="w-8">
+          <Avatar.Image src={dm.avatar} class="rounded-full" />
+          <Avatar.Fallback>
+            <AvatarBeam name={dm.name} />
+          </Avatar.Fallback>
+        </Avatar.Root>
         <h3>{dm.name}</h3>
       </ToggleGroup.Item>
     {/each}

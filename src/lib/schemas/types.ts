@@ -8,6 +8,9 @@ export type Catalog = {
     ]: {
       /** The name associated to the direct message, usually the handle of the user. */
       name: string;
+
+      /** The avatar URL string, optional */
+      avatar?: string;
     };
   };
 };
