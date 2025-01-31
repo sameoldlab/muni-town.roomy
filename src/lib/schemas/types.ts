@@ -29,5 +29,7 @@ export interface ChatEvent {
     did: string;
     /** The handle of the author of the chat message when they sent it. */
     handle: string;
+    /** The avatar URL string */
+    avatar: string;
   };
 }

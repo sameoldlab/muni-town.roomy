@@ -22,6 +22,7 @@
         user: {
           did: user.agent?.assertDid!,
           handle: user.profile.data?.handle!,
+          avatar: user.profile.data?.avatar!
         },
       });
     });
