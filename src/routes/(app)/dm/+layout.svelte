@@ -8,6 +8,7 @@
   import { g } from "$lib/global.svelte";
   import { user } from "$lib/user.svelte";
   import { AvatarBeam } from "svelte-boring-avatars";
+  import { onMount } from "svelte";
 
   let { children } = $props();
 
@@ -19,10 +20,16 @@
     })),
   );
 
+  let currentDm = $state("");
+
   let newDmDialogOpen = $state(false);
   let newDmInput = $state("");
   let newDmLoading = $state(false);
   let newDmError = $state(undefined) as undefined | string;
+
+  onMount(() => {
+    if (page.params.did) { currentDm = page.params.did; }
+  });
 
   async function createDm() {
     if (newDmLoading) return;
@@ -116,7 +123,7 @@
   </Dialog.Root>
 
   <!-- Channels -->
-  <ToggleGroup.Root type="single" class="flex flex-col gap-4 items-center">
+  <ToggleGroup.Root value={currentDm} type="single" class="flex flex-col gap-4 items-center">
     {#each dms as dm}
       <ToggleGroup.Item
         onclick={() => goto(`/dm/${dm.id || ""}`)}
