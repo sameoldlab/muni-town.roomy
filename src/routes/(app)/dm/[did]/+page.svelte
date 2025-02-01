@@ -76,21 +76,23 @@
   <Tabs.Root bind:value={tab}>
     <Tabs.List class="grid grid-cols-2 gap-4 border text-white p-1 rounded">
       <Tabs.Trigger value="chat" class="relative group">
-        <span class="flex z-50 gap-2 w-full justify-center items-center px-4 py-1">
+        <span class="flex gap-2 w-full justify-center items-center px-4 py-1">
           <Icon icon="tabler:message" color="white"  class="text-2xl" />
           <p>Chat</p>
         </span>
         {#if tab === "chat"}
 					<div
-						class="absolute z-10 left-0 top-0 h-8 w-full rounded bg-violet-800"
+						class="absolute left-0 top-0 h-8 w-full rounded bg-violet-800"
 						in:send={{ key: "active" }}
 						out:receive={{ key: "active" }}
 					></div>
 				{/if}
       </Tabs.Trigger>
-      <Tabs.Trigger value="threads" class="relative flex gap-2 w-full justify-center items-center px-4 py-1">
-        <Icon icon="material-symbols:thread-unread-rounded" color="white"  class="text-2xl" />
-        Threads
+      <Tabs.Trigger value="threads" class="relative group">
+        <span class="flex gap-2 w-full justify-center items-center px-4 py-1">
+          <Icon icon="material-symbols:thread-unread-rounded" color="white"  class="text-2xl" />
+          <p>Threads</p>
+        </span>
         {#if tab === "threads"}
 					<div
 						class="absolute left-0 top-0 h-8 w-full rounded bg-violet-800"
