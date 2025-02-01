@@ -24,7 +24,7 @@ export type Channel = {
     */
     updated_at: number;
     messages: ChatEvent[];
-  }
+  }[]
 };
 
 // WIP Message type for Chats

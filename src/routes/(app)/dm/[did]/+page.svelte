@@ -9,7 +9,7 @@
   import { Avatar, Button, Popover, Tabs, Toggle } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
-  import { fly, scale } from "svelte/transition";
+  import { fly } from "svelte/transition";
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -35,7 +35,19 @@
   });
 
   function createThread(e: SubmitEvent) {
+    e.preventDefault();
+    if (!channel) return;
 
+    channel.change((doc) => {
+      doc.threads.push({
+        title: threadTitleInput,
+        updated_at: Date.now(),
+        messages: selectedMessages
+      });
+    });
+
+    threadTitleInput = "";
+    isThreading.value = false;
   }
 
   function sendMessage(e: SubmitEvent) {
@@ -131,8 +143,8 @@
   </menu>
 </header>
 
-{#if tab === "chat"}
-  {#if channel}
+{#if channel}
+  {#if tab === "chat"}
     <ChatArea {channel} />
     <form onsubmit={sendMessage}>
       <input
@@ -143,9 +155,12 @@
       />
     </form>
   {/if}
+
+  <!-- TODO: Render Threads -->
+  {#if tab === "threads"}
+    {#each channel.view.threads as thread}
+      <button>{thread.title}</button>
+    {/each}
+  {/if}
 {/if}
 
-<!-- TODO: Render Threads -->
-{#if tab === "threads"}
-  <p>Threads</p>
-{/if}
