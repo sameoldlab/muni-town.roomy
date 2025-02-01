@@ -23,7 +23,13 @@
     selectedMessages.push(event);
   });
   setContext("removeSelectedMessage", (event: ChatEvent) => {
-    selectedMessages.filter((m) => m !== event);
+    selectedMessages = selectedMessages.filter((m) => JSON.stringify(m) !== JSON.stringify(event));
+  });
+
+  $inspect({ selectedMessages });
+
+  $effect(() => {
+    if (!isThreading.value) { selectedMessages = []; }
   });
 
   function sendMessage(e: SubmitEvent) {
