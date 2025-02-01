@@ -1,12 +1,16 @@
 <script lang="ts">
-  import { Avatar, Tooltip } from "bits-ui";
+  import { Avatar, Toggle, Tooltip } from "bits-ui";
   import type { ChatEvent } from "$lib/schemas/types";
   import { renderMarkdownSanitized } from "$lib/markdown";
   import { AvatarBeam } from "svelte-boring-avatars";
   import { format, formatDistanceToNowStrict } from "date-fns";
   import { fly } from "svelte/transition";
+  import { getContext } from "svelte";
+  import Icon from "@iconify/svelte";
 
   let { event }: { event: ChatEvent } = $props();
+  let isThreading: { value: boolean } = getContext("isThreading");
+  let isSelected = $state(false);
 </script>
 
 <li class="relative w-full h-fit flex gap-4 hover:bg-white/5 px-2 py-2.5 transition-all duration-75">
@@ -39,4 +43,10 @@
     </section>
     <p class="text-lg">{@html renderMarkdownSanitized(event.content)}</p>
   </div>
+
+  {#if isThreading.value}
+    <Toggle.Root bind:pressed={isSelected} class="absolute right-4 inset-y-0">
+      <Icon icon={isSelected ? "bx:checkbox-checked" : "bx:checkbox"} color="white" class="text-3xl" />
+    </Toggle.Root>
+  {/if}
 </li>

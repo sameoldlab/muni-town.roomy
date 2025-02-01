@@ -6,7 +6,7 @@
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { onDestroy, setContext } from "svelte";
-  import { Avatar, Button, Tabs } from "bits-ui";
+  import { Avatar, Button, Tabs, Toggle } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
 
@@ -16,7 +16,9 @@
   let info = $derived(g.catalog?.view.dms[page.params.did]);
 
   // thread maker
+  let isThreading = $state({ value: false });
   let selectedMessages: ChatEvent[] = $state([]);
+  setContext("isThreading", isThreading);
   setContext("selectMessage", (event: ChatEvent) => {
     selectedMessages.push(event);
   });
@@ -80,7 +82,10 @@
   </Tabs.Root>
 
   <menu class="flex items-center">
-    <Button.Root class="hover:scale-105 active:scale-95 transition-all duration-150">
+    <Toggle.Root bind:pressed={isThreading.value} class={`p-2 ${isThreading.value && "bg-white/10"} hover:scale-105 active:scale-95 transition-all duration-150 rounded`}> 
+      <Icon icon="tabler:needle-thread" color="white" class="text-2xl" />
+    </Toggle.Root>
+    <Button.Root class="p-2 hover:scale-105 active:scale-95 transition-all duration-150">
       <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
     </Button.Root>
   </menu>
