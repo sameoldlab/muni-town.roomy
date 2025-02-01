@@ -9,13 +9,6 @@
   import { Avatar, Button, Tabs } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
-  import { crossfade } from "svelte/transition";
-  import { cubicInOut } from "svelte/easing";
-
-  const [send, receive] = crossfade({
-    duration: 150,
-    easing: cubicInOut
-  });
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -75,31 +68,13 @@
 
   <Tabs.Root bind:value={tab}>
     <Tabs.List class="grid grid-cols-2 gap-4 border text-white p-1 rounded">
-      <Tabs.Trigger value="chat" class="relative group">
-        <span class="flex gap-2 w-full justify-center items-center px-4 py-1">
-          <Icon icon="tabler:message" color="white"  class="text-2xl" />
-          <p>Chat</p>
-        </span>
-        {#if tab === "chat"}
-					<div
-						class="absolute left-0 top-0 h-8 w-full rounded bg-violet-800"
-						in:send={{ key: "active" }}
-						out:receive={{ key: "active" }}
-					></div>
-				{/if}
+      <Tabs.Trigger value="chat" class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded">
+        <Icon icon="tabler:message" color="white"  class="text-2xl" />
+        <p>Chat</p>
       </Tabs.Trigger>
-      <Tabs.Trigger value="threads" class="relative group">
-        <span class="flex gap-2 w-full justify-center items-center px-4 py-1">
-          <Icon icon="material-symbols:thread-unread-rounded" color="white"  class="text-2xl" />
-          <p>Threads</p>
-        </span>
-        {#if tab === "threads"}
-					<div
-						class="absolute left-0 top-0 h-8 w-full rounded bg-violet-800"
-						in:send={{ key: "active" }}
-						out:receive={{ key: "active" }}
-					></div>
-				{/if}
+      <Tabs.Trigger value="threads" class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded">
+        <Icon icon="material-symbols:thread-unread-rounded" color="white"  class="text-2xl" />
+        <p>Threads</p>
       </Tabs.Trigger>
     </Tabs.List>
   </Tabs.Root>
