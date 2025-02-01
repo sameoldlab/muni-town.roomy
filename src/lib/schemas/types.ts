@@ -17,7 +17,14 @@ export type Catalog = {
 
 export type Channel = {
   messages: ChatEvent[];
-  threads: ChatEvent[];
+  threads: {
+    title: string;
+    /** Last updated. Currently timestamping on creation. 
+      * TODO: implement update existing threads
+    */
+    updated_at: number;
+    messages: ChatEvent[];
+  }
 };
 
 // WIP Message type for Chats

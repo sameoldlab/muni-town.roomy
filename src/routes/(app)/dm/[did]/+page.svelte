@@ -6,9 +6,10 @@
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { onDestroy, setContext } from "svelte";
-  import { Avatar, Button, Tabs, Toggle } from "bits-ui";
+  import { Avatar, Button, Popover, Tabs, Toggle } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
+  import { fly, scale } from "svelte/transition";
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -17,6 +18,7 @@
 
   // thread maker
   let isThreading = $state({ value: false });
+  let threadTitleInput = $state("");
   let selectedMessages: ChatEvent[] = $state([]);
   setContext("isThreading", isThreading);
   setContext("selectMessage", (event: ChatEvent) => {
@@ -29,8 +31,12 @@
   $inspect({ selectedMessages });
 
   $effect(() => {
-    if (!isThreading.value) { selectedMessages = []; }
+    if (!isThreading.value && selectedMessages.length > 0) { selectedMessages = []; }
   });
+
+  function createThread(e: SubmitEvent) {
+
+  }
 
   function sendMessage(e: SubmitEvent) {
     e.preventDefault();
@@ -88,6 +94,34 @@
   </Tabs.Root>
 
   <menu class="flex items-center">
+    {#if isThreading.value}
+      <div in:fly>
+      <Popover.Root>
+        <Popover.Trigger class="mx-2 px-4 py-2 rounded bg-violet-800 text-white">
+          Create Thread
+        </Popover.Trigger>
+
+        <Popover.Content transition={fly} sideOffset={8} class="bg-violet-800 p-4 rounded">
+          <form onsubmit={createThread} class="text-white flex flex-col gap-4">
+            <label class="flex flex-col gap-1">
+              Thread Title
+              <input 
+                bind:value={threadTitleInput} 
+                type="text" 
+                placeholder="Notes" 
+                class="border px-4 py-2 rounded"
+              />
+            </label>
+            <Popover.Close>
+              <button type="submit" class="text-black px-4 py-2 bg-white rounded w-full text-center">
+                Confirm
+              </button>
+            </Popover.Close>
+          </form>
+        </Popover.Content>
+      </Popover.Root>
+      </div>
+    {/if}
     <Toggle.Root bind:pressed={isThreading.value} class={`p-2 ${isThreading.value && "bg-white/10"} hover:scale-105 active:scale-95 transition-all duration-150 rounded`}> 
       <Icon icon="tabler:needle-thread" color="white" class="text-2xl" />
     </Toggle.Root>
