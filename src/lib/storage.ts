@@ -93,7 +93,7 @@ export class RoomyPdsStorageAdapter implements AutodocStorageInterface {
 
     do {
       const resp = await agent.com.atproto.repo.listRecords({
-        collection: "town.muni.roomy.v0.store",
+        collection: "chat.roomy.v0.store",
         repo: did,
         cursor,
         limit: 100,
@@ -127,7 +127,7 @@ export class RoomyPdsStorageAdapter implements AutodocStorageInterface {
 
   async load(key: string[]): Promise<Uint8Array | undefined> {
     const resp = await this.agent.com.atproto.repo.getRecord({
-      collection: "town.muni.roomy.v0.store",
+      collection: "chat.roomy.v0.store",
       repo: this.agent.assertDid,
       rkey: await RoomyPdsStorageAdapter.buildKey(key),
     });
@@ -144,7 +144,7 @@ export class RoomyPdsStorageAdapter implements AutodocStorageInterface {
     if (!resp.success)
       throw `Error uploading blob to PDS ( \`${key}\` ): ${resp}`;
     const putResp = await this.agent.com.atproto.repo.putRecord({
-      collection: "town.muni.roomy.v0.store",
+      collection: "chat.roomy.v0.store",
       repo: this.agent.assertDid,
       rkey: await RoomyPdsStorageAdapter.buildKey(key),
       record: {
@@ -156,7 +156,7 @@ export class RoomyPdsStorageAdapter implements AutodocStorageInterface {
   }
   async remove(key: string[]): Promise<void> {
     const resp = await this.agent.com.atproto.repo.deleteRecord({
-      collection: "town.muni.roomy.v0.store",
+      collection: "chat.roomy.v0.store",
       repo: this.agent.assertDid,
       rkey: await RoomyPdsStorageAdapter.buildKey(key),
     });
@@ -202,7 +202,7 @@ export class RoomyPdsStorageAdapter implements AutodocStorageInterface {
       if (record.did == this.agent.assertDid) {
         const resp = await this.agent.com.atproto.repo.deleteRecord({
           repo: this.agent.assertDid,
-          collection: "town.muni.roomy.v0.store",
+          collection: "chat.roomy.v0.store",
           rkey: await RoomyPdsStorageAdapter.buildKey(record.key),
         });
         if (!resp.success) console.warn("Error deleting record", resp.data);

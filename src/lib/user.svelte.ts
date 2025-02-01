@@ -37,9 +37,9 @@ let keypair: {
 
   if (session && agent) {
     agent
-      .call("town.muni.roomy.v0.key", undefined, undefined, {
+      .call("chat.roomy.v0.key", undefined, undefined, {
         headers: {
-          "atproto-proxy": "did:web:keyserver.roomy.muni.town#roomy_keyserver",
+          "atproto-proxy": "did:web:keyserver.roomy.chat#roomy_keyserver",
         },
       })
       .then((resp) => {

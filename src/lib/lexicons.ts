@@ -3,7 +3,7 @@ import { type LexiconDoc } from "@atproto/lexicon";
 export const lexicons: LexiconDoc[] = [
   {
     lexicon: 1,
-    id: "town.muni.roomy.v0.key",
+    id: "chat.roomy.v0.key",
     description: "Get your keypair from the keyserver.",
     defs: {
       main: {
@@ -28,7 +28,7 @@ export const lexicons: LexiconDoc[] = [
 
   {
     lexicon: 1,
-    id: "town.muni.roomy.v0.key.public",
+    id: "chat.roomy.v0.key.public",
     description: "Get the public for the given user from the keyserver.",
     defs: {
       main: {
@@ -56,7 +56,7 @@ export const lexicons: LexiconDoc[] = [
 
   {
     lexicon: 1,
-    id: "town.muni.roomy.v0.store",
+    id: "chat.roomy.v0.store",
     defs: {
       main: {
         type: "record",
