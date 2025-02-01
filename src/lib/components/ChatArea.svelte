@@ -20,7 +20,7 @@
 <ScrollArea.Root>
   <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
     <ScrollArea.Content>
-      <ol class="flex flex-col gap-8">
+      <ol class="flex flex-col">
         {#each channel.view.messages as event}
           <ChatMessage {event} />
         {/each}

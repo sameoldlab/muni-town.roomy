@@ -17,7 +17,7 @@ export type Catalog = {
 
 export type Channel = {
   messages: ChatEvent[];
-  threads: [];
+  threads: ChatEvent[];
 };
 
 // WIP Message type for Chats

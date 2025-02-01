@@ -9,7 +9,7 @@
   let { event }: { event: ChatEvent } = $props();
 </script>
 
-<li class="w-full h-fit flex gap-4">
+<li class="relative w-full h-fit flex gap-4 hover:bg-white/5 px-2 py-2.5 transition-all duration-75">
   <Avatar.Root class="w-12">
     <Avatar.Image src={event.user.avatar} class="rounded-full" />
     <Avatar.Fallback>
