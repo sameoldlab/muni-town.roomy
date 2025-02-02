@@ -16,7 +16,7 @@
     Object.entries(g.catalog?.view.dms || {}).map(([did, dm]) => ({
       id: did,
       name: dm.name,
-      avatar: dm.avatar
+      avatar: dm.avatar,
     })),
   );
 
@@ -28,7 +28,9 @@
   let newDmError = $state(undefined) as undefined | string;
 
   onMount(() => {
-    if (page.params.did) { currentDm = page.params.did; }
+    if (page.params.did) {
+      currentDm = page.params.did;
+    }
   });
 
   async function createDm() {
@@ -46,7 +48,7 @@
       g.catalog?.change((doc) => {
         doc.dms[resp.data.did] = {
           name: newDmInput,
-          avatar: profile.data.avatar
+          avatar: profile.data.avatar,
         };
       });
 
@@ -123,12 +125,16 @@
   </Dialog.Root>
 
   <!-- Channels -->
-  <ToggleGroup.Root value={currentDm} type="single" class="flex flex-col gap-4 items-center">
+  <ToggleGroup.Root
+    value={currentDm}
+    type="single"
+    class="flex flex-col gap-4 items-center"
+  >
     {#each dms as dm}
       <ToggleGroup.Item
         onclick={() => goto(`/dm/${dm.id || ""}`)}
         value={dm.id}
-        class="flex gap-4 items-center w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
+        class={`${(g.routerConnections[dm.id] || []).length > 0 ? "online" : ""} flex gap-4 items-center w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md`}
       >
         <Avatar.Root class="w-8">
           <Avatar.Image src={dm.avatar} class="rounded-full" />
@@ -144,6 +150,11 @@
 
 <!-- Events/Room Content -->
 <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
-
   {@render children()}
 </main>
+
+<style>
+  :global(.online img) {
+    box-shadow: greenyellow 0px 0px 7px 3px;
+  }
+</style>

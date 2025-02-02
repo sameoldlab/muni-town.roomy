@@ -24,6 +24,7 @@
     "@atproto/lexicon": "^0.4.5",
     "@automerge/automerge-repo-storage-indexeddb": "2.0.0-alpha.20",
     "@automerge/automerge": "2.2.8",
+    "@jsr/roomy-chat__router": "0.1.0-alpha.1",
     "@types/sanitize-html": "^2.13.0",
     "base32-decode": "^1.0.0",
     "base32-encode": "^2.0.0",

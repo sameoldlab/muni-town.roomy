@@ -5,13 +5,19 @@ import { namespacedSubstorage, RoomyPdsStorageAdapter } from "./storage";
 import { user } from "./user.svelte";
 import catalogInit from "$lib/schemas/catalog.bin?uint8array&base64";
 import channelInit from "$lib/schemas/channel.bin?uint8array&base64";
+import { RouterClient } from "@jsr/roomy-chat__router/client";
 
 export let g = $state({
   catalog: undefined as Autodoc<Catalog> | undefined,
   dms: {} as { [did: string]: Autodoc<Channel> },
+  router: undefined as RouterClient | undefined,
+  routerConnections: {} as { [did: string]: string[] },
 });
 
+(globalThis as any).g = g;
+
 $effect.root(() => {
+  // Update catalog
   $effect(() => {
     if (user.agent) {
       if (g.catalog) g.catalog.stop();
@@ -31,6 +37,7 @@ $effect.root(() => {
     }
   });
 
+  // Update DMs
   $effect(() => {
     if (user.agent) {
       // Create an Autodoc for every direct message in the catalog.
@@ -56,6 +63,71 @@ $effect.root(() => {
           });
         }
       }
+    }
+  });
+
+  // Update router connection
+  $effect(() => {
+    (async () => {
+      if (user.agent) {
+        // Fetch a router authentication token
+        const resp = await user.agent.call(
+          "chat.roomy.v0.router.token",
+          undefined,
+          undefined,
+          {
+            headers: {
+              "atproto-proxy": "did:web:v0.router.roomy.chat#roomy_router",
+            },
+          },
+        );
+        if (!resp.success) {
+          console.error("Error obtaining router auth token", resp);
+          return;
+        }
+        const token = resp.data.token as string;
+
+        // Open router client
+        g.router = new RouterClient(
+          token,
+          `wss://v0.router.roomy.chat/connect/as/${user.agent.assertDid}`,
+          {
+            error(e) {
+              console.log("Router connection error", e);
+            },
+            join(did, connId) {
+              const conns = g.routerConnections[did] || [];
+              conns.push(connId);
+              g.routerConnections[did] = conns;
+            },
+            leave(did, connId) {
+              if (!connId) {
+                delete g.routerConnections[did];
+              } else {
+                const conns = g.routerConnections[did] || [];
+                g.routerConnections[did] = conns.filter((x) => x !== connId);
+              }
+            },
+            open() {
+              console.log("Connected to router");
+            },
+          },
+        );
+      }
+    })();
+  });
+
+  // Update router listening when dm list changes
+  $effect(() => {
+    if (g.router && g.dms) {
+      g.router.open.then(() => {
+        if (g.router) {
+          g.router.listen(...Object.keys(g.dms));
+          for (const dm of Object.keys(g.dms)) {
+            g.router.ask(dm);
+          }
+        }
+      });
     }
   });
 });

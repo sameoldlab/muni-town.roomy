@@ -25,13 +25,17 @@
     selectedMessages.push(event);
   });
   setContext("removeSelectedMessage", (event: ChatEvent) => {
-    selectedMessages = selectedMessages.filter((m) => JSON.stringify(m) !== JSON.stringify(event));
+    selectedMessages = selectedMessages.filter(
+      (m) => JSON.stringify(m) !== JSON.stringify(event),
+    );
   });
 
   $inspect({ selectedMessages });
 
   $effect(() => {
-    if (!isThreading.value && selectedMessages.length > 0) { selectedMessages = []; }
+    if (!isThreading.value && selectedMessages.length > 0) {
+      selectedMessages = [];
+    }
   });
 
   function createThread(e: SubmitEvent) {
@@ -42,7 +46,7 @@
       doc.threads.push({
         title: threadTitleInput,
         updated_at: Date.now(),
-        messages: selectedMessages
+        messages: selectedMessages,
       });
     });
 
@@ -61,7 +65,7 @@
         user: {
           did: user.agent?.assertDid!,
           handle: user.profile.data?.handle!,
-          avatar: user.profile.data?.avatar!
+          avatar: user.profile.data?.avatar!,
         },
       });
     });
@@ -72,7 +76,7 @@
   // sync channel every 2 seconds
   let interval = setInterval(() => {
     channel.loadFromStorage();
-  }, 2000);
+  }, 10000);
 
   onDestroy(() => {
     clearInterval(interval);
@@ -94,12 +98,22 @@
 
   <Tabs.Root bind:value={tab}>
     <Tabs.List class="grid grid-cols-2 gap-4 border text-white p-1 rounded">
-      <Tabs.Trigger value="chat" class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded">
-        <Icon icon="tabler:message" color="white"  class="text-2xl" />
+      <Tabs.Trigger
+        value="chat"
+        class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded"
+      >
+        <Icon icon="tabler:message" color="white" class="text-2xl" />
         <p>Chat</p>
       </Tabs.Trigger>
-      <Tabs.Trigger value="threads" class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded">
-        <Icon icon="material-symbols:thread-unread-rounded" color="white"  class="text-2xl" />
+      <Tabs.Trigger
+        value="threads"
+        class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded"
+      >
+        <Icon
+          icon="material-symbols:thread-unread-rounded"
+          color="white"
+          class="text-2xl"
+        />
         <p>Threads</p>
       </Tabs.Trigger>
     </Tabs.List>
@@ -108,36 +122,53 @@
   <menu class="flex items-center">
     {#if isThreading.value}
       <div in:fly>
-      <Popover.Root>
-        <Popover.Trigger class="mx-2 px-4 py-2 rounded bg-violet-800 text-white">
-          Create Thread
-        </Popover.Trigger>
+        <Popover.Root>
+          <Popover.Trigger
+            class="mx-2 px-4 py-2 rounded bg-violet-800 text-white"
+          >
+            Create Thread
+          </Popover.Trigger>
 
-        <Popover.Content transition={fly} sideOffset={8} class="bg-violet-800 p-4 rounded">
-          <form onsubmit={createThread} class="text-white flex flex-col gap-4">
-            <label class="flex flex-col gap-1">
-              Thread Title
-              <input 
-                bind:value={threadTitleInput} 
-                type="text" 
-                placeholder="Notes" 
-                class="border px-4 py-2 rounded"
-              />
-            </label>
-            <Popover.Close>
-              <button type="submit" class="text-black px-4 py-2 bg-white rounded w-full text-center">
-                Confirm
-              </button>
-            </Popover.Close>
-          </form>
-        </Popover.Content>
-      </Popover.Root>
+          <Popover.Content
+            transition={fly}
+            sideOffset={8}
+            class="bg-violet-800 p-4 rounded"
+          >
+            <form
+              onsubmit={createThread}
+              class="text-white flex flex-col gap-4"
+            >
+              <label class="flex flex-col gap-1">
+                Thread Title
+                <input
+                  bind:value={threadTitleInput}
+                  type="text"
+                  placeholder="Notes"
+                  class="border px-4 py-2 rounded"
+                />
+              </label>
+              <Popover.Close>
+                <button
+                  type="submit"
+                  class="text-black px-4 py-2 bg-white rounded w-full text-center"
+                >
+                  Confirm
+                </button>
+              </Popover.Close>
+            </form>
+          </Popover.Content>
+        </Popover.Root>
       </div>
     {/if}
-    <Toggle.Root bind:pressed={isThreading.value} class={`p-2 ${isThreading.value && "bg-white/10"} hover:scale-105 active:scale-95 transition-all duration-150 rounded`}> 
+    <Toggle.Root
+      bind:pressed={isThreading.value}
+      class={`p-2 ${isThreading.value && "bg-white/10"} hover:scale-105 active:scale-95 transition-all duration-150 rounded`}
+    >
       <Icon icon="tabler:needle-thread" color="white" class="text-2xl" />
     </Toggle.Root>
-    <Button.Root class="p-2 hover:scale-105 active:scale-95 transition-all duration-150">
+    <Button.Root
+      class="p-2 hover:scale-105 active:scale-95 transition-all duration-150"
+    >
       <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
     </Button.Root>
   </menu>
@@ -163,4 +194,3 @@
     {/each}
   {/if}
 {/if}
-
