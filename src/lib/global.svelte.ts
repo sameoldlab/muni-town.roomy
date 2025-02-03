@@ -1,17 +1,24 @@
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
-import { Autodoc } from "./autodoc.svelte";
+import { Autodoc, SyncManager } from "./autodoc.svelte";
 import type { Catalog, Channel } from "./schemas/types";
-import { namespacedSubstorage, RoomyPdsStorageAdapter } from "./storage";
+import {
+  namespacedSubstorage,
+  RoomyPdsStorageAdapter,
+} from "./autodoc-storage";
 import { user } from "./user.svelte";
 import catalogInit from "$lib/schemas/catalog.bin?uint8array&base64";
 import channelInit from "$lib/schemas/channel.bin?uint8array&base64";
 import { RouterClient } from "@jsr/roomy-chat__router/client";
+import { encodeRouterSyncMsg, parseRouterSyncMsg } from "./autodoc-network";
 
 export let g = $state({
   catalog: undefined as Autodoc<Catalog> | undefined,
   dms: {} as { [did: string]: Autodoc<Channel> },
   router: undefined as RouterClient | undefined,
   routerConnections: {} as { [did: string]: string[] },
+  syncManagers: {
+    dms: {} as { [did: string]: { [connId: string]: SyncManager } },
+  },
 });
 
 (globalThis as any).g = g;
@@ -46,10 +53,10 @@ $effect.root(() => {
           let key = [did, user.agent.assertDid];
           key.sort();
 
-          g.dms[did] = new Autodoc<Channel>({
+          const doc = new Autodoc<Channel>({
             init: channelInit,
             notInComponent: true,
-            slowStorageWriteInterval: 2000,
+            slowStorageWriteInterval: 60 * 1000,
             storage: namespacedSubstorage(
               new IndexedDBStorageAdapter("roomy", "autodoc"),
               "dms",
@@ -60,13 +67,23 @@ $effect.root(() => {
               "dms",
               ...key,
             ),
+            onDocChanged() {
+              // When the doc changes, get any open sync managers for this DM and sync the changes
+              // to them.
+              const managers = Object.values(g.syncManagers.dms[did] || {});
+              for (const manager of managers) {
+                manager.sync(doc.view);
+              }
+            },
           });
+
+          g.dms[did] = doc;
         }
       }
     }
   });
 
-  // Update router connection
+  // Create router connection
   $effect(() => {
     (async () => {
       if (user.agent) {
@@ -95,17 +112,43 @@ $effect.root(() => {
             error(e) {
               console.log("Router connection error", e);
             },
+            receive(did, connId, msg) {
+              console.log("message for did", did, connId);
+              const { docId, data } = parseRouterSyncMsg(msg);
+              if (docId == "dm") {
+                const doc = g.dms[did];
+                const manager = g.syncManagers.dms[did][connId];
+                console.log(manager);
+                if (manager) {
+                  doc.view = manager.receiveMessage(doc.view, data);
+                }
+              }
+            },
             join(did, connId) {
-              const conns = g.routerConnections[did] || [];
+              if (!g.routerConnections[did]) g.routerConnections[did] = [];
+              const conns = g.routerConnections[did];
               conns.push(connId);
-              g.routerConnections[did] = conns;
+
+              const manager = new SyncManager(async (msg) => {
+                g.router?.send(
+                  did,
+                  connId,
+                  encodeRouterSyncMsg({ docId: "dm", data: msg }),
+                );
+              });
+              if (!g.syncManagers.dms[did]) g.syncManagers.dms[did] = {};
+
+              const managers = g.syncManagers.dms[did];
+              managers[connId] = manager;
             },
             leave(did, connId) {
               if (!connId) {
                 delete g.routerConnections[did];
+                delete g.syncManagers.dms[did];
               } else {
                 const conns = g.routerConnections[did] || [];
                 g.routerConnections[did] = conns.filter((x) => x !== connId);
+                delete g.syncManagers.dms[did][connId];
               }
             },
             open() {
@@ -120,9 +163,12 @@ $effect.root(() => {
   // Update router listening when dm list changes
   $effect(() => {
     if (g.router && g.dms) {
+      // When the router connection is opened
       g.router.open.then(() => {
         if (g.router) {
+          // Tell the router we want to be notified for join/leave events for all of our DMs
           g.router.listen(...Object.keys(g.dms));
+          // Ask for the current status of every user in our DMs
           for (const dm of Object.keys(g.dms)) {
             g.router.ask(dm);
           }

@@ -72,15 +72,6 @@
 
     messageInput = "";
   }
-
-  // sync channel every 2 seconds
-  let interval = setInterval(() => {
-    channel.loadFromStorage();
-  }, 10000);
-
-  onDestroy(() => {
-    clearInterval(interval);
-  });
 </script>
 
 <header class="flex flex-none items-center justify-between border-b-1 pb-4">

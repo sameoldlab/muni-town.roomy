@@ -8,7 +8,7 @@
   import { user } from "$lib/user.svelte";
   import { encodeBase32 } from "$lib/base32";
   import { goto } from "$app/navigation";
-  import { RoomyPdsStorageAdapter } from "$lib/storage";
+  import { RoomyPdsStorageAdapter } from "$lib/autodoc-storage";
   import { page } from "$app/state";
 
   let { children } = $props();
@@ -20,15 +20,18 @@
 
   // TODO: set servers/rooms based on user
   let servers = ["barrel_of_monkeys", "offishal"];
-  let currentCatalog = $state(""); 
+  let currentCatalog = $state("");
 
   onMount(async () => {
     await user.init();
   });
-  
+
   onMount(() => {
-    if (page.params.did) { currentCatalog = "dm"; }
-    else if (page.params.space) { currentCatalog = page.params.space; }
+    if (page.params.did) {
+      currentCatalog = "dm";
+    } else if (page.params.space) {
+      currentCatalog = page.params.space;
+    }
   });
 
   async function deleteData(kind: "all" | "local") {
@@ -55,7 +58,11 @@
   <aside
     class="flex flex-col justify-between w-20 h-full bg-violet-950 rounded-lg px-4 py-8 items-center"
   >
-    <ToggleGroup.Root type="single" value={currentCatalog} class="flex flex-col gap-4 items-center">
+    <ToggleGroup.Root
+      type="single"
+      value={currentCatalog}
+      class="flex flex-col gap-4 items-center"
+    >
       <ToggleGroup.Item
         value="dm"
         onclick={() => goto("/dm")}
@@ -91,12 +98,23 @@
 
     <section class="flex flex-col gap-8 items-center">
       <Button.Root
+        onclick={() => goto("/dev")}
+        class="hover:scale-105 active:scale-95 transition-all duration-150"
+      >
+        <Icon
+          icon="fluent:window-dev-tools-16-regular"
+          color="white"
+          class="text-2xl"
+        />
+      </Button.Root>
+
+      <Button.Root
         class="hover:scale-105 active:scale-95 transition-all duration-150"
       >
         <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
       </Button.Root>
       <Dialog.Root>
-        <Dialog.Trigger> 
+        <Dialog.Trigger>
           <Button.Root
             class="hover:scale-105 active:scale-95 transition-all duration-150"
           >

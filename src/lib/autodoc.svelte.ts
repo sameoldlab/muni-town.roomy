@@ -2,9 +2,15 @@ import type { Doc } from "@automerge/automerge";
 import * as Automerge from "@automerge/automerge";
 import { encodeBase32 } from "./base32";
 import { onDestroy, untrack } from "svelte";
+import { createSubscriber } from "svelte/reactivity";
 
 /** The realtime sync interface for `Autodoc`. */
-export interface AutodocSyncChannel {}
+export interface AutodocSyncChannel {
+  /** Set a callback that will be called when messages are received. */
+  setReceiver(receiver: (msg: Uint8Array) => void): void;
+  /** Send a message over the channel. */
+  send(msg: Uint8Array): Promise<void>;
+}
 
 /** Concatenate Uint8Arrays */
 function concat(uint8arrays: Uint8Array[]) {
@@ -62,17 +68,32 @@ type AutodocInit = {
   /** How often we should write the current document back to slow storage. */
   slowStorageWriteInterval?: number;
 
-  /** The realtime network sync adapter. */
-  sync?: AutodocSyncChannel;
-
   /** Must be set to true if this is not used in a component, i.e. if it is instantiate in a
    * .svelte.ts file. */
   notInComponent?: boolean;
+
+  /** Callback to run when the document changes. */
+  onDocChanged?: () => void;
 };
 
 export class Autodoc<T> {
   /** The reactive view of the doc's current state. */
-  view: Doc<T> = $state.raw() as Doc<T>; // Lie to the type system since we set this in the constructor;
+  #view: Doc<T>; // Lie to the type system since we set this in the constructor;
+
+  #subscribe: () => void;
+  #updateSubscribers: () => void = () => {};
+
+  onDocChanged?: () => void;
+
+  get view(): Doc<T> {
+    this.#subscribe();
+    return this.#view;
+  }
+  set view(value) {
+    if (this.onDocChanged) this.onDocChanged();
+    this.#updateSubscribers();
+    this.#view = value;
+  }
 
   /** The "fast" local storage adapter that will be synced on every update. */
   storage?: StorageManager<T>;
@@ -82,7 +103,9 @@ export class Autodoc<T> {
   slowStorage?: StorageManager<T>;
 
   /** The realtime network sync adapter. */
-  sync?: AutodocSyncChannel;
+  syncers: {
+    [id: string]: { channel: AutodocSyncChannel; manager?: SyncManager };
+  } = $state({});
 
   /** Whether we are waiting for the initial load from storage. */
   firstLoad = $state(true);
@@ -97,14 +120,18 @@ export class Autodoc<T> {
     init,
     storage,
     slowStorage,
-    sync,
     slowStorageWriteInterval,
     notInComponent,
+    onDocChanged,
   }: AutodocInit) {
-    this.view = Automerge.load(init);
+    this.onDocChanged = onDocChanged;
+    this.#view = Automerge.load(init);
+    this.#subscribe = createSubscriber((update) => {
+      this.#updateSubscribers = update;
+    });
+
     this.storage = storage && new StorageManager(storage);
     this.slowStorage = slowStorage && new StorageManager(slowStorage);
-    this.sync = sync;
     this.slowStorageWriteInterval = slowStorageWriteInterval || 10 * 1000;
 
     this.start();
@@ -118,7 +145,6 @@ export class Autodoc<T> {
   /** Start initial load and background sync tasks. */
   start() {
     this.stopHooks.push(this.#startStorage());
-    this.stopHooks.push(this.#startSync());
   }
 
   /** Stops any background tasks that are running to sync the document. */
@@ -185,21 +211,18 @@ export class Autodoc<T> {
 
     // Start task to periodically sync to slow storage
     let interval: number | undefined;
-    if (this.slowStorage) {
-      interval = setInterval(() => {
-        this.slowStorage?.saveToStorage(this.view);
-      }, this.slowStorageWriteInterval) as unknown as number;
-    }
+    // TODO: re-enabled slow storage sync ( I just needed it to stop running over the rate limit during dev hot reloads. )
+
+    // if (this.slowStorage) {
+    //   interval = setInterval(() => {
+    //     this.slowStorage?.saveToStorage(this.view);
+    //   }, this.slowStorageWriteInterval) as unknown as number;
+    // }
 
     // Return the stop hook that will cleanup our interval when we're done.
     return () => {
       interval && clearInterval(interval);
     };
-  }
-
-  /** Start network sync. */
-  #startSync(): () => void {
-    return () => {};
   }
 }
 
@@ -289,5 +312,40 @@ class StorageManager<T> {
       },
     ];
     this.loadedHeads = heads;
+  }
+}
+
+export class SyncManager {
+  send: (msg: Uint8Array) => void;
+  syncState: Automerge.SyncState;
+
+  constructor(send: (msg: Uint8Array) => void) {
+    this.send = send;
+    this.syncState = Automerge.initSyncState();
+  }
+
+  /** Sync doc updates to peer. */
+  async sync<T>(doc: Doc<T>) {
+    let msg: Uint8Array | null;
+    do {
+      [this.syncState, msg] = Automerge.generateSyncMessage(
+        doc,
+        this.syncState,
+      );
+      if (msg) {
+        this.send(msg);
+      }
+    } while (msg);
+  }
+
+  /** Receive a doc update from peer. */
+  receiveMessage<T>(doc: Doc<T>, msg: Uint8Array): Doc<T> {
+    const [newDoc, newState] = Automerge.receiveSyncMessage(
+      doc,
+      this.syncState,
+      msg,
+    );
+    this.syncState = newState;
+    return newDoc;
   }
 }
