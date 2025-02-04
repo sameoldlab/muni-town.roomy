@@ -9,14 +9,15 @@
   import { user } from "$lib/user.svelte";
   import { AvatarBeam } from "svelte-boring-avatars";
   import { onMount } from "svelte";
+  import { unreadCount } from "$lib/utils";
 
   let { children } = $props();
 
   let dms = $derived(
     Object.entries(g.catalog?.view.dms || {}).map(([did, dm]) => ({
-      id: did,
-      name: dm.name,
-      avatar: dm.avatar,
+      did,
+      ...dm,
+      unreadCount: unreadCount(g.dms[did].view, dm.viewedHeads || []),
     })),
   );
 
@@ -49,6 +50,7 @@
         doc.dms[resp.data.did] = {
           name: newDmInput,
           avatar: profile.data.avatar,
+          viewedHeads: [],
         };
       });
 
@@ -132,9 +134,11 @@
   >
     {#each dms as dm}
       <ToggleGroup.Item
-        onclick={() => goto(`/dm/${dm.id || ""}`)}
-        value={dm.id}
-        class={`${(g.routerConnections[dm.id] || []).length > 0 ? "online" : ""} flex gap-4 items-center w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md`}
+        onclick={() => {
+          goto(`/dm/${dm.did || ""}`);
+        }}
+        value={dm.did}
+        class={`${(g.routerConnections[dm.did] || []).length > 0 ? "online" : ""} flex gap-4 items-center w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md`}
       >
         <Avatar.Root class="w-8">
           <Avatar.Image src={dm.avatar} class="rounded-full" />
@@ -143,6 +147,11 @@
           </Avatar.Fallback>
         </Avatar.Root>
         <h3>{dm.name}</h3>
+        {#if dm.unreadCount > 0}
+          <span class="bg-red-500 text-white px-2 py-1 rounded-full">
+            {dm.unreadCount}
+          </span>
+        {/if}
       </ToggleGroup.Item>
     {/each}
   </ToggleGroup.Root>
