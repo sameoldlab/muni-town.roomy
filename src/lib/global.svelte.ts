@@ -113,12 +113,10 @@ $effect.root(() => {
               console.log("Router connection error", e);
             },
             receive(did, connId, msg) {
-              console.log("message for did", did, connId);
               const { docId, data } = parseRouterSyncMsg(msg);
               if (docId == "dm") {
                 const doc = g.dms[did];
                 const manager = g.syncManagers.dms[did][connId];
-                console.log(manager);
                 if (manager) {
                   doc.view = manager.receiveMessage(doc.view, data);
                 }

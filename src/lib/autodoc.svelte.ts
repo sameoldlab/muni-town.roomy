@@ -93,6 +93,7 @@ export class Autodoc<T> {
     if (this.onDocChanged) this.onDocChanged();
     this.#updateSubscribers();
     this.#view = value;
+    this.storage?.saveToStorage(value);
   }
 
   /** The "fast" local storage adapter that will be synced on every update. */
@@ -201,23 +202,15 @@ export class Autodoc<T> {
       this.loadFromStorage();
     });
 
-    // Create an effect to write to fast storage every time the doc changes.
-    $effect(() => {
-      if (this.view && !this.firstLoad) {
-        // Save to storage when the document changes
-        this.saveToStorage();
-      }
-    });
-
     // Start task to periodically sync to slow storage
     let interval: number | undefined;
     // TODO: re-enabled slow storage sync ( I just needed it to stop running over the rate limit during dev hot reloads. )
 
-    // if (this.slowStorage) {
-    //   interval = setInterval(() => {
-    //     this.slowStorage?.saveToStorage(this.view);
-    //   }, this.slowStorageWriteInterval) as unknown as number;
-    // }
+    if (this.slowStorage) {
+      interval = setInterval(() => {
+        this.slowStorage?.saveToStorage(this.view);
+      }, this.slowStorageWriteInterval) as unknown as number;
+    }
 
     // Return the stop hook that will cleanup our interval when we're done.
     return () => {
