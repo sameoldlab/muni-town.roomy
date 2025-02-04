@@ -7,6 +7,7 @@
   import { fly } from "svelte/transition";
   import { getContext } from "svelte";
   import { decodeTime } from "ulidx";
+  import { getProfile } from "$lib/profile.svelte";
 
   let { id, message }: { id: Ulid; message: Message } = $props();
   let isSelected = $state(false);
@@ -24,6 +25,8 @@
     }
   }
 
+  let profile = getProfile(message.author);
+
   $effect(() => {
     if (!isThreading.value) {
       isSelected = false;
@@ -35,15 +38,15 @@
   class="relative w-full h-fit flex gap-4 hover:bg-white/5 px-2 py-2.5 transition-all duration-75"
 >
   <Avatar.Root class="w-12">
-    <Avatar.Image src={message.author} class="rounded-full" />
+    <Avatar.Image src={profile.avatarUrl} class="rounded-full" />
     <Avatar.Fallback>
-      <AvatarBeam name={message.author} />
+      <AvatarBeam name={profile.handle} />
     </Avatar.Fallback>
   </Avatar.Root>
 
   <div class="flex flex-col gap-2 text-white">
     <section class="flex gap-2">
-      <h5 class="font-bold">{message.author}</h5>
+      <h5 class="font-bold">{profile.handle}</h5>
       <Tooltip.Root openDelay={300}>
         <Tooltip.Trigger>
           <time class="text-zinc-400 cursor-context-menu">
