@@ -184,13 +184,15 @@
 
   <!-- TODO: Render Threads -->
   {#if tab === "threads"}
-    {#each Object.entries(channel.view.threads) as [id, thread] (id)}
-      <div class="p-3 border-white border-solid border-2 rounded-md">
-        <h2 class="text-white text-2xl mb-1">{thread.title}</h2>
-        {#each thread.timeline as id}
-          <ChatMessage {id} message={channel.view.messages[id]} />
-        {/each}
-      </div>
-    {/each}
+    <div class="overflow-y-auto px-2 gap-3 flex flex-col">
+      {#each Object.entries(channel.view.threads) as [id, thread] (id)}
+        <div class="p-3 border-white border-solid border-2 rounded-md">
+          <h2 class="text-white text-2xl mb-1">{thread.title}</h2>
+          {#each thread.timeline as id}
+            <ChatMessage {id} message={channel.view.messages[id]} />
+          {/each}
+        </div>
+      {/each}
+    </div>
   {/if}
 {/if}
