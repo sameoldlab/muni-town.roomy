@@ -15,31 +15,24 @@ export type Catalog = {
   };
 };
 
-export type Channel = {
-  messages: ChatEvent[];
-  threads: {
-    title: string;
-    /** Last updated. Currently timestamping on creation. 
-      * TODO: implement update existing threads
-    */
-    updated_at: number;
-    messages: ChatEvent[];
-  }[]
+export type Ulid = string;
+export type Did = string;
+
+export type Message = {
+  author: Did;
+  content: string;
+  reactions: { [did: Did]: string };
 };
 
-// WIP Message type for Chats
-// TODO: finalize with lexicon
-export interface ChatEvent {
-  /** The body of the chat message as CommonMark markdown. */
-  content: string;
-  /** The JS timestamp that the chat was sent at. */
-  timestamp: number;
-  user: {
-    /** The DID of the author of the chat message. */
-    did: string;
-    /** The handle of the author of the chat message when they sent it. */
-    handle: string;
-    /** The avatar URL string */
-    avatar: string;
-  };
-}
+export type Thread = {
+  title: string;
+  timeline: Ulid[];
+};
+
+export type Channel = {
+  name: string;
+  description: string;
+  messages: { [ulid: Ulid]: Message };
+  threads: { [ulid: Ulid]: Thread };
+  timeline: Ulid[];
+};

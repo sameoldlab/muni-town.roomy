@@ -2,14 +2,16 @@
   import type { Autodoc } from "$lib/autodoc.svelte";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
-  import type { Channel, ChatEvent } from "$lib/schemas/types";
+  import type { Channel, Message, Ulid } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
-  import { onDestroy, setContext } from "svelte";
+  import { setContext } from "svelte";
   import { Avatar, Button, Popover, Tabs, Toggle } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
   import { fly } from "svelte/transition";
+  import { decodeTime, ulid } from "ulidx";
+  import ChatMessage from "$lib/components/ChatMessage.svelte";
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -19,15 +21,13 @@
   // thread maker
   let isThreading = $state({ value: false });
   let threadTitleInput = $state("");
-  let selectedMessages: ChatEvent[] = $state([]);
+  let selectedMessages: Ulid[] = $state([]);
   setContext("isThreading", isThreading);
-  setContext("selectMessage", (event: ChatEvent) => {
-    selectedMessages.push(event);
+  setContext("selectMessage", (message: Ulid) => {
+    selectedMessages.push(message);
   });
-  setContext("removeSelectedMessage", (event: ChatEvent) => {
-    selectedMessages = selectedMessages.filter(
-      (m) => JSON.stringify(m) !== JSON.stringify(event),
-    );
+  setContext("removeSelectedMessage", (message: Ulid) => {
+    selectedMessages = selectedMessages.filter((m) => m != message);
   });
 
   $inspect({ selectedMessages });
@@ -43,11 +43,15 @@
     if (!channel) return;
 
     channel.change((doc) => {
-      doc.threads.push({
+      const id = ulid();
+      const timeline = [];
+      for (const id of selectedMessages) {
+        timeline.push(`${id}`);
+      }
+      doc.threads[id] = {
         title: threadTitleInput,
-        updated_at: Date.now(),
-        messages: selectedMessages,
-      });
+        timeline,
+      };
     });
 
     threadTitleInput = "";
@@ -59,15 +63,15 @@
     if (!channel) return;
 
     channel.change((doc) => {
-      doc.messages.push({
+      if (!user.agent) return;
+
+      const id = ulid();
+      doc.messages[id] = {
+        author: user.agent.assertDid,
+        reactions: {},
         content: messageInput,
-        timestamp: Date.now(),
-        user: {
-          did: user.agent?.assertDid!,
-          handle: user.profile.data?.handle!,
-          avatar: user.profile.data?.avatar!,
-        },
-      });
+      };
+      doc.timeline.push(id);
     });
 
     messageInput = "";
@@ -180,8 +184,13 @@
 
   <!-- TODO: Render Threads -->
   {#if tab === "threads"}
-    {#each channel.view.threads as thread}
-      <button>{thread.title}</button>
+    {#each Object.entries(channel.view.threads) as [id, thread] (id)}
+      <div class="p-3 border-white border-solid border-2 rounded-md">
+        <h2 class="text-white text-2xl mb-1">{thread.title}</h2>
+        {#each thread.timeline as id}
+          <ChatMessage {id} message={channel.view.messages[id]} />
+        {/each}
+      </div>
     {/each}
   {/if}
 {/if}

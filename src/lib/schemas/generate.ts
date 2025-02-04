@@ -19,7 +19,7 @@ async function exportSchema<T>(name: string, init: (doc: T) => void) {
 // generate-schemas` to run this generator and create a schema file.
 //
 // The code below is commented out because it is a **breaking change** to re-generate a schema.
-// 
+//
 // Even with the same code the initial schema has some different data and changing it will cause
 // existing documents using that schema to end up with "duplicate seq" or something similar.
 //
@@ -33,6 +33,9 @@ async function exportSchema<T>(name: string, init: (doc: T) => void) {
 // });
 
 // exportSchema<Channel>("channel", (doc) => {
-//   doc.messages = [];
-//   doc.threads = [];
+//   doc.name = "";
+//   doc.description = "";
+//   doc.messages = {};
+//   doc.threads = {};
+//   doc.timeline = [];
 // });

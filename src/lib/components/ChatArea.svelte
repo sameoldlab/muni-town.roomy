@@ -21,8 +21,8 @@
   <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
     <ScrollArea.Content>
       <ol class="flex flex-col">
-        {#each channel.view.messages as event}
-          <ChatMessage {event} />
+        {#each channel.view.timeline as id (id)}
+          <ChatMessage {id} message={channel.view.messages[id]} />
         {/each}
       </ol>
     </ScrollArea.Content>
