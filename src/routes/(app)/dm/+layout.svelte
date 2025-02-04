@@ -17,7 +17,9 @@
     Object.entries(g.catalog?.view.dms || {}).map(([did, dm]) => ({
       did,
       ...dm,
-      unreadCount: unreadCount(g.dms[did].view, dm.viewedHeads || []),
+      unreadCount: g.dms[did]
+        ? unreadCount(g.dms[did].view, dm.viewedHeads || [])
+        : 0,
     })),
   );
 

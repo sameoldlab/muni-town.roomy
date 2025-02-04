@@ -1,22 +1,8 @@
 import { Agent } from "@atproto/api";
 import type { AutodocStorageInterface } from "./autodoc.svelte";
 import * as base64 from "js-base64";
-import type { DidDocument } from "@atproto/oauth-client-browser";
-
-const handleCache: { [did: string]: DidDocument } = {};
-
-export async function resolveDid(
-  did: string,
-): Promise<DidDocument | undefined> {
-  if (handleCache[did]) return handleCache[did];
-  try {
-    const resp = await fetch(`https://plc.directory/${did}`);
-    const json = await resp.json();
-    return json;
-  } catch (_e) {
-    // Ignore error
-  }
-}
+import { resolveDid } from "./utils";
+import { decrypt, encrypt } from "./encryption";
 
 /** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
 export function namespacedSubstorage(
@@ -42,6 +28,34 @@ export function namespacedSubstorage(
     },
     save(key, value) {
       return storage.save([...namespaces, ...key], value);
+    },
+  };
+}
+
+export function encryptedStorage(
+  encryptionKey: Uint8Array,
+  storage: AutodocStorageInterface,
+): AutodocStorageInterface {
+  return {
+    async load(key) {
+      const encrypted = await storage.load(key);
+      return encrypted && decrypt(encryptionKey, encrypted);
+    },
+    async loadRange(key) {
+      const result = await storage.loadRange(key);
+      return result.map((x) => ({
+        key: x.key,
+        data: x.data && decrypt(encryptionKey, x.data),
+      }));
+    },
+    remove(key) {
+      return storage.remove(key);
+    },
+    removeRange(key) {
+      return storage.removeRange(key);
+    },
+    save(key, value) {
+      return storage.save(key, encrypt(encryptionKey, value));
     },
   };
 }

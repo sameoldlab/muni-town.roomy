@@ -45,7 +45,7 @@ let keypair: {
       .then((resp) => {
         value = {
           publicKey: new Uint8Array(decodeBase32(resp.data.publicKey)),
-          privateKey: new Uint8Array(decodeBase32(resp.data.publicKey)),
+          privateKey: new Uint8Array(decodeBase32(resp.data.privateKey)),
         };
       });
   }

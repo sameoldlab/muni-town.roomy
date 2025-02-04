@@ -2,6 +2,7 @@ import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-index
 import { Autodoc, SyncManager } from "./autodoc.svelte";
 import type { Catalog, Channel } from "./schemas/types";
 import {
+  encryptedStorage,
   namespacedSubstorage,
   RoomyPdsStorageAdapter,
 } from "./autodoc-storage";
@@ -10,6 +11,7 @@ import catalogInit from "$lib/schemas/catalog.bin?uint8array&base64";
 import channelInit from "$lib/schemas/channel.bin?uint8array&base64";
 import { RouterClient } from "@jsr/roomy-chat__router/client";
 import { encodeRouterSyncMsg, parseRouterSyncMsg } from "./autodoc-network";
+import { decrypt, encrypt, getSharedSecret } from "./encryption";
 
 export let g = $state({
   catalog: undefined as Autodoc<Catalog> | undefined,
@@ -46,38 +48,50 @@ $effect.root(() => {
 
   // Update DMs
   $effect(() => {
-    if (user.agent) {
+    if (user.agent && user.keypair.value) {
       // Create an Autodoc for every direct message in the catalog.
       for (const [did] of Object.entries(g.catalog?.view.dms || {})) {
         if (!Object.hasOwn(g.dms, did)) {
-          let key = [did, user.agent.assertDid];
-          key.sort();
+          (async () => {
+            if (!(user.agent && user.keypair.value)) return;
 
-          const doc = new Autodoc<Channel>({
-            init: channelInit,
-            notInComponent: true,
-            slowStorageWriteInterval: 60 * 1000,
-            storage: namespacedSubstorage(
-              new IndexedDBStorageAdapter("roomy", "autodoc"),
-              "dms",
-              ...key,
-            ),
-            slowStorage: namespacedSubstorage(
-              new RoomyPdsStorageAdapter(user.agent, did),
-              "dms",
-              ...key,
-            ),
-            onDocChanged() {
-              // When the doc changes, get any open sync managers for this DM and sync the changes
-              // to them.
-              const managers = Object.values(g.syncManagers.dms[did] || {});
-              for (const manager of managers) {
-                manager.sync(doc.view);
-              }
-            },
-          });
+            let key = [did, user.agent.assertDid];
+            key.sort();
 
-          g.dms[did] = doc;
+            const encryptionKey = await getSharedSecret(
+              user.keypair.value.privateKey,
+              did,
+            );
+
+            const doc = new Autodoc<Channel>({
+              init: channelInit,
+              notInComponent: true,
+              slowStorageWriteInterval: 60 * 1000,
+              storage: namespacedSubstorage(
+                new IndexedDBStorageAdapter("roomy", "autodoc"),
+                "dms",
+                ...key,
+              ),
+              slowStorage: encryptedStorage(
+                encryptionKey,
+                namespacedSubstorage(
+                  new RoomyPdsStorageAdapter(user.agent, did),
+                  "dms",
+                  ...key,
+                ),
+              ),
+              onDocChanged() {
+                // When the doc changes, get any open sync managers for this DM and sync the changes
+                // to them.
+                const managers = Object.values(g.syncManagers.dms[did] || {});
+                for (const manager of managers) {
+                  manager.sync(doc.view);
+                }
+              },
+            });
+
+            g.dms[did] = doc;
+          })();
         }
       }
     }
@@ -86,7 +100,7 @@ $effect.root(() => {
   // Create router connection
   $effect(() => {
     (async () => {
-      if (user.agent) {
+      if (user.agent && user.keypair.value) {
         // Fetch a router authentication token
         const resp = await user.agent.call(
           "chat.roomy.v0.router.token",
@@ -112,8 +126,13 @@ $effect.root(() => {
             error(e) {
               console.log("Router connection error", e);
             },
-            receive(did, connId, msg) {
-              const { docId, data } = parseRouterSyncMsg(msg);
+            async receive(did, connId, msg) {
+              const encryptionKey = await getSharedSecret(
+                user.keypair.value!.privateKey,
+                did,
+              );
+              const { docId, data: encryptedData } = parseRouterSyncMsg(msg);
+              const data = decrypt(encryptionKey, encryptedData);
               if (docId == "dm") {
                 const doc = g.dms[did];
                 const manager = g.syncManagers.dms[did][connId];
@@ -122,16 +141,24 @@ $effect.root(() => {
                 }
               }
             },
-            join(did, connId) {
+            async join(did, connId) {
               if (!g.routerConnections[did]) g.routerConnections[did] = [];
               const conns = g.routerConnections[did];
               conns.push(connId);
+
+              const encryptionKey = await getSharedSecret(
+                user.keypair.value!.privateKey,
+                did,
+              );
 
               const manager = new SyncManager(async (msg) => {
                 g.router?.send(
                   did,
                   connId,
-                  encodeRouterSyncMsg({ docId: "dm", data: msg }),
+                  encodeRouterSyncMsg({
+                    docId: "dm",
+                    data: encrypt(encryptionKey, msg),
+                  }),
                 );
               });
               if (!g.syncManagers.dms[did]) g.syncManagers.dms[did] = {};
