@@ -29,6 +29,7 @@ export type Did = string;
 export type Message = {
   author: Did;
   content: string;
+  replyTo?: Ulid;
   reactions: { [did: Did]: string };
 };
 
