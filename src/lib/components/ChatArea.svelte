@@ -11,7 +11,7 @@
 
   // Go to the end of the ScrollArea
   $effect(() => {
-    if (viewport) {
+    if (viewport && channel.view.messages) {
       viewport.scrollTop = viewport.scrollHeight;
     }
   });
