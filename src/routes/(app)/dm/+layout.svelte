@@ -10,6 +10,7 @@
   import { AvatarBeam } from "svelte-boring-avatars";
   import { onMount } from "svelte";
   import { unreadCount } from "$lib/utils";
+  import { RichText } from "@atproto/api";
 
   let { children } = $props();
 
@@ -26,6 +27,7 @@
   let currentDm = $state("");
 
   let newDmDialogOpen = $state(false);
+  let sendBlueSkyDMInvite = $state(false);
   let newDmInput = $state("");
   let newDmLoading = $state(false);
   let newDmError = $state(undefined) as undefined | string;
@@ -47,6 +49,39 @@
       }
 
       const profile = await user.agent!.getProfile({ actor: newDmInput });
+
+      if (sendBlueSkyDMInvite && user.agent) {
+        const inviteUrl = `${page.url.protocol}//${page.url.host}/invite/dm/${user.agent.assertDid}`;
+        const headers = {
+          headers: {
+            "atproto-proxy": "did:web:api.bsky.chat#bsky_chat",
+          },
+        };
+        const convoResp = await user.agent.chat.bsky.convo.getConvoForMembers(
+          {
+            members: [user.agent.assertDid, resp.data.did],
+          },
+          headers,
+        );
+        if (!convoResp.success)
+          throw new Error("Could not get bsky chat for sending invite");
+        const { convo } = convoResp.data;
+        const rt = new RichText({
+          text: `Invite to Roomy chatroom: ${inviteUrl}`,
+        });
+        rt.detectFacets(user.agent);
+
+        user.agent.chat.bsky.convo.sendMessage(
+          {
+            convoId: convo.id,
+            message: {
+              text: rt.text,
+              facets: rt.facets,
+            },
+          },
+          headers,
+        );
+      }
 
       g.catalog?.change((doc) => {
         doc.dms[resp.data.did] = {
@@ -113,6 +148,16 @@
             placeholder="Handle (eg alice.bsky.social)"
             class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
           />
+          <label class="flex items-center justify-start">
+            Send BlueSky DM With Invite Link
+
+            <input
+              type="checkbox"
+              bind:checked={sendBlueSkyDMInvite}
+              placeholder="Handle (eg alice.bsky.social)"
+              class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
+            />
+          </label>
           <Button.Root
             disabled={!newDmInput}
             class={`px-4 py-2 bg-white text-black rounded-lg disabled:bg-white/50 active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 ${newDmLoading ? "contrast-50" : "hover:scale-[102%]"}`}

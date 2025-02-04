@@ -102,6 +102,21 @@
     <h4 class="text-white text-lg font-bold">
       {info?.name}
     </h4>
+    <Button.Root
+      title="Copy invite link"
+      class="p-2 hover:scale-105 active:scale-95 transition-all duration-150"
+      onclick={() => {
+        navigator.clipboard.writeText(
+          `${page.url.protocol}//${page.url.host}/invite/dm/${user.agent?.assertDid}`,
+        );
+      }}
+    >
+      <Icon
+        icon="icon-park-outline:copy-link"
+        color="white"
+        font-size="1.75em"
+      />
+    </Button.Root>
   </div>
 
   <Tabs.Root bind:value={tab}>
