@@ -52,6 +52,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Roomy</title>
+</svelte:head>
+
 <!-- Container -->
 <div class="flex gap-4 p-4 bg-violet-900 w-screen h-screen">
   <!-- Server Bar -->
