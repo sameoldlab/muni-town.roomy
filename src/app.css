@@ -19,3 +19,8 @@
     border-color: var(--color-gray-200, currentColor);
   }
 }
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #5B009C #300051;
+}
