@@ -10,7 +10,6 @@
     "npm:@automerge/automerge-repo-storage-indexeddb@2.0.0-alpha.20": "2.0.0-alpha.20_typescript@5.7.3",
     "npm:@automerge/automerge-repo@2.0.0-alpha.20": "2.0.0-alpha.20_typescript@5.7.3",
     "npm:@automerge/automerge@2.2.8": "2.2.8",
-    "npm:@automerge/automerge@3.0.0-preview.2": "3.0.0-preview.2",
     "npm:@iconify/svelte@^4.2.0": "4.2.0_svelte@5.19.3__acorn@8.14.0",
     "npm:@jsr/roomy-chat__router@0.1.0-alpha.1": "0.1.0-alpha.1",
     "npm:@noble/curves@^1.8.1": "1.8.1",
@@ -263,7 +262,7 @@
     "@automerge/automerge-repo@2.0.0-alpha.20_typescript@5.7.3": {
       "integrity": "sha512-9YQcSBbcF3g2z7omH7FwaaLmmGNl7e+V4yK7t1hQFCsKJTD6q4XtP8b2cyedYlNrBuZHKLLuw7Bg9I7Fe9LBbQ==",
       "dependencies": [
-        "@automerge/automerge@2.2.8",
+        "@automerge/automerge",
         "bs58check",
         "cbor-x",
         "debug@4.4.0",
@@ -277,12 +276,6 @@
     },
     "@automerge/automerge@2.2.8": {
       "integrity": "sha512-kP6Z9lIkNeIGe/jhF8SUQAgUMwVjtXCBL0eZEgQGCoWvPNTPcg8fnQco28XkYBrfkkuqiEUAbdHhJmSp0y79ug==",
-      "dependencies": [
-        "uuid@9.0.1"
-      ]
-    },
-    "@automerge/automerge@3.0.0-preview.2": {
-      "integrity": "sha512-3DEjHXsUoguEZI2zyHCc7P7RCxNgxII+9eUddCb4cXfwU2RWCp7mjCdiY5wvIdUJS4JCIcRgJJDp9oopZmi6QA==",
       "dependencies": [
         "uuid@9.0.1"
       ]
@@ -2113,7 +2106,7 @@
         "npm:@atproto/lexicon@~0.4.5",
         "npm:@atproto/oauth-client-browser@~0.3.7",
         "npm:@automerge/automerge-repo-storage-indexeddb@2.0.0-alpha.20",
-        "npm:@automerge/automerge@3.0.0-preview.2",
+        "npm:@automerge/automerge@2.2.8",
         "npm:@iconify/svelte@^4.2.0",
         "npm:@jsr/roomy-chat__router@0.1.0-alpha.1",
         "npm:@noble/curves@^1.8.1",

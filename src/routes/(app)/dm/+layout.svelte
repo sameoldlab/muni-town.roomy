@@ -94,7 +94,7 @@
       newDmDialogOpen = false;
       newDmInput = "";
     } catch (e) {
-      newDmError = `Could not find account with handle: @${newDmInput}`;
+      newDmError = (e as Error).message;
     } finally {
       newDmLoading = false;
     }
@@ -142,21 +142,21 @@
           </Dialog.Description>
         {/if}
 
-        <form class="flex flex-col gap-4" onsubmit={createDm}>
+        <form class="flex flex-col gap-4 w-full" onsubmit={createDm}>
           <input
             bind:value={newDmInput}
             placeholder="Handle (eg alice.bsky.social)"
             class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
           />
-          <label class="flex items-center justify-start">
-            Send BlueSky DM With Invite Link
-
+          <label class="flex gap-4 items-center justify-start w-full">
             <input
               type="checkbox"
               bind:checked={sendBlueSkyDMInvite}
               placeholder="Handle (eg alice.bsky.social)"
-              class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
+              class=""
             />
+
+            Send BlueSky DM With Invite Link
           </label>
           <Button.Root
             disabled={!newDmInput}
