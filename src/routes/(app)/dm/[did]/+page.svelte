@@ -43,9 +43,9 @@
     const did = page.params.did!;
     const latestHeads = channel?.heads();
     untrack(() => {
-      if (g.catalog?.view.dms[did].viewedHeads !== latestHeads) {
+      if (g.catalog?.view.dms[did]?.viewedHeads !== latestHeads) {
         g.catalog?.change((doc) => {
-          doc.dms[did].viewedHeads = latestHeads;
+          doc.dms[did].viewedHeads = latestHeads || [];
         });
       }
     });

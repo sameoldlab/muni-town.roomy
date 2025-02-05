@@ -179,7 +179,8 @@ export class Autodoc<T> {
   async loadFromStorage() {
     // Load from normal and slow storage
     for (const storage of [this.storage, this.slowStorage].filter((x) => !!x)) {
-      this.view = Automerge.merge(this.view, await storage.loadFromStorage());
+      const loaded = await storage.loadFromStorage();
+      this.view = Automerge.merge(this.view, loaded);
     }
 
     // Allow the sync process to resume after first load
