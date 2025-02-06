@@ -58,12 +58,15 @@ export class Peer {
     // Add sync managers when new peers join
     this.router.addEventListener("join", ({ did, connId, docId }) => {
       const managersForDoc = getOrDefault(this.syncManagers, docId, []);
+      const manager = new SyncManager((msg) => {
+        this.router.send(did, connId, docId, msg);
+      });
+      const doc = this.#autodocs.get(docId);
+      if (doc) manager.sync(doc.view);
       managersForDoc.push({
         did,
         connId,
-        manager: new SyncManager((msg) => {
-          this.router.send(did, connId, docId, msg);
-        }),
+        manager,
       });
     });
 
