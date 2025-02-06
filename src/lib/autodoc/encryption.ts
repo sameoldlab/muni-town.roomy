@@ -4,7 +4,7 @@ import {
   edwardsToMontgomeryPriv,
 } from "@noble/curves/ed25519";
 import nacl from "tweetnacl";
-import { resolvePublicKey } from "./utils";
+import { resolvePublicKey } from "../utils";
 
 export async function getSharedSecret(
   myPrivateKey: Uint8Array,

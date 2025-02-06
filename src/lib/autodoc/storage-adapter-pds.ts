@@ -1,64 +1,7 @@
 import { Agent } from "@atproto/api";
-import type { StorageInterface } from "./autodoc/storage";
+import type { StorageInterface } from "./storage";
 import * as base64 from "js-base64";
-import { resolveDid } from "./utils";
-import { decrypt, encrypt } from "./autodoc/encryption";
-
-/** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
-export function namespacedSubstorage(
-  storage: StorageInterface,
-  ...namespaces: string[]
-): StorageInterface {
-  return {
-    load(key) {
-      return storage.load([...namespaces, ...key]);
-    },
-    async loadRange(key) {
-      const result = await storage.loadRange([...namespaces, ...key]);
-      return result.map((x) => ({
-        key: x.key.slice(namespaces.length),
-        data: x.data,
-      }));
-    },
-    remove(key) {
-      return storage.remove([...namespaces, ...key]);
-    },
-    removeRange(key) {
-      return storage.removeRange([...namespaces, ...key]);
-    },
-    save(key, value) {
-      return storage.save([...namespaces, ...key], value);
-    },
-  };
-}
-
-export function encryptedStorage(
-  encryptionKey: Uint8Array,
-  storage: StorageInterface,
-): StorageInterface {
-  return {
-    async load(key) {
-      const encrypted = await storage.load(key);
-      return encrypted && decrypt(encryptionKey, encrypted);
-    },
-    async loadRange(key) {
-      const result = await storage.loadRange(key);
-      return result.map((x) => ({
-        key: x.key,
-        data: x.data && decrypt(encryptionKey, x.data),
-      }));
-    },
-    remove(key) {
-      return storage.remove(key);
-    },
-    removeRange(key) {
-      return storage.removeRange(key);
-    },
-    save(key, value) {
-      return storage.save(key, encrypt(encryptionKey, value));
-    },
-  };
-}
+import { resolveDid } from "../utils";
 
 export class RoomyPdsStorageAdapter implements StorageInterface {
   agent: Agent;
