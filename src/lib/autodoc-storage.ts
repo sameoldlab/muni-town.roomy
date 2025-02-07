@@ -2,7 +2,6 @@ import { Agent } from "@atproto/api";
 import type { StorageInterface } from "./autodoc/storage";
 import * as base64 from "js-base64";
 import { resolveDid } from "./utils";
-import { decrypt, encrypt } from "./autodoc/encryption";
 
 /** Takes a storage adapter and creates a sub-adapter by with the given namespace. */
 export function namespacedSubstorage(
@@ -28,34 +27,6 @@ export function namespacedSubstorage(
     },
     save(key, value) {
       return storage.save([...namespaces, ...key], value);
-    },
-  };
-}
-
-export function encryptedStorage(
-  encryptionKey: Uint8Array,
-  storage: StorageInterface,
-): StorageInterface {
-  return {
-    async load(key) {
-      const encrypted = await storage.load(key);
-      return encrypted && decrypt(encryptionKey, encrypted);
-    },
-    async loadRange(key) {
-      const result = await storage.loadRange(key);
-      return result.map((x) => ({
-        key: x.key,
-        data: x.data && decrypt(encryptionKey, x.data),
-      }));
-    },
-    remove(key) {
-      return storage.remove(key);
-    },
-    removeRange(key) {
-      return storage.removeRange(key);
-    },
-    save(key, value) {
-      return storage.save(key, encrypt(encryptionKey, value));
     },
   };
 }

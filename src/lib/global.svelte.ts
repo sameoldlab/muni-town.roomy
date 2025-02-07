@@ -1,12 +1,18 @@
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import type { Catalog, Channel } from "./schemas/types";
-import { namespacedSubstorage } from "./autodoc-storage";
+import {
+  namespacedSubstorage,
+  RoomyPdsStorageAdapter,
+} from "./autodoc-storage";
 import { user } from "./user.svelte";
 import catalogInit from "$lib/schemas/catalog.bin?uint8array&base64";
 import channelInit from "$lib/schemas/channel.bin?uint8array&base64";
 import { RouterClient } from "@jsr/roomy-chat__router/client";
 import { Peer, Autodoc } from "./autodoc/peer";
 import type { Agent } from "@atproto/api";
+import { calculateSharedSecretEd25519 } from "./autodoc/encryption";
+import { resolvePublicKey } from "./utils";
+import { encryptedStorage } from "./autodoc/storage";
 
 export let g = $state({
   catalog: undefined as Autodoc<Catalog> | undefined,
@@ -44,11 +50,42 @@ async function createPeer(agent: Agent, privateKey: Uint8Array): Promise<Peer> {
   return await Peer.init({
     router,
     privateKey,
-    storageFactory(docId) {
+    async storageFactory(docId) {
       return namespacedSubstorage(
         new IndexedDBStorageAdapter("roomy", "autodoc"),
         docId,
       );
+    },
+    async slowStorageFactory(docId) {
+      if (docId.startsWith("catalog/")) {
+        return encryptedStorage(
+          privateKey,
+          namespacedSubstorage(new RoomyPdsStorageAdapter(agent), docId),
+        );
+      } else if (docId.startsWith("dm/")) {
+        const otherDid = docId
+          .split("/")
+          .slice(1)
+          .find((x) => x !== agent.assertDid);
+        if (!otherDid) {
+          throw "Invalid DM doc ID";
+        }
+
+        const otherPublicKey = await resolvePublicKey(otherDid);
+        const encryptionKey = calculateSharedSecretEd25519(
+          privateKey,
+          otherPublicKey,
+        );
+        return encryptedStorage(
+          encryptionKey,
+          namespacedSubstorage(
+            new RoomyPdsStorageAdapter(agent, otherDid),
+            docId,
+          ),
+        );
+      } else {
+        return namespacedSubstorage(new RoomyPdsStorageAdapter(agent), docId);
+      }
     },
   });
 }
@@ -66,7 +103,7 @@ $effect.root(() => {
   // Create catalog when peer is initialized
   $effect(() => {
     if (user.agent && g.peer && !g.catalog) {
-      g.catalog = g.peer.open(`${user.agent.assertDid}/catalog`, catalogInit);
+      g.catalog = g.peer.open(`catalog/${user.agent.assertDid}`, catalogInit);
     }
   });
 

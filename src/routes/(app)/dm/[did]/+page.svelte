@@ -24,7 +24,6 @@
   import ChatMessage from "$lib/components/ChatMessage.svelte";
   import toast from "svelte-french-toast";
   import _ from "underscore";
-  import * as Automerge from "@automerge/automerge";
   import { unreadCount } from "$lib/utils";
 
   let tab = $state("chat");

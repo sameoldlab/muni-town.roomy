@@ -6,6 +6,7 @@ import { StorageManager, type StorageInterface } from "./storage";
 import { createSubscriber } from "svelte/reactivity";
 import { calculateSharedSecretEd25519, decrypt, encrypt } from "./encryption";
 import { resolvePublicKey } from "$lib/utils";
+import { debounce } from "underscore";
 
 function getOrDefault<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {
   if (!map.has(key)) {
@@ -17,7 +18,9 @@ function getOrDefault<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {
 interface PeerOpts {
   router: RouterClient;
   privateKey: Uint8Array;
-  storageFactory: (docId: DocId) => StorageInterface;
+  storageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
+  slowStorageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
+  slowStorageDebouncePeriod?: number;
 }
 
 export class Peer {
@@ -45,12 +48,25 @@ export class Peer {
   }
 
   /** The factory we use to create storage managers for each open document. */
-  storageFactory: (docId: DocId) => StorageInterface;
+  storageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
+  /** The factory we use to create storage managers for opened documents that are synced
+   * periodically instead of on every chage. */
+  slowStorageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
+  slowStorageDebouncePeriod: number = 5 * 1000;
 
-  constructor({ router, storageFactory, privateKey }: PeerOpts) {
+  constructor({
+    router,
+    storageFactory,
+    slowStorageFactory,
+    slowStorageDebouncePeriod,
+    privateKey,
+  }: PeerOpts) {
     this.router = router;
     this.privateKey = privateKey;
     this.storageFactory = storageFactory;
+    this.slowStorageFactory = slowStorageFactory;
+    if (slowStorageDebouncePeriod)
+      this.slowStorageDebouncePeriod = slowStorageDebouncePeriod;
 
     this.#updateSubscribers = () => {};
     this.#subscribe = createSubscriber((update) => {
@@ -125,6 +141,7 @@ export class Peer {
     );
   }
 
+  /** Init a new peer and wait until it is ready to send / receive messages. */
   static async init(opts: PeerOpts): Promise<Peer> {
     const peer = new Peer(opts);
     await peer.router.open;
@@ -159,7 +176,10 @@ export class Peer {
 
 export class Autodoc<T> extends TypedEventTarget<{ change: Event }> {
   #doc: Doc<T>;
-  storage: StorageManager;
+  storage?: StorageManager;
+  #saveWhenStorageLoaded = false;
+  slowStorage?: StorageManager;
+  #slowStorageSaveDebounced?: () => void;
 
   #subscribe: () => void;
   #updateSubscribers: () => void;
@@ -172,8 +192,17 @@ export class Autodoc<T> extends TypedEventTarget<{ change: Event }> {
   set view(value: Doc<T>) {
     // Update the doc
     this.#doc = value;
+
     // Save to local storage
-    this.storage.saveToStorage(this.#doc);
+    if (this.storage) {
+      this.storage.saveToStorage(this.#doc);
+    } else {
+      this.#saveWhenStorageLoaded = true;
+    }
+
+    // Debounced save to slow storage
+    if (this.#slowStorageSaveDebounced) this.#slowStorageSaveDebounced();
+
     // Send the change event
     this.dispatchTypedEvent("change", new Event("change"));
     // And update any svelte subscribers
@@ -190,18 +219,46 @@ export class Autodoc<T> extends TypedEventTarget<{ change: Event }> {
     initSchema: Uint8Array;
   }) {
     super();
+    // Setup svelte subscriber
     this.#updateSubscribers = () => {};
     this.#subscribe = createSubscriber((update) => {
       this.#updateSubscribers = update;
     });
-    const initDoc = Automerge.load<T>(initSchema);
-    this.#doc = Automerge.clone(initDoc);
+
+    // Initialize the doc from the initial schema.
+    this.#doc = Automerge.load(initSchema);
 
     // Load document from local storage
-    this.storage = new StorageManager(peer.storageFactory(docId));
-    this.storage.loadFromStorage<T>(initDoc).then((doc) => {
-      this.view = Automerge.merge(this.view, doc);
-    });
+    if (peer.storageFactory) {
+      peer.storageFactory(docId).then((adapter) => {
+        if (!adapter) return;
+
+        this.storage = new StorageManager(adapter);
+        this.storage.loadFromStorage<T>().then((doc) => {
+          if (doc) this.view = Automerge.merge(this.view, doc);
+        });
+        if (this.#saveWhenStorageLoaded == true) {
+          this.#saveWhenStorageLoaded = false;
+          this.storage.saveToStorage(this.#doc);
+        }
+      });
+    }
+
+    // Also merge document with slow storage
+    if (peer.slowStorageFactory) {
+      peer.slowStorageFactory(docId).then((adapter) => {
+        if (adapter) {
+          this.slowStorage = new StorageManager(adapter);
+          this.slowStorage.loadFromStorage<T>().then((doc) => {
+            if (doc) this.view = Automerge.merge(this.view, doc);
+          });
+          this.#slowStorageSaveDebounced = debounce(
+            () => this.slowStorage?.saveToStorage(this.view),
+            peer.slowStorageDebouncePeriod,
+          );
+        }
+      });
+    }
   }
 
   change(changer: Automerge.ChangeFn<T>) {

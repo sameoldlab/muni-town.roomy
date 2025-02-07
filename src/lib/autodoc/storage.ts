@@ -56,7 +56,7 @@ export class StorageManager {
   /** The heads that we most-recently loaded from storage. */
   loadedHeads: Automerge.next.Heads = [];
 
-  async loadFromStorage<T>(doc: Doc<T>): Promise<Doc<T>> {
+  async loadFromStorage<T>(): Promise<Doc<T> | undefined> {
     // Load chunks from storage
     const chunks: Chunk[] = (await this.storage.loadRange(["data"]))
       .filter((x) => !!x.data)
@@ -73,10 +73,10 @@ export class StorageManager {
     let binary = concat(chunks.map((x) => x.data));
 
     // If there is no data, just return the old doc;
-    if (binary.length == 0) return doc;
+    if (binary.length == 0) return;
 
     // Load the doc data from storage
-    const loadedDoc = Automerge.loadIncremental<any>(doc, binary);
+    const loadedDoc = Automerge.loadIncremental<any>(Automerge.init(), binary);
 
     // Update loaded chunks & heads
     this.loadedChunks = chunks.map((x) => ({ ...x, data: undefined }));
