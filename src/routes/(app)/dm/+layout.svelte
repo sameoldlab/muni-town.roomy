@@ -42,6 +42,10 @@
     if (newDmLoading) return;
     newDmError = undefined;
     newDmLoading = true;
+
+    newDmInput = newDmInput.trim();
+    if (newDmInput.startsWith("@")) newDmInput = newDmInput.slice(1);
+
     try {
       const resp = await user.agent!.resolveHandle({ handle: newDmInput });
       if (!resp.success) {
