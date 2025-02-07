@@ -55,7 +55,7 @@
       const profile = await user.agent!.getProfile({ actor: newDmInput });
 
       if (sendBlueSkyDMInvite && user.agent) {
-        const inviteUrl = `${page.url.protocol}//${page.url.host}/invite/dm/${user.agent.assertDid}`;
+        const inviteUrl = `${page.url.protocol}//${page.url.host}/dm/${user.agent.assertDid}`;
         const headers = {
           headers: {
             "atproto-proxy": "did:web:api.bsky.chat#bsky_chat",

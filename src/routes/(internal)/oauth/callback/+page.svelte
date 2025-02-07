@@ -14,7 +14,7 @@
       .then((result) => {
         user.session = result.session;
 
-        window.location.href = "/";
+        window.location.href = localStorage.getItem("redirectAfterAuth") || "/";
       })
       .catch((e) => {
         error = e.toString();

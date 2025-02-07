@@ -239,7 +239,7 @@
       class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
       onclick={() => {
         navigator.clipboard.writeText(
-          `${page.url.protocol}//${page.url.host}/invite/dm/${user.agent?.assertDid}`,
+          `${page.url.protocol}//${page.url.host}/dm/${user.agent?.assertDid}`,
         );
       }}
     >

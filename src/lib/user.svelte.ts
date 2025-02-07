@@ -135,6 +135,7 @@ export const user = {
 
   /** Login a user using their handle, replacing the existing session if any. */
   async loginWithHandle(handle: string) {
+    localStorage.setItem("redirectAfterAuth", window.location.pathname);
     const url = await atproto.oauth.authorize(handle, {
       scope: atproto.scope,
     });
