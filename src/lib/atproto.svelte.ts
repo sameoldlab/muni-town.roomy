@@ -65,7 +65,7 @@ export const atproto = {
     // Build the oauth client
     oauth = new BrowserOAuthClient({
       responseMode: "query",
-      handleResolver: "https://bsky.social",
+      handleResolver: "https://resolver.roomy.chat",
       clientMetadata,
     });
   },
