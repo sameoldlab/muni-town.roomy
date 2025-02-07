@@ -20,7 +20,7 @@
   let deleteLoading = $state(false);
 
   // TODO: set servers/rooms based on user
-  let servers = ["barrel_of_monkeys", "offishal"];
+  let servers: string[] = [];
   let currentCatalog = $state("");
 
   onMount(async () => {
