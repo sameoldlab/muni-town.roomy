@@ -1,12 +1,20 @@
 <script lang="ts">
-  import type { Autodoc } from "$lib/autodoc.svelte";
+  import type { Autodoc } from "$lib/autodoc/peer.ts";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
   import type { Channel, Thread, Ulid } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { setContext, untrack } from "svelte";
-  import { Avatar, Button, Dialog, Popover, Separator, Tabs, Toggle } from "bits-ui";
+  import {
+    Avatar,
+    Button,
+    Dialog,
+    Popover,
+    Separator,
+    Tabs,
+    Toggle,
+  } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
   import { fade, fly } from "svelte/transition";
@@ -15,6 +23,9 @@
   import { goto } from "$app/navigation";
   import ChatMessage from "$lib/components/ChatMessage.svelte";
   import toast from "svelte-french-toast";
+  import _ from "underscore";
+  import * as Automerge from "@automerge/automerge";
+  import { unreadCount } from "$lib/utils";
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -22,15 +33,18 @@
   let info = $derived(g.catalog?.view.dms[page.params.did]);
   let currentThread = $derived.by(() => {
     if (page.url.searchParams.has("thread")) {
-      return channel.view.threads[page.url.searchParams.get("thread")!] as Thread;
-    }
-    else {
+      return channel.view.threads[
+        page.url.searchParams.get("thread")!
+      ] as Thread;
+    } else {
       return null;
     }
   });
 
   $effect(() => {
-    if (currentThread) { tab = "threads" }
+    if (currentThread) {
+      tab = "threads";
+    }
   });
 
   // thread maker
@@ -54,11 +68,17 @@
   // Mark the current DM as read.
   $effect(() => {
     const did = page.params.did!;
-    const latestHeads = channel?.heads();
+    const doc = channel?.view;
     untrack(() => {
-      if (g.catalog?.view.dms[did]?.viewedHeads !== latestHeads) {
+      if (
+        g.catalog?.view.dms[did]?.viewedHeads &&
+        doc &&
+        unreadCount(doc, g.catalog?.view.dms[did]?.viewedHeads || []) > 0
+      ) {
+        // TODO: Find ways to reduce how frequently we write to this, because the size of the
+        // catalog grows every time we send / receive a message and update the latest heads.
         g.catalog?.change((doc) => {
-          doc.dms[did].viewedHeads = latestHeads || [];
+          doc.dms[did].viewedHeads = channel.heads();
         });
       }
     });
@@ -82,7 +102,7 @@
 
     threadTitleInput = "";
     isThreading.value = false;
-    toast.success("Thread created", { position: "bottom-end" })
+    toast.success("Thread created", { position: "bottom-end" });
   }
 
   function sendMessage(e: SubmitEvent) {
@@ -108,7 +128,7 @@
     if (!channel) return;
 
     channel.change((doc) => {
-      delete doc.threads[id]
+      delete doc.threads[id];
     });
 
     toast.success("Thread deleted", { position: "bottom-end" });
@@ -137,7 +157,6 @@
         </h5>
       {/if}
     </span>
-
   </div>
 
   <Tabs.Root bind:value={tab}>
@@ -210,7 +229,11 @@
       disabled={tab !== "chat"}
       class={`p-2 ${isThreading.value && "bg-white/10"} cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150 rounded`}
     >
-      <Icon icon="tabler:needle-thread" color={tab !== "chat" ? "gray" : "white"} class="text-2xl" />
+      <Icon
+        icon="tabler:needle-thread"
+        color={tab !== "chat" ? "gray" : "white"}
+        class="text-2xl"
+      />
     </Toggle.Root>
     <Button.Root
       title="Copy invite link"
@@ -221,11 +244,7 @@
         );
       }}
     >
-      <Icon
-        icon="icon-park-outline:copy-link"
-        color="white"
-        class="text-2xl"
-      />
+      <Icon icon="icon-park-outline:copy-link" color="white" class="text-2xl" />
     </Button.Root>
     <Button.Root
       class="p-2 cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
@@ -250,18 +269,20 @@
 
   <!-- TODO: Render Threads -->
   {#if tab === "threads"}
-    {#if currentThread} 
+    {#if currentThread}
       <section class="flex flex-col gap-4 items-start">
         <menu class="px-4 py-2 flex w-full justify-between">
           <Button.Root
             onclick={() => goto(page.url.pathname)}
-            class="flex gap-2 items-center text-white cursor-pointer hover:scale-105 transitiona-all duration-150" 
-          > 
+            class="flex gap-2 items-center text-white cursor-pointer hover:scale-105 transitiona-all duration-150"
+          >
             <Icon icon="uil:left" />
             Back
           </Button.Root>
-          <Dialog.Root> 
-            <Dialog.Trigger class="hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer">
+          <Dialog.Root>
+            <Dialog.Trigger
+              class="hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer"
+            >
               <Icon icon="tabler:trash" color="red" class="text-2xl" />
             </Dialog.Trigger>
             <Dialog.Portal>
@@ -276,17 +297,24 @@
                 <Dialog.Title
                   class="text-bold font-bold text-xl flex items-center justify-center gap-4"
                 >
-                  <Icon icon="ri:alarm-warning-fill" color="red" class="text-2xl" />
+                  <Icon
+                    icon="ri:alarm-warning-fill"
+                    color="red"
+                    class="text-2xl"
+                  />
                   <span> Delete Thread </span>
-                  <Icon icon="ri:alarm-warning-fill" color="red" class="text-2xl" />
+                  <Icon
+                    icon="ri:alarm-warning-fill"
+                    color="red"
+                    class="text-2xl"
+                  />
                 </Dialog.Title>
                 <Separator.Root class="border border-white" />
                 <div class="flex flex-col items-center gap-4">
-                  <p>
-                    The thread will be unrecoverable once deleted.
-                  </p>
+                  <p>The thread will be unrecoverable once deleted.</p>
                   <Button.Root
-                    onclick={() => deleteThread(page.url.searchParams.get("thread")!)}
+                    onclick={() =>
+                      deleteThread(page.url.searchParams.get("thread")!)}
                     class="flex items-center gap-3 px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
                   >
                     Confirm Delete
@@ -303,15 +331,14 @@
     {:else}
       <ul class="overflow-y-auto px-2 gap-3 flex flex-col">
         {#each Object.entries(channel.view.threads) as [id, thread] (id)}
-          <ThreadRow 
-            {id} 
-            {thread} 
-            onclick={() => goto(`?thread=${id}`)} 
-            onclickDelete={() => deleteThread(id)} 
+          <ThreadRow
+            {id}
+            {thread}
+            onclick={() => goto(`?thread=${id}`)}
+            onclickDelete={() => deleteThread(id)}
           />
         {/each}
       </ul>
     {/if}
   {/if}
-
 {/if}
