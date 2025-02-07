@@ -25,6 +25,7 @@
   import toast from "svelte-french-toast";
   import _ from "underscore";
   import { unreadCount } from "$lib/utils";
+  import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -37,6 +38,18 @@
       ] as Thread;
     } else {
       return null;
+    }
+  });
+
+  // Load bluesky profile
+  let profile = $state(undefined) as ProfileViewDetailed | undefined;
+  $effect(() => {
+    if (user.agent && !profile) {
+      user.agent.getProfile({ actor: page.params.did }).then((resp) => {
+        if (resp.success) {
+          profile = resp.data;
+        }
+      });
     }
   });
 
@@ -69,11 +82,11 @@
     const did = page.params.did!;
     const doc = channel?.view;
     untrack(() => {
-      if (
-        g.catalog?.view.dms[did]?.viewedHeads &&
-        doc &&
-        unreadCount(doc, g.catalog?.view.dms[did]?.viewedHeads || []) > 0
-      ) {
+      const unread = unreadCount(
+        doc,
+        g.catalog?.view.dms[did]?.viewedHeads || [],
+      );
+      if (g.catalog?.view.dms[did]?.viewedHeads && doc && unread > 0) {
         // TODO: Find ways to reduce how frequently we write to this, because the size of the
         // catalog grows every time we send / receive a message and update the latest heads.
         g.catalog?.change((doc) => {
@@ -82,6 +95,17 @@
       }
     });
   });
+
+  function openDirectMessage() {
+    if (g.catalog && profile) {
+      g.catalog.change((doc) => {
+        doc.dms[page.params.did] = {
+          name: profile!.handle,
+          avatar: profile!.avatar,
+        };
+      });
+    }
+  }
 
   function createThread(e: SubmitEvent) {
     e.preventDefault();
@@ -239,7 +263,7 @@
       class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
       onclick={() => {
         navigator.clipboard.writeText(
-          `${page.url.protocol}//${page.url.host}/dm/${user.agent?.assertDid}`,
+          `${page.url.protocol}//${page.url.host}/invite/dm/${user.agent?.assertDid}`,
         );
       }}
     >
@@ -252,6 +276,33 @@
     </Button.Root>
   </menu>
 </header>
+
+{#if !channel}
+  <div class="flex w-full h-full justify-center items-center">
+    <div class="flex flex-col items-center gap-8">
+      {#if profile}
+        <Avatar.Root class="w-40">
+          <Avatar.Image src={profile.avatar} class="rounded-full" />
+          <Avatar.Fallback>
+            <AvatarBeam name={profile.handle} />
+          </Avatar.Fallback>
+        </Avatar.Root>
+
+        <h2 class="text-white font-bold text-2xl">
+          {profile.displayName} | @{profile.handle}
+        </h2>
+      {/if}
+
+      <Button.Root
+        class="bg-white h-fit font-medium px-4 py-2 flex gap-2 items-center justify-center rounded-lg hover:scale-105 active:scale-95 transition-all duration-150 m-auto"
+        onclick={openDirectMessage}
+      >
+        <Icon icon="ri:add-fill" class="text-lg" />
+        Open Direct Message
+      </Button.Root>
+    </div>
+  </div>
+{/if}
 
 {#if channel}
   {#if tab === "chat"}

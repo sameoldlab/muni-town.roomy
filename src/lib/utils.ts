@@ -33,15 +33,19 @@ export function unreadCount<Channel>(
   viewedHeads: Automerge.Heads,
 ): number {
   let count = 0;
-  const patches = Automerge.diff(doc, viewedHeads, Automerge.getHeads(doc));
-  for (const patch of patches) {
-    if (
-      patch.action == "put" &&
-      patch.path.length == 2 &&
-      patch.path[0] == "messages"
-    ) {
-      count += 1;
+  try {
+    const patches = Automerge.diff(doc, viewedHeads, Automerge.getHeads(doc));
+    for (const patch of patches) {
+      if (
+        patch.action == "put" &&
+        patch.path.length == 2 &&
+        patch.path[0] == "messages"
+      ) {
+        count += 1;
+      }
     }
+  } catch (e) {
+    console.error("Error getting unread count:", e);
   }
   return count;
 }
