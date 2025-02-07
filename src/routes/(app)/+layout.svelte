@@ -232,6 +232,7 @@
                 class="flex flex-col gap-4"
                 onsubmit={async () => {
                   loginLoading = true;
+                  if (handleInput.startsWith('@')) handleInput = handleInput.slice(1);
                   await user.loginWithHandle(handleInput);
                 }}
               >
