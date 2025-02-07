@@ -12,13 +12,13 @@ $deno run build
 
 # Add oauth-client configuration
 echo '{
-  "client_id": "https://roomy.muni.town/oauth-client.json",
+  "client_id": "https://roomy.chat/oauth-client.json",
   "client_name": "Roomy",
-  "client_uri": "https://roomy.muni.town",
-  "logo_uri": "https://roomy.muni.town/favicon.png",
-  "tos_uri": "https://roomy.muni.town",
-  "policy_uri": "https://roomy.muni.town",
-  "redirect_uris": ["https://roomy.muni.town/oauth/callback"],
+  "client_uri": "https://roomy.chat",
+  "logo_uri": "https://roomy.chat/favicon.png",
+  "tos_uri": "https://roomy.chat",
+  "policy_uri": "https://roomy.chat",
+  "redirect_uris": ["https://roomy.chat/oauth/callback"],
   "scope": "atproto transition:generic transition:chat.bsky",
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
