@@ -4,6 +4,8 @@ import type { Doc } from "@automerge/automerge";
 import { TypedEventTarget } from "typescript-event-target";
 import { StorageManager, type StorageInterface } from "./storage";
 import { createSubscriber } from "svelte/reactivity";
+import { calculateSharedSecretEd25519, decrypt, encrypt } from "./encryption";
+import { resolvePublicKey } from "$lib/utils";
 
 function getOrDefault<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {
   if (!map.has(key)) {
@@ -14,6 +16,7 @@ function getOrDefault<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {
 
 interface PeerOpts {
   router: RouterClient;
+  privateKey: Uint8Array;
   storageFactory: (docId: DocId) => StorageInterface;
 }
 
@@ -23,6 +26,9 @@ export class Peer {
 
   /** Our Roomy router connection */
   router: RouterClient;
+
+  /** This peers private key. */
+  privateKey: Uint8Array;
 
   /** The sync managers for each connected peer. */
   syncManagers: Map<
@@ -41,8 +47,9 @@ export class Peer {
   /** The factory we use to create storage managers for each open document. */
   storageFactory: (docId: DocId) => StorageInterface;
 
-  constructor({ router, storageFactory }: PeerOpts) {
+  constructor({ router, storageFactory, privateKey }: PeerOpts) {
     this.router = router;
+    this.privateKey = privateKey;
     this.storageFactory = storageFactory;
 
     this.#updateSubscribers = () => {};
@@ -56,10 +63,14 @@ export class Peer {
     });
 
     // Add sync managers when new peers join
-    this.router.addEventListener("join", ({ did, connId, docId }) => {
+    this.router.addEventListener("join", async ({ did, connId, docId }) => {
       const managersForDoc = getOrDefault(this.syncManagers, docId, []);
+      const encryptionKey = calculateSharedSecretEd25519(
+        this.privateKey,
+        await resolvePublicKey(did),
+      );
       const manager = new SyncManager((msg) => {
-        this.router.send(did, connId, docId, msg);
+        this.router.send(did, connId, docId, encrypt(encryptionKey, msg));
       });
       const doc = this.#autodocs.get(docId);
       if (doc) manager.sync(doc.view);
@@ -82,19 +93,31 @@ export class Peer {
     });
 
     // Send sync managers the data from peers
-    this.router.addEventListener("data", ({ data, did, connId, docId }) => {
-      const managers = this.syncManagers.get(docId) || [];
-      const { manager } =
-        managers.find((x) => x.did == did && x.connId == connId) || {};
-      if (!manager) return;
-      const autodoc = this.#autodocs.get(docId);
-      if (!autodoc) {
-        console.warn("Got message from doc we don't have locally:", docId);
-        return;
-      }
-      const newDoc = manager.receiveMessage(autodoc.view, data);
-      autodoc.view = newDoc;
-    });
+    this.router.addEventListener(
+      "data",
+      async ({ data, did, connId, docId }) => {
+        const managers = this.syncManagers.get(docId) || [];
+        const { manager } =
+          managers.find((x) => x.did == did && x.connId == connId) || {};
+
+        const encryptionKey = calculateSharedSecretEd25519(
+          this.privateKey,
+          await resolvePublicKey(did),
+        );
+
+        if (!manager) return;
+        const autodoc = this.#autodocs.get(docId);
+        if (!autodoc) {
+          console.warn("Got message from doc we don't have locally:", docId);
+          return;
+        }
+        const newDoc = manager.receiveMessage(
+          autodoc.view,
+          decrypt(encryptionKey, data),
+        );
+        autodoc.view = newDoc;
+      },
+    );
 
     // Log errors
     this.router.addEventListener("error", (e) =>
@@ -117,7 +140,6 @@ export class Peer {
     });
 
     // Add this document to the list of documents we're listening to.
-    console.log("docId", docId);
     this.router.addInterests(docId);
 
     // When the doc changes, sync it with any interested peers.

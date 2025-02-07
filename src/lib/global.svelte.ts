@@ -17,7 +17,7 @@ export let g = $state({
 });
 (globalThis as any).g = g;
 
-async function createPeer(agent: Agent): Promise<Peer> {
+async function createPeer(agent: Agent, privateKey: Uint8Array): Promise<Peer> {
   // Fetch a router authentication token
   const resp = await agent.call(
     "chat.roomy.v0.router.token",
@@ -43,6 +43,7 @@ async function createPeer(agent: Agent): Promise<Peer> {
   // Initialize peer
   return await Peer.init({
     router,
+    privateKey,
     storageFactory(docId) {
       return namespacedSubstorage(
         new IndexedDBStorageAdapter("roomy", "autodoc"),
@@ -55,8 +56,10 @@ async function createPeer(agent: Agent): Promise<Peer> {
 $effect.root(() => {
   // Create peer when agent is initialized
   $effect(() => {
-    if (user.agent && !g.peer) {
-      createPeer(user.agent).then((peer) => (g.peer = peer));
+    if (user.agent && user.keypair.value?.privateKey && !g.peer) {
+      createPeer(user.agent, user.keypair.value.privateKey).then(
+        (peer) => (g.peer = peer),
+      );
     }
   });
 
