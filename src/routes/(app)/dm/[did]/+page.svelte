@@ -2,7 +2,7 @@
   import type { Autodoc } from "$lib/autodoc/peer.ts";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
-  import type { Channel, Thread, Ulid } from "$lib/schemas/types";
+  import type { Channel, Message, Thread, Ulid } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { setContext, untrack } from "svelte";
@@ -25,6 +25,7 @@
   import toast from "svelte-french-toast";
   import _ from "underscore";
   import { unreadCount } from "$lib/utils";
+  import { renderMarkdownSanitized } from "$lib/markdown";
   import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 
   let tab = $state("chat");
@@ -76,6 +77,24 @@
       selectedMessages = [];
     }
   });
+
+  // Reply Utils
+  let replyingTo = $state<{
+    id: Ulid;
+    profile: { handle: string; avatarUrl: string };
+    content: string;
+  } | null>();
+
+  setContext(
+    "setReplyTo",
+    (value: {
+      id: Ulid;
+      profile: { handle: string; avatarUrl: string };
+      content: string;
+    }) => {
+      replyingTo = value;
+    },
+  );
 
   // Mark the current DM as read.
   $effect(() => {
@@ -140,11 +159,13 @@
         author: user.agent.assertDid,
         reactions: {},
         content: messageInput,
+        ...(replyingTo && { replyTo: replyingTo.id }),
       };
       doc.timeline.push(id);
     });
 
     messageInput = "";
+    replyingTo = null;
   }
 
   function deleteThread(id: Ulid) {
@@ -307,10 +328,32 @@
 {#if channel}
   {#if tab === "chat"}
     <ChatArea {channel} />
-    <form onsubmit={sendMessage}>
+    <form onsubmit={sendMessage} class="flex flex-col">
+      {#if replyingTo}
+        <div class="flex justify-between bg-violet-800 text-white rounded-t-lg px-4 py-2">
+          <div class="flex flex-col gap-1">
+            <h5 class="flex gap-2 items-center">
+              Replying to 
+              <Avatar.Root class="w-4">
+                <Avatar.Image src={replyingTo.profile.avatarUrl} class="rounded-full" />
+                <Avatar.Fallback>
+                  <AvatarBeam name={replyingTo.profile.handle} />
+                </Avatar.Fallback>
+              </Avatar.Root>
+              <strong>{replyingTo.profile.handle}</strong>
+            </h5>
+            <p class="text-gray-300 text-ellipsis italic">
+              {@html renderMarkdownSanitized(replyingTo.content)}
+            </p>
+          </div>
+          <Button.Root type="button" onclick={() => replyingTo = null} class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150">
+            <Icon icon="zondicons:close-solid" />
+          </Button.Root>
+        </div>
+      {/if}
       <input
         type="text"
-        class="w-full px-4 py-2 rounded-lg bg-violet-900 flex-none text-white"
+        class={`w-full px-4 py-2 flex-none text-white bg-violet-900 ${replyingTo ? "rounded-b-lg" : "rounded-lg"}`}
         placeholder="Say something..."
         bind:value={messageInput}
       />
@@ -374,6 +417,7 @@
             </Dialog.Portal>
           </Dialog.Root>
         </menu>
+
         {#each currentThread.timeline as id}
           <ChatMessage {id} message={channel.view.messages[id]} />
         {/each}
