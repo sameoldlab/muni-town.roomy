@@ -3,8 +3,12 @@ import type { Doc } from "@automerge/automerge";
 import * as Automerge from "@automerge/automerge";
 import { decodeBase32 } from "./base32";
 
-const handleCache: { [did: string]: DidDocument } = {};
+/** Cleans a handle string by removing any characters not valid for a domain. */
+export function cleanHandle(handle: string): string {
+  return handle.replaceAll(/[^a-z0-9-\.]/gi, "");
+}
 
+const handleCache: { [did: string]: DidDocument } = {};
 export async function resolveDid(
   did: string,
 ): Promise<DidDocument | undefined> {
