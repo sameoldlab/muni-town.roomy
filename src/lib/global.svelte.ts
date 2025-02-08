@@ -63,12 +63,18 @@ async function createPeer(agent: Agent, privateKey: Uint8Array): Promise<Peer> {
           namespacedSubstorage(new RoomyPdsStorageAdapter(agent), docId),
         );
       } else if (docId.startsWith("dm/")) {
-        const otherDid = docId
-          .split("/")
-          .slice(1)
-          .find((x) => x !== agent.assertDid);
+        const dids = docId.split("/").slice(1);
+        const otherDid = dids.find((x) => x !== agent.assertDid);
         if (!otherDid) {
-          throw "Invalid DM doc ID";
+          // Note: the other DID might be null if we DM ourself, which is fine.
+          if (dids[0] === dids[1]) {
+            return encryptedStorage(
+              privateKey,
+              namespacedSubstorage(new RoomyPdsStorageAdapter(agent), docId),
+            );
+          } else {
+            throw `Invalid DM doc ID: ${docId}`;
+          }
         }
 
         const otherPublicKey = await resolvePublicKey(otherDid);
