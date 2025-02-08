@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { Autodoc } from "$lib/autodoc/peer.ts";
+  import type { Autodoc } from "$lib/autodoc/peer";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
-  import type { Channel, Message, Thread, Ulid } from "$lib/schemas/types";
+  import type { Channel, Thread, Ulid } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { setContext, untrack } from "svelte";
@@ -330,12 +330,17 @@
     <ChatArea {channel} />
     <form onsubmit={sendMessage} class="flex flex-col">
       {#if replyingTo}
-        <div class="flex justify-between bg-violet-800 text-white rounded-t-lg px-4 py-2">
+        <div
+          class="flex justify-between bg-violet-800 text-white rounded-t-lg px-4 py-2"
+        >
           <div class="flex flex-col gap-1">
             <h5 class="flex gap-2 items-center">
-              Replying to 
+              Replying to
               <Avatar.Root class="w-4">
-                <Avatar.Image src={replyingTo.profile.avatarUrl} class="rounded-full" />
+                <Avatar.Image
+                  src={replyingTo.profile.avatarUrl}
+                  class="rounded-full"
+                />
                 <Avatar.Fallback>
                   <AvatarBeam name={replyingTo.profile.handle} />
                 </Avatar.Fallback>
@@ -346,7 +351,11 @@
               {@html renderMarkdownSanitized(replyingTo.content)}
             </p>
           </div>
-          <Button.Root type="button" onclick={() => replyingTo = null} class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150">
+          <Button.Root
+            type="button"
+            onclick={() => (replyingTo = null)}
+            class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
+          >
             <Icon icon="zondicons:close-solid" />
           </Button.Root>
         </div>
@@ -419,7 +428,7 @@
         </menu>
 
         {#each currentThread.timeline as id}
-          <ChatMessage {id} message={channel.view.messages[id]} />
+          <ChatMessage {id} {channel} />
         {/each}
       </section>
     {:else}
