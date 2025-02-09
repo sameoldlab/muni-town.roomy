@@ -1,71 +1,12 @@
 <script lang="ts">
+  import { page } from "$app/state";
   import ChatArea from "$lib/components/ChatArea.svelte";
+  import { g } from "$lib/global.svelte";
 
-  const messages = [
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" },
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" },
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" },
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" },
-    },
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" },
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" },
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" },
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" },
-    },
-    {
-      content: "anybody up for gaming?",
-      timestamp: new Date().setMinutes(0),
-      user: { name: "alice" },
-    },
-    {
-      content: "im down",
-      timestamp: new Date().setMinutes(6),
-      user: { name: "jeremy" },
-    },
-    {
-      content: "brb",
-      timestamp: new Date().setMinutes(10),
-      user: { name: "zeu" },
-    },
-    {
-      content: "coolio",
-      timestamp: new Date().setMinutes(13),
-      user: { name: "bob" },
-    },
-  ];
+  let space = $derived(g.spaces[page.params.space]);
 </script>
 
-<ChatArea {messages} />
+<ChatArea source={{ type: "space", space, channelId: page.params.channel }} />
 
 <input
   type="text"
