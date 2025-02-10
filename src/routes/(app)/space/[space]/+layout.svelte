@@ -197,15 +197,29 @@
                   <ToggleGroup.Item
                     onclick={() =>
                       goto(`/space/${page.params.space}/${channelId}`)}
-                    value={item.id}
+                    value={channelId}
                     class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
                   >
-                    <h3>{channel.name}</h3>
+                    <h3># {channel.name}</h3>
                   </ToggleGroup.Item>
                 {/each}
               </ToggleGroup.Root>
             </Accordion.Content>
           </Accordion.Item>
+        {:else}
+          {@const channel = space.view.channels[item.id]}
+          <ToggleGroup.Root
+            type="single"
+            class="flex flex-col gap-4 items-center"
+          >
+            <ToggleGroup.Item
+              onclick={() => goto(`/space/${page.params.space}/${item.id}`)}
+              value={item.id}
+              class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
+            >
+              <h3># {channel.name}</h3>
+            </ToggleGroup.Item>
+          </ToggleGroup.Root>
         {/if}
       {/each}
     </Accordion.Root>
@@ -213,14 +227,6 @@
 
   <!-- Events/Room Content -->
   <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
-    <section
-      class="flex items-center flex-none justify-between border-b-1 pb-4"
-    >
-      <h4 class="text-white text-lg font-bold">{space.view.name}</h4>
-
-      <span class="flex-grow"></span>
-    </section>
-
     {@render children()}
   </main>
 {/if}

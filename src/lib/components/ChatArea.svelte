@@ -20,7 +20,7 @@
   let timeline = $derived(
     source.type == "channel"
       ? source.channel.view.timeline
-      : source.space.view.channels[source.channelId].timeline,
+      : source.space.view.channels[source.channelId]?.timeline,
   );
 
   // ScrollArea
