@@ -2,7 +2,7 @@
   import type { Autodoc } from "$lib/autodoc/peer";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
-  import type { Channel, Did, Space, Thread, Ulid } from "$lib/schemas/types";
+  import type { Channel, Did, Space, SpaceChannel, Thread, Ulid } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { setContext, untrack } from "svelte";
@@ -29,6 +29,7 @@
 
   let tab = $state("chat");
   let space: Autodoc<Space> | undefined = $derived(g.spaces[page.params.space]);
+  let channel = $derived(space.view.channels[page.params.channel]) as SpaceChannel | undefined;
   let messageInput = $state("");
   let currentThread = $derived.by(() => {
     if (page.url.searchParams.has("thread")) {
@@ -207,7 +208,7 @@
   <div class="flex gap-4 items-center">
     <span class="flex gap-2 items-center">
       <h4 class="text-white text-lg font-bold">
-        {space.view.name}
+        {channel?.name}
       </h4>
       {#if currentThread}
         <Icon icon="mingcute:right-line" color="white" />
