@@ -14,6 +14,7 @@ import type { Agent } from "@atproto/api";
 import { calculateSharedSecretEd25519 } from "./autodoc/encryption";
 import { resolvePublicKey } from "./utils";
 import { encryptedStorage } from "./autodoc/storage";
+import * as Automerge from "@automerge/automerge";
 
 export let g = $state({
   catalog: undefined as Autodoc<Catalog> | undefined,
@@ -58,7 +59,7 @@ async function createPeer(agent: Agent, privateKey: Uint8Array): Promise<Peer> {
         docId,
       );
     },
-    async slowStorageFactory(docId) {
+    async publicStorageFactory(docId) {
       if (docId.startsWith("catalog/")) {
         return encryptedStorage(
           privateKey,
@@ -92,7 +93,21 @@ async function createPeer(agent: Agent, privateKey: Uint8Array): Promise<Peer> {
           ),
         );
       } else {
-        return namespacedSubstorage(new RoomyPdsStorageAdapter(agent), docId);
+        let extraDids: string[] = [];
+        // Try to get the list of optimal peers to initially sync with for the space
+        try {
+          const resp = await fetch(
+            `https://spaces.roomy.chat/xrpc/chat.roomy.v0.space.sync.peers?docId=${docId}`,
+          );
+          const data: { peers: string[] } = await resp.json();
+          extraDids = data.peers;
+        } catch (e) {
+          console.warn(`Couldn't get peers to sync with from spaces server`, e);
+        }
+        return namespacedSubstorage(
+          new RoomyPdsStorageAdapter(agent, ...extraDids),
+          docId,
+        );
       }
     },
   });
@@ -102,9 +117,32 @@ $effect.root(() => {
   // Create peer when agent is initialized
   $effect(() => {
     if (user.agent && user.keypair.value?.privateKey && !g.peer) {
-      createPeer(user.agent, user.keypair.value.privateKey).then(
-        (peer) => (g.peer = peer),
-      );
+      createPeer(user.agent, user.keypair.value.privateKey).then((peer) => {
+        g.peer = peer;
+
+        // Sync changes to the space server after updating public storage
+        peer.addEventListener("public-storage-saved", ({ docId }) => {
+          const doc = g.peer?.docs.get(docId);
+          if (!doc) return;
+          if (!docId.startsWith("space/")) return;
+
+          console.log("updating spaces");
+          user.agent?.call(
+            "chat.roomy.v0.space.update",
+            undefined,
+            {
+              [docId]: Automerge.getAllChanges(doc.view)
+                .map(Automerge.decodeChange)
+                .map((x) => ({ hash: x.hash, deps: x.deps })),
+            },
+            {
+              headers: {
+                "atproto-proxy": "did:web:spaces.roomy.chat#roomy_spaces",
+              },
+            },
+          );
+        });
+      });
     }
   });
 

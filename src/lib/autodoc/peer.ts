@@ -19,11 +19,23 @@ interface PeerOpts {
   router: RouterClient;
   privateKey: Uint8Array;
   storageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
-  slowStorageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
-  slowStorageDebouncePeriod?: number;
+  publicStorageFactory?: (
+    docId: DocId,
+  ) => Promise<StorageInterface | undefined>;
+  publicStorageDebouncePeriod?: number;
 }
 
-export class Peer {
+class PublicStorageSavedEvent extends Event {
+  docId: string;
+  constructor(docId: string) {
+    super("public-storage-saved");
+    this.docId = docId;
+  }
+}
+
+export class Peer extends TypedEventTarget<{
+  "public-storage-saved": PublicStorageSavedEvent;
+}> {
   #subscribe: () => void;
   #updateSubscribers: () => void;
 
@@ -51,22 +63,26 @@ export class Peer {
   storageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
   /** The factory we use to create storage managers for opened documents that are synced
    * periodically instead of on every chage. */
-  slowStorageFactory?: (docId: DocId) => Promise<StorageInterface | undefined>;
-  slowStorageDebouncePeriod: number = 5 * 1000;
+  publicStorageFactory?: (
+    docId: DocId,
+  ) => Promise<StorageInterface | undefined>;
+  publicStorageDebouncePeriod: number = 5 * 1000;
 
   constructor({
     router,
     storageFactory,
-    slowStorageFactory,
-    slowStorageDebouncePeriod,
+    publicStorageFactory,
+    publicStorageDebouncePeriod,
     privateKey,
   }: PeerOpts) {
+    super();
+
     this.router = router;
     this.privateKey = privateKey;
     this.storageFactory = storageFactory;
-    this.slowStorageFactory = slowStorageFactory;
-    if (slowStorageDebouncePeriod)
-      this.slowStorageDebouncePeriod = slowStorageDebouncePeriod;
+    this.publicStorageFactory = publicStorageFactory;
+    if (publicStorageDebouncePeriod)
+      this.publicStorageDebouncePeriod = publicStorageDebouncePeriod;
 
     this.#updateSubscribers = () => {};
     this.#subscribe = createSubscriber((update) => {
@@ -167,6 +183,14 @@ export class Peer {
       }
     });
 
+    // When public storage is saved, send an event with the docID
+    autodoc.addEventListener("public-storage-saved", () => {
+      this.dispatchTypedEvent(
+        "public-storage-saved",
+        new PublicStorageSavedEvent(docId),
+      );
+    });
+
     this.#autodocs.set(docId, autodoc);
     this.#updateSubscribers();
 
@@ -174,12 +198,16 @@ export class Peer {
   }
 }
 
-export class Autodoc<T> extends TypedEventTarget<{ change: Event }> {
+export class Autodoc<T> extends TypedEventTarget<{
+  change: Event;
+  "public-storage-saved": Event;
+}> {
   #doc: Doc<T>;
   storage?: StorageManager;
   #saveWhenStorageLoaded = false;
-  slowStorage?: StorageManager;
-  #slowStorageSaveDebounced?: () => void;
+
+  publicStorage?: StorageManager;
+  #publicStorageSaveDebounced?: () => void;
 
   #subscribe: () => void;
   #updateSubscribers: () => void;
@@ -201,7 +229,7 @@ export class Autodoc<T> extends TypedEventTarget<{ change: Event }> {
     }
 
     // Debounced save to slow storage
-    if (this.#slowStorageSaveDebounced) this.#slowStorageSaveDebounced();
+    if (this.#publicStorageSaveDebounced) this.#publicStorageSaveDebounced();
 
     // Send the change event
     this.dispatchTypedEvent("change", new Event("change"));
@@ -245,17 +273,20 @@ export class Autodoc<T> extends TypedEventTarget<{ change: Event }> {
     }
 
     // Also merge document with slow storage
-    if (peer.slowStorageFactory) {
-      peer.slowStorageFactory(docId).then((adapter) => {
+    if (peer.publicStorageFactory) {
+      peer.publicStorageFactory(docId).then((adapter) => {
         if (adapter) {
-          this.slowStorage = new StorageManager(adapter);
-          this.slowStorage.loadFromStorage<T>().then((doc) => {
+          this.publicStorage = new StorageManager(adapter);
+          this.publicStorage.loadFromStorage<T>().then((doc) => {
             if (doc) this.view = Automerge.merge(this.view, doc);
           });
-          this.#slowStorageSaveDebounced = debounce(
-            () => this.slowStorage?.saveToStorage(this.view),
-            peer.slowStorageDebouncePeriod,
-          );
+          this.#publicStorageSaveDebounced = debounce(() => {
+            this.publicStorage?.saveToStorage(this.view);
+            this.dispatchTypedEvent(
+              "public-storage-saved",
+              new Event("public-storage-saved"),
+            );
+          }, peer.publicStorageDebouncePeriod);
         }
       });
     }

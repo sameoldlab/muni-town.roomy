@@ -7,15 +7,19 @@
   import { goto } from "$app/navigation";
   import { g } from "$lib/global.svelte";
   import { ulid } from "ulidx";
+  import type { Autodoc } from "$lib/autodoc/peer";
+  import type { Space } from "$lib/schemas/types";
 
   let { children } = $props();
 
-  let space = $derived(g.spaces[page.params.space]);
+  let space = $derived(g.spaces[page.params.space]) as
+    | Autodoc<Space>
+    | undefined;
 
   let showNewCategoryDialog = $state(false);
   let newCategoryName = $state("");
   function createCategory() {
-    space.change((doc) => {
+    space?.change((doc) => {
       const id = ulid();
       doc.categories[id] = {
         channels: [],
@@ -34,7 +38,7 @@
   let newChannelCategory = $state(undefined) as undefined | string;
   function createChannel() {
     const id = ulid();
-    space.change((doc) => {
+    space?.change((doc) => {
       doc.channels[id] = {
         name: newChannelName,
         threads: [],
@@ -55,6 +59,16 @@
     newChannelCategory = undefined;
     newChannelName = "";
     showNewChannelDialog = false;
+  }
+
+  function openSpace() {
+    if (space) return;
+    g.catalog?.change((doc) => {
+      doc.spaces.push({
+        id: page.params.space,
+        knownMembers: [],
+      });
+    });
   }
 </script>
 
@@ -229,4 +243,13 @@
   <main class="grow flex flex-col gap-4 bg-violet-950 rounded-lg p-4">
     {@render children()}
   </main>
+
+  <!-- If there is no space. -->
+{:else}
+  <div class="flex flex-col justify-center items-center w-full">
+    <Button.Root
+      class="px-4 py-2 bg-white text-black rounded-lg  active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer"
+      onclick={openSpace}>Join Space</Button.Root
+    >
+  </div>
 {/if}

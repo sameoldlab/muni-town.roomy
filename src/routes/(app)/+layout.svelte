@@ -111,20 +111,23 @@
       <div class="border-white border-t-1 w-[80%]"></div>
 
       {#each servers as server}
-        <ToggleGroup.Item
-          onclick={() => goto(`/space/${server}`)}
-          value={server}
-          title={g.spaces[server].view.name}
-          class="capitalize hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white p-4 rounded-md"
-        >
-          <Avatar.Root>
-            <!-- TODO: set images based on server -->
-            <Avatar.Image />
-            <Avatar.Fallback>
-              <AvatarPixel name={server} />
-            </Avatar.Fallback>
-          </Avatar.Root>
-        </ToggleGroup.Item>
+        {@const space = g.spaces[server]}
+        {#if space}
+          <ToggleGroup.Item
+            onclick={() => goto(`/space/${server}`)}
+            value={server}
+            title={space.view.name}
+            class="capitalize hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white p-4 rounded-md"
+          >
+            <Avatar.Root>
+              <!-- TODO: set images based on server -->
+              <Avatar.Image />
+              <Avatar.Fallback>
+                <AvatarPixel name={server} />
+              </Avatar.Fallback>
+            </Avatar.Root>
+          </ToggleGroup.Item>
+        {/if}
       {/each}
     </ToggleGroup.Root>
 
@@ -175,13 +178,13 @@
 
         <div class="flex flex-col items-center gap-4">
           <p class="text-sm">
-            <strong>Warning:</strong> This will delete the Roomy data from this
-            device and from your AtProto PDS if you chose.
+            <strong>Warning:</strong> This will delete the Roomy data from this device
+            and from your AtProto PDS if you chose.
           </p>
           <p class="text-sm">
             Roomy is currently <em>extremely</em> experimental, so until it gets
-            a little more stable it may be necessary to reset all of your data
-            in order to fix a problem after an update of Roomy is published.
+            a little more stable it may be necessary to reset all of your data in
+            order to fix a problem after an update of Roomy is published.
           </p>
           <Button.Root
             onclick={() => deleteData("local")}
@@ -223,7 +226,7 @@
         </Button.Root>
       {/if}
 
-      <Dialog 
+      <Dialog
         title="Login with AT Protocol"
         bind:isDialogOpen={isLoginDialogOpen}
       >

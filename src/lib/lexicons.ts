@@ -99,4 +99,53 @@ export const lexicons: LexiconDoc[] = [
       },
     },
   },
+
+  {
+    lexicon: 1,
+    id: "chat.roomy.v0.space.sync.peers",
+    defs: {
+      main: {
+        type: "query",
+        parameters: {
+          type: "params",
+          properties: {
+            docId: { type: "string" },
+          },
+        },
+        output: {
+          encoding: "application/json",
+          schema: {
+            type: "object",
+            properties: {
+              peers: { type: "array", items: { type: "string" } },
+            },
+          },
+        },
+      },
+    },
+  },
+
+  {
+    lexicon: 1,
+    id: "chat.roomy.v0.space.update",
+    defs: {
+      main: {
+        type: "procedure",
+        parameters: {
+          type: "params",
+          properties: {
+            docId: { type: "string" },
+          },
+        },
+        input: {
+          encoding: "application/json",
+          // TODO: input schema
+        },
+        output: {
+          encoding: "application/json",
+          // TODO: output schema
+        },
+      },
+    },
+  },
 ];
