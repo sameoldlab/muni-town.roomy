@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Avatar, Button, Popover, Toolbar, Tooltip } from "bits-ui";
-  import type { Channel, Message, Ulid } from "$lib/schemas/types";
+  import type { Message, Ulid } from "$lib/schemas/types";
   import { renderMarkdownSanitized } from "$lib/markdown";
   import { AvatarBeam } from "svelte-boring-avatars";
   import { format, formatDistanceToNowStrict } from "date-fns";
@@ -9,9 +9,10 @@
   import { decodeTime } from "ulidx";
   import { getProfile } from "$lib/profile.svelte";
   import Icon from "@iconify/svelte";
-  import type { Autodoc } from "$lib/autodoc/peer";
   import { user } from "$lib/user.svelte";
   import "emoji-picker-element";
+  import { outerWidth } from "svelte/reactivity/window";
+  import Drawer from "./Drawer.svelte";
 
   let { id, messages }: { id: Ulid; messages: { [ulid: string]: Message } } =
     $props();
@@ -24,11 +25,16 @@
     messageRepliedTo && getProfile(messageRepliedTo.author),
   );
 
+  let isMobile = $derived((outerWidth.current ?? 0) < 640);
+  let isDrawerOpen = $state(false);
+
   let isSelected = $state(false);
   let isThreading: { value: boolean } = getContext("isThreading");
 
+  let emojiDrawerPicker: HTMLElement | undefined = $state();
   let emojiToolbarPicker: HTMLElement | undefined = $state();
   let emojiRowPicker: HTMLElement | undefined = $state();
+  let isEmojiDrawerPickerOpen = $state(false);
   let isEmojiToolbarPickerOpen = $state(false);
   let isEmojiRowPickerOpen = $state(false);
 
@@ -81,6 +87,13 @@
     if (emojiToolbarPicker) {
       emojiToolbarPicker.addEventListener("emoji-click", onEmojiPick);
     }
+    if (emojiDrawerPicker) {
+      emojiDrawerPicker.addEventListener("emoji-click", (e) => {
+        onEmojiPick(e);
+        isEmojiDrawerPickerOpen = false;
+        isDrawerOpen = false;
+      });
+    }
     if (emojiRowPicker) {
       emojiRowPicker.addEventListener("emoji-click", onEmojiPick);
     }
@@ -108,42 +121,52 @@
   {/if}
 
   <div
-    class="relative group w-full h-fit flex gap-4 px-2 py-2.5 hover:bg-white/5 transition-all duration-75"
+    class="relative group w-full h-fit flex flex-col gap-4 px-2 py-2.5 hover:bg-white/5 transition-all duration-75"
   >
-    <Avatar.Root class="w-12 aspect-square">
-      <Avatar.Image src={profile.avatarUrl} class="rounded-full" />
-      <Avatar.Fallback>
-        <AvatarBeam name={profile.handle} />
-      </Avatar.Fallback>
-    </Avatar.Root>
+    <div class="flex gap-4">
+      <Avatar.Root class="w-12 aspect-square">
+        <Avatar.Image src={profile.avatarUrl} class="rounded-full" />
+        <Avatar.Fallback>
+          <AvatarBeam name={profile.handle} />
+        </Avatar.Fallback>
+      </Avatar.Root>
 
-    <div class="flex flex-col gap-2 text-white w-full">
-      <section class="flex gap-2">
-        <h5 class="font-bold">{profile.handle}</h5>
-        <!-- TODO: Change to exact time (eg "Today at 14:20") -->
-        <Tooltip.Root openDelay={300}>
-          <Tooltip.Trigger>
-            <time class="text-zinc-400 cursor-context-menu">
-              {formatDistanceToNowStrict(new Date(decodeTime(id)))}
-            </time>
-          </Tooltip.Trigger>
-          <Tooltip.Content
-            transition={fly}
-            transitionConfig={{ y: 8, duration: 150 }}
-            sideOffset={8}
-          >
-            <time
-              class="flex items-center justify-center rounded-input border border-dark-10 bg-white p-3 text-sm font-medium shadow-popover outline-none"
+      <Button.Root
+        onclick={() => {
+          if (isMobile) {
+            isDrawerOpen = true;
+          }
+        }}
+        class="flex flex-col text-start gap-2 text-white w-full"
+      >
+        <section class="flex gap-2">
+          <h5 class="font-bold">{profile.handle}</h5>
+          <!-- TODO: Change to exact time (eg "Today at 14:20") -->
+          <Tooltip.Root openDelay={300}>
+            <Tooltip.Trigger>
+              <time class="text-zinc-400 cursor-context-menu">
+                {formatDistanceToNowStrict(new Date(decodeTime(id)))}
+              </time>
+            </Tooltip.Trigger>
+            <Tooltip.Content
+              transition={fly}
+              transitionConfig={{ y: 8, duration: 150 }}
+              sideOffset={8}
             >
-              {format(new Date(decodeTime(id)), "MM/dd/yyyy K:mm:ss aaa")}
-            </time>
-          </Tooltip.Content>
-        </Tooltip.Root>
-      </section>
+              <time
+                class="flex items-center justify-center rounded-input border border-dark-10 bg-white p-3 text-sm font-medium shadow-popover outline-none"
+              >
+                {format(new Date(decodeTime(id)), "MM/dd/yyyy K:mm:ss aaa")}
+              </time>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        </section>
 
-      <p class="text-lg prose-invert chat">
-        {@html renderMarkdownSanitized(message.content)}
-      </p>
+        <p class="text-lg prose-invert chat">
+          {@html renderMarkdownSanitized(message.content)}
+        </p>
+      </Button.Root>
+    </div>
 
       {#if Object.keys(message.reactions).length > 0}
         <div class="flex gap-2 flex-wrap">
@@ -162,34 +185,84 @@
           </Popover.Root>
         </div>
       {/if}
-    </div>
 
-    <Toolbar.Root
-      class={`${!isEmojiToolbarPickerOpen && "hidden"} group-hover:flex absolute -top-2 right-0 bg-violet-800 p-2 rounded items-center`}
-    >
-      <Toolbar.Button
-        onclick={() => toggleReaction(id, "👍")}
-        class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
+    {#if isMobile}
+      <Drawer bind:isDrawerOpen={isDrawerOpen}>
+        <div class="flex gap-4 justify-center mb-4">
+          <Button.Root 
+            onclick={() => { 
+              toggleReaction(id, "👍");
+              isDrawerOpen = false;
+            }}
+            class="px-4 rounded-full bg-violet-800"
+          >
+            👍 
+          </Button.Root>
+          <Button.Root 
+            onclick={() => { 
+              toggleReaction(id, "😂");
+              isDrawerOpen = false;
+            }}
+            class="px-4 rounded-full bg-violet-800"
+          >
+            😂
+          </Button.Root>
+          <Popover.Root bind:open={isEmojiDrawerPickerOpen}>
+            <Popover.Trigger
+              class="p-4 rounded-full bg-violet-800"
+            >
+              <Icon icon="lucide:smile-plus" color="white" />
+            </Popover.Trigger>
+            <Popover.Content>
+              <emoji-picker bind:this={emojiDrawerPicker}></emoji-picker>
+            </Popover.Content>
+          </Popover.Root>
+        </div>
+        <Button.Root 
+          onclick={() => {
+            setReplyTo({ id, profile, content: message.content });
+            isDrawerOpen = false;
+          }}
+          class="text-white p-4 flex gap-4 items-center bg-violet-800 w-full rounded-lg" 
+        >
+          <Icon icon="fa6-solid:reply" color="white" />
+          Reply
+        </Button.Root>
+      </Drawer>
+    {:else}
+      <Toolbar.Root
+        class={`${!isEmojiToolbarPickerOpen && "hidden"} group-hover:flex absolute -top-2 right-0 bg-violet-800 p-2 rounded items-center`}
       >
-        👍
-      </Toolbar.Button>
-      <Popover.Root bind:open={isEmojiToolbarPickerOpen}>
-        <Popover.Trigger
+        <Toolbar.Button
+          onclick={() => toggleReaction(id, "👍")}
           class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
         >
-          <Icon icon="lucide:smile-plus" color="white" />
-        </Popover.Trigger>
-        <Popover.Content>
-          <emoji-picker bind:this={emojiToolbarPicker}></emoji-picker>
-        </Popover.Content>
-      </Popover.Root>
-      <Toolbar.Button
-        onclick={() => setReplyTo({ id, profile, content: message.content })}
-        class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
-      >
-        <Icon icon="fa6-solid:reply" color="white" />
-      </Toolbar.Button>
-    </Toolbar.Root>
+          👍
+        </Toolbar.Button>
+        <Toolbar.Button
+          onclick={() => toggleReaction(id, "😂")}
+          class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
+        >
+          😂
+        </Toolbar.Button>
+        <Popover.Root bind:open={isEmojiToolbarPickerOpen}>
+          <Popover.Trigger
+            class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
+          >
+            <Icon icon="lucide:smile-plus" color="white" />
+          </Popover.Trigger>
+          <Popover.Content>
+            <emoji-picker bind:this={emojiToolbarPicker}></emoji-picker>
+          </Popover.Content>
+        </Popover.Root>
+        <Toolbar.Button
+          onclick={() => setReplyTo({ id, profile, content: message.content })}
+          class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
+        >
+          <Icon icon="fa6-solid:reply" color="white" />
+        </Toolbar.Button>
+      </Toolbar.Root>
+    {/if}
 
     {#if isThreading.value}
       <!-- TODO: Use bits-ui Checkbox -->
@@ -208,7 +281,7 @@
     onclick={() => toggleReaction(id, reaction)}
     class={`
       ${user.profile.data && message.reactions[reaction].includes(user.profile.data.did) ? "bg-violet-600" : "bg-violet-800"}
-      cursor-pointer border border-violet-500 px-2 py-1 rounded tabular-nums hover:scale-105 active:scale-95 transition-all duration-150
+      cursor-pointer text-white border border-violet-500 px-2 py-1 rounded tabular-nums hover:scale-105 active:scale-95 transition-all duration-150
     `}
   >
     {reaction}
