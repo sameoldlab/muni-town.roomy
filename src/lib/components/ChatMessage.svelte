@@ -296,10 +296,11 @@
 {/snippet}
 
 <style>
-  @import "tailwindcss";
+  @reference "../../app.css";
 
   .chat :global(a) {
     text-decoration: underline;
+    @apply underline text-blue-600 hover:text-blue-800;
   }
 
   .chat :global(blockquote) {
@@ -311,7 +312,9 @@
   .chat :global(h2) {
     @apply text-2xl font-bold;
   }
-  .chat :global(h3, h4, h5) {
+  .chat :global(h3),
+  .chat :global(h4),
+  .chat :global(h5) {
     @apply text-xl font-bold;
   }
 </style>
