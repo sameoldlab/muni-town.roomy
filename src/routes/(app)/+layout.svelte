@@ -66,7 +66,7 @@
   async function deleteData(kind: "all" | "local") {
     deleteLoading = true;
 
-    if (kind == "all") {
+    if (kind == "all" && user.agent?.did) {
       await new RoomyPdsStorageAdapter(user.agent!).removeRange([]);
     }
 
