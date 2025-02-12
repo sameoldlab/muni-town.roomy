@@ -123,12 +123,17 @@
     class="relative group w-full h-fit flex flex-col gap-4 px-2 py-2.5 hover:bg-white/5 transition-all duration-75"
   >
     <div class="flex gap-4">
-      <Avatar.Root class="w-12 aspect-square">
-        <Avatar.Image src={profile.avatarUrl} class="rounded-full" />
-        <Avatar.Fallback>
-          <AvatarBeam name={profile.handle} />
-        </Avatar.Fallback>
-      </Avatar.Root>
+      <a
+        href={`https://bsky.app/profile/${profile.handle}`}
+        target="_blank"
+      >
+        <Avatar.Root class="w-12 aspect-square">
+          <Avatar.Image src={profile.avatarUrl} class="rounded-full" />
+          <Avatar.Fallback>
+            <AvatarBeam name={profile.handle} />
+          </Avatar.Fallback>
+        </Avatar.Root>
+      </a>
 
       <Button.Root
         onclick={() => {
@@ -139,7 +144,12 @@
         class="flex flex-col text-start gap-2 text-white w-full"
       >
         <section class="flex items-center gap-2">
-          <h5 class="font-bold">{profile.handle}</h5>
+          <a
+            href={`https://bsky.app/profile/${profile.handle}`}
+            target="_blank"
+          >
+            <h5 class="font-bold">{profile.handle}</h5>
+          </a>
           {@render timestamp()}
         </section>
 
@@ -257,7 +267,9 @@
 
 {#snippet timestamp()}
   {@const decodedTime = decodeTime(id)}
-  {@const formattedDate = isToday(decodedTime) ? "Today" : format(decodedTime, "P")}
+  {@const formattedDate = isToday(decodedTime)
+    ? "Today"
+    : format(decodedTime, "P")}
   <time class="text-sm text-gray-300">
     {formattedDate}, {format(decodedTime, "pp")}
   </time>

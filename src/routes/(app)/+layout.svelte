@@ -4,9 +4,8 @@
   import { AvatarBeam, AvatarPixel } from "svelte-boring-avatars";
   import Dialog from "$lib/components/Dialog.svelte";
   import { Avatar, Button, ToggleGroup } from "bits-ui";
-  import { onMount, setContext } from "svelte";
+  import { onMount } from "svelte";
   import { user } from "$lib/user.svelte";
-  import { encodeBase32 } from "$lib/base32";
   import { goto } from "$app/navigation";
   import { RoomyPdsStorageAdapter } from "$lib/autodoc-storage";
   import { page } from "$app/state";
