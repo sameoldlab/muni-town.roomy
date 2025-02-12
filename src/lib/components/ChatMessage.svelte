@@ -298,6 +298,10 @@
 <style>
   @reference "../../app.css";
 
+  .chat :global(a) {
+    @apply underline;
+  }
+
   .chat :global(blockquote) {
     @apply ml-3 px-2  border-l-2 border-solid border-l-violet-200;
   }
