@@ -298,11 +298,6 @@
 <style>
   @reference "../../app.css";
 
-  .chat :global(a) {
-    text-decoration: underline;
-    @apply underline text-blue-600 hover:text-blue-800;
-  }
-
   .chat :global(blockquote) {
     @apply ml-3 px-2  border-l-2 border-solid border-l-violet-200;
   }
