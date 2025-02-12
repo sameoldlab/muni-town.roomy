@@ -270,6 +270,9 @@
       ${user.profile.data && message.reactions[reaction].includes(user.profile.data.did) ? "bg-violet-600" : "bg-violet-800"}
       cursor-pointer text-white border border-violet-500 px-2 py-1 rounded tabular-nums hover:scale-105 active:scale-95 transition-all duration-150
     `}
+    title={message.reactions[reaction]
+      .map((x) => getProfile(x).handle)
+      .join(", ")}
   >
     {reaction}
     {message.reactions[reaction].length}
