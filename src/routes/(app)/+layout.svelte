@@ -43,6 +43,10 @@
     }
   });
 
+  $effect(() => {
+    if (user.session) isLoginDialogOpen = false;
+  });
+
   async function createSpace() {
     if (!newSpaceName) return;
     let id = ulid();
@@ -227,7 +231,9 @@
       {/if}
 
       <Dialog
-        title="Login with AT Protocol"
+        title={user.session
+          ? `Logged In As ${user.profile.data?.handle}`
+          : "Login with AT Protocol"}
         bind:isDialogOpen={isLoginDialogOpen}
       >
         {#snippet dialogTrigger()}
@@ -248,15 +254,6 @@
 
         {#if user.session}
           <section class="flex flex-col gap-4">
-            <p>Logged in as {user.profile.data?.handle}</p>
-            {#if user.keypair.value}
-              <p>
-                <strong>PublicKey: </strong>
-                {encodeBase32(
-                  user.keypair.value?.publicKey || new Uint8Array(),
-                )}
-              </p>
-            {/if}
             <Button.Root
               onclick={user.logout}
               class="px-4 py-2 bg-white text-black rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
