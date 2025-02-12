@@ -3,6 +3,8 @@
   import ChatMessage from "./ChatMessage.svelte";
   import type { Autodoc } from "$lib/autodoc/peer";
   import type { Channel, Space } from "$lib/schemas/types";
+  import { page } from "$app/state";
+  import { onNavigate } from "$app/navigation";
 
   let {
     source,
@@ -27,9 +29,19 @@
   let viewport: HTMLDivElement | undefined = $state();
 
   // Go to the end of the ScrollArea
+  let scrollToEnd = $state(false);
+  onNavigate(() => {
+    setTimeout(() => {
+      scrollToEnd = true;
+    }, 0);
+  });
   $effect(() => {
-    if (viewport && messages) {
+    scrollToEnd;
+    viewport;
+    messages;
+    if (viewport && (messages || scrollToEnd)) {
       viewport.scrollTop = viewport.scrollHeight;
+      scrollToEnd = false;
     }
   });
 </script>

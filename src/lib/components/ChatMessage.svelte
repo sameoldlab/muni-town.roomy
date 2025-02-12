@@ -74,7 +74,7 @@
       return;
     }
     let element = document.getElementById(message.replyTo);
-    element?.scrollIntoView();
+    element?.scrollIntoView({ behavior: "smooth" });
   }
 
   $effect(() => {
@@ -168,38 +168,38 @@
       </Button.Root>
     </div>
 
-      {#if Object.keys(message.reactions).length > 0}
-        <div class="flex gap-2 flex-wrap">
-          {#each Object.keys(message.reactions) as reaction}
-            {@render reactionToggle(reaction)}
-          {/each}
-          <Popover.Root bind:open={isEmojiRowPickerOpen}>
-            <Popover.Trigger
-              class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
-            >
-              <Icon icon="lucide:smile-plus" color="white" />
-            </Popover.Trigger>
-            <Popover.Content>
-              <emoji-picker bind:this={emojiRowPicker}></emoji-picker>
-            </Popover.Content>
-          </Popover.Root>
-        </div>
-      {/if}
+    {#if Object.keys(message.reactions).length > 0}
+      <div class="flex gap-2 flex-wrap">
+        {#each Object.keys(message.reactions) as reaction}
+          {@render reactionToggle(reaction)}
+        {/each}
+        <Popover.Root bind:open={isEmojiRowPickerOpen}>
+          <Popover.Trigger
+            class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
+          >
+            <Icon icon="lucide:smile-plus" color="white" />
+          </Popover.Trigger>
+          <Popover.Content>
+            <emoji-picker bind:this={emojiRowPicker}></emoji-picker>
+          </Popover.Content>
+        </Popover.Root>
+      </div>
+    {/if}
 
     {#if isMobile}
-      <Drawer bind:isDrawerOpen={isDrawerOpen}>
+      <Drawer bind:isDrawerOpen>
         <div class="flex gap-4 justify-center mb-4">
-          <Button.Root 
-            onclick={() => { 
+          <Button.Root
+            onclick={() => {
               toggleReaction(id, "👍");
               isDrawerOpen = false;
             }}
             class="px-4 rounded-full bg-violet-800"
           >
-            👍 
+            👍
           </Button.Root>
-          <Button.Root 
-            onclick={() => { 
+          <Button.Root
+            onclick={() => {
               toggleReaction(id, "😂");
               isDrawerOpen = false;
             }}
@@ -208,9 +208,7 @@
             😂
           </Button.Root>
           <Popover.Root bind:open={isEmojiDrawerPickerOpen}>
-            <Popover.Trigger
-              class="p-4 rounded-full bg-violet-800"
-            >
+            <Popover.Trigger class="p-4 rounded-full bg-violet-800">
               <Icon icon="lucide:smile-plus" color="white" />
             </Popover.Trigger>
             <Popover.Content>
@@ -218,12 +216,12 @@
             </Popover.Content>
           </Popover.Root>
         </div>
-        <Button.Root 
+        <Button.Root
           onclick={() => {
             setReplyTo({ id, profile, content: message.content });
             isDrawerOpen = false;
           }}
-          class="text-white p-4 flex gap-4 items-center bg-violet-800 w-full rounded-lg" 
+          class="text-white p-4 flex gap-4 items-center bg-violet-800 w-full rounded-lg"
         >
           <Icon icon="fa6-solid:reply" color="white" />
           Reply
