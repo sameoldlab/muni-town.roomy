@@ -2,7 +2,13 @@
   import type { Autodoc } from "$lib/autodoc/peer";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
-  import type { Channel, Did, Space, SpaceChannel, Thread, Ulid } from "$lib/schemas/types";
+  import type {
+    Did,
+    Space,
+    SpaceChannel,
+    Thread,
+    Ulid,
+  } from "$lib/schemas/types";
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { setContext, untrack } from "svelte";
@@ -25,11 +31,12 @@
   import toast from "svelte-french-toast";
   import _ from "underscore";
   import { renderMarkdownSanitized } from "$lib/markdown";
-  import type { ProfileViewDetailed } from "@atproto/api/dist/client/types/app/bsky/actor/defs";
 
   let tab = $state("chat");
   let space: Autodoc<Space> | undefined = $derived(g.spaces[page.params.space]);
-  let channel = $derived(space.view.channels[page.params.channel]) as SpaceChannel | undefined;
+  let channel = $derived(space.view.channels[page.params.channel]) as
+    | SpaceChannel
+    | undefined;
   let messageInput = $state("");
   let currentThread = $derived.by(() => {
     if (page.url.searchParams.has("thread")) {
@@ -39,17 +46,17 @@
     }
   });
 
-  // Load bluesky profile
-  let profile = $state(undefined) as ProfileViewDetailed | undefined;
-  $effect(() => {
-    if (user.agent && !profile) {
-      user.agent.getProfile({ actor: page.params.did }).then((resp) => {
-        if (resp.success) {
-          profile = resp.data;
-        }
-      });
-    }
-  });
+  // // Load bluesky profile
+  // let profile = $state(undefined) as ProfileViewDetailed | undefined;
+  // $effect(() => {
+  //   if (user.agent && !profile) {
+  //     user.agent.getProfile({ actor: page.params.did }).then((resp) => {
+  //       if (resp.success) {
+  //         profile = resp.data;
+  //       }
+  //     });
+  //   }
+  // });
 
   $effect(() => {
     if (currentThread) {
