@@ -85,6 +85,21 @@
 
     window.location.reload();
   }
+
+  let loginError = $state("");
+  async function login() {
+    loginLoading = true;
+
+    try {
+      handleInput = cleanHandle(handleInput);
+      await user.loginWithHandle(handleInput);
+    } catch (e: any) {
+      console.error(e);
+      loginError = e.toString();
+    }
+
+    loginLoading = false;
+  }
 </script>
 
 <svelte:head>
@@ -92,7 +107,9 @@
 </svelte:head>
 
 <!-- Container -->
-<div class={`relative flex ${isMobile ? "p-2 gap-1" : "gap-2 p-4"} bg-violet-900 w-screen h-screen`}>
+<div
+  class={`relative flex ${isMobile ? "p-2 gap-1" : "gap-2 p-4"} bg-violet-900 w-screen h-screen`}
+>
   <Toaster />
   <!-- Server Bar -->
   <aside
@@ -241,7 +258,10 @@
           <Button.Root
             class="hover:scale-105 active:scale-95 transition-all duration-150"
           >
-            <AvatarImage handle={user.profile.data?.handle || ""} avatarUrl={user.profile.data?.avatar} />
+            <AvatarImage
+              handle={user.profile.data?.handle || ""}
+              avatarUrl={user.profile.data?.avatar}
+            />
           </Button.Root>
         {/snippet}
 
@@ -255,14 +275,10 @@
             </Button.Root>
           </section>
         {:else}
-          <form
-            class="flex flex-col gap-4"
-            onsubmit={async () => {
-              loginLoading = true;
-              handleInput = cleanHandle(handleInput);
-              await user.loginWithHandle(handleInput);
-            }}
-          >
+          <form class="flex flex-col gap-4" onsubmit={login}>
+            {#if loginError}
+              <p class="text-red-500">{loginError}</p>
+            {/if}
             <input
               bind:value={handleInput}
               placeholder="Handle (eg alice.bsky.social)"
