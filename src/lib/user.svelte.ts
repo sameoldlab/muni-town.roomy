@@ -139,7 +139,7 @@ export const user = {
     const url = await atproto.oauth.authorize(handle, {
       scope: atproto.scope,
     });
-    window.open(url, "_self", "noopener");
+    window.location.href = url.href;
 
     // Protect against browser's back-forward cache
     await new Promise<never>((_resolve, reject) => {
