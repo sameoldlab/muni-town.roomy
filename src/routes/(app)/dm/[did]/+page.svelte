@@ -15,6 +15,7 @@
     Avatar,
     Button,
     Popover,
+    ScrollArea,
     Tabs,
     Toggle,
   } from "bits-ui";
@@ -29,6 +30,7 @@
   import type { Channel, Did, Thread, Ulid } from "$lib/schemas/types";
   import type { Autodoc } from "$lib/autodoc/peer";
   import AvatarImage from "$lib/components/AvatarImage.svelte";
+  import { outerWidth } from "svelte/reactivity/window";
 
   let tab = $state("chat");
   let channel: Autodoc<Channel> | undefined = $derived(g.dms[page.params.did]);
@@ -43,8 +45,8 @@
       return null;
     }
   });
-  let width: number = $state(0);
-  let isMobile = $derived(width < 640);
+
+  let isMobile = $derived((outerWidth.current || 0) < 640);
 
   // Load bluesky profile
   let profile = $state(undefined) as ProfileViewDetailed | undefined;
@@ -130,7 +132,7 @@
   // Mark the current DM as read.
   $effect(() => {
     const did = page.params.did!;
-    const doc = channel?.view;
+    const doc = info?.view;
     untrack(() => {
       const unread = unreadCount(
         doc,
@@ -211,12 +213,10 @@
   }
 </script>
 
-<svelte:window bind:outerWidth={width} />
-
 <header class="flex flex-none items-center justify-between border-b-1 pb-4">
   <div class="flex gap-4 items-center">
     {#if isMobile}
-      <Button.Root onclick={() => goto("/dm")}>
+      <Button.Root onclick={() => goto(`/dm`)}>
         <Icon icon="uil:left" color="white" />
       </Button.Root>
     {:else}
@@ -225,7 +225,7 @@
 
     <span class="flex gap-2 items-center">
       {#if !isMobile || (isMobile && !currentThread)}
-        <h4 class={`${isMobile && "w-16 overflow-hidden text-ellipsis"} text-white text-lg font-bold`}>
+        <h4 class={`${isMobile && "line-clamp-1 overflow-hidden text-ellipsis"} text-white text-lg font-bold`}>
           {info?.name}
         </h4>
       {/if}
@@ -242,7 +242,6 @@
     </span>
   </div>
 
-  {#if !isThreading.value && !(isMobile && currentThread)}
     <Tabs.Root bind:value={tab}>
       <Tabs.List class="grid grid-cols-2 gap-4 border text-white p-1 rounded">
         <Tabs.Trigger
@@ -270,49 +269,178 @@
         </Tabs.Trigger>
       </Tabs.List>
     </Tabs.Root>
+
+  {#if !isMobile}
+    <div class="flex">
+      {@render toolbar({ growButton: false })}
+    </div>
   {/if}
+</header>
 
-  <menu class="flex items-center gap-2">
-    {#if isThreading.value}
-      <div in:fly>
-        <Popover.Root>
-          <Popover.Trigger
-            class="cursor-pointer mx-2 px-4 py-2 rounded bg-violet-800 text-white"
-          >
-            Create Thread
-          </Popover.Trigger>
+{#if tab === "chat"}
+  {@render chatTab()}
+{:else if tab === "threads"}
+  {@render threadsTab()}
+{/if}
 
-          <Popover.Content
-            transition={fly}
-            sideOffset={8}
-            class="bg-violet-800 p-4 rounded"
-          >
-            <form
-              onsubmit={createThread}
-              class="text-white flex flex-col gap-4"
+{#snippet chatTab()}
+  {#if channel} 
+    <ChatArea
+      source={{ type: "channel", channel }}
+    />
+    <div class="flex">
+      {#if !isMobile || !isThreading.value}
+        <form onsubmit={sendMessage} class="grow flex flex-col">
+          {#if replyingTo}
+            <div
+              class="flex justify-between bg-violet-800 text-white rounded-t-lg px-4 py-2"
             >
-              <label class="flex flex-col gap-1">
-                Thread Title
-                <input
-                  bind:value={threadTitleInput}
-                  type="text"
-                  placeholder="Notes"
-                  class="border px-4 py-2 rounded"
-                />
-              </label>
-              <Popover.Close>
-                <button
-                  type="submit"
-                  class="text-black px-4 py-2 bg-white rounded w-full text-center"
-                >
-                  Confirm
-                </button>
-              </Popover.Close>
-            </form>
-          </Popover.Content>
-        </Popover.Root>
-      </div>
+              <div class="flex flex-col gap-1">
+                <h5 class="flex gap-2 items-center">
+                  Replying to
+                  <Avatar.Root class="w-4">
+                    <Avatar.Image
+                      src={replyingTo.profile.avatarUrl}
+                      class="rounded-full"
+                    />
+                    <Avatar.Fallback>
+                      <AvatarBeam name={replyingTo.profile.handle} />
+                    </Avatar.Fallback>
+                  </Avatar.Root>
+                  <strong>{replyingTo.profile.handle}</strong>
+                </h5>
+                <p class="text-gray-300 text-ellipsis italic">
+                  {@html renderMarkdownSanitized(replyingTo.content)}
+                </p>
+              </div>
+              <Button.Root
+                type="button"
+                onclick={() => (replyingTo = null)}
+                class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
+              >
+                <Icon icon="zondicons:close-solid" />
+              </Button.Root>
+            </div>
+          {/if}
+          <input
+            type="text"
+            class={`w-full px-4 py-2 flex-none text-white bg-violet-900 ${replyingTo ? "rounded-b-lg" : "rounded-lg"}`}
+            placeholder="Say something..."
+            bind:value={messageInput}
+          />
+        </form>
+      {/if}
+
+      {#if isMobile}
+        {@render toolbar({ growButton: true })}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet threadsTab()}
+  {#if channel}
+    {#if currentThread}
+      <section class="flex flex-col gap-4"> 
+        <menu class="px-4 py-2 w-full flex justify-between items-center h-fit">
+          <Button.Root onclick={() => goto(`/dm/${page.params.did}`)}>
+            <Icon icon="uil:left" color="white" />
+          </Button.Root>
+          <Dialog title="Delete Thread">
+            {#snippet dialogTrigger()}
+              <Icon icon="tabler:trash" color="red" class="text-2xl" />
+            {/snippet}
+            <div class="flex flex-col items-center gap-4">
+              <p>The thread will be unrecoverable once deleted.</p>
+              <Button.Root
+                onclick={() =>
+                  deleteThread(page.url.searchParams.get("thread")!)}
+                class="flex items-center gap-3 px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
+              >
+                Confirm Delete
+              </Button.Root>
+            </div>
+          </Dialog>
+        </menu>
+
+        <ScrollArea.Root>
+          <ScrollArea.Viewport class="min-w-screen h-full max-h-[80%]">
+            <ScrollArea.Content>
+              <ol class="flex flex-col gap-4">
+                {#each currentThread.timeline as id}
+                  <ChatMessage {id} messages={channel.view.messages} />
+                {/each}
+              </ol>
+            </ScrollArea.Content>
+          </ScrollArea.Viewport>
+          <ScrollArea.Scrollbar
+            orientation="vertical"
+            class="flex h-full w-2.5 touch-none select-none rounded-full border-l border-l-transparent p-px transition-all hover:w-3 hover:bg-dark-10"
+          >
+            <ScrollArea.Thumb
+              class="relative flex-1 rounded-full bg-muted-foreground opacity-40 transition-opacity hover:opacity-100"
+            />
+          </ScrollArea.Scrollbar>
+          <ScrollArea.Corner />
+        </ScrollArea.Root>
+      </section>
+    {:else}
+      <ul class="overflow-y-auto px-2 gap-3 flex flex-col">
+        {#each Object.entries(channel.view.threads) as [id, thread] (id)}
+          <ThreadRow
+            {id}
+            {thread}
+            onclick={() => goto(`?thread=${id}`)}
+            onclickDelete={() => deleteThread(id)}
+          />
+        {/each}
+      </ul>
     {/if}
+  {/if}
+{/snippet}
+
+{#snippet toolbar({ growButton = false }: { growButton: boolean })}
+  {#if isThreading.value}
+    <div in:fly class={`${growButton && "grow w-full pr-2"}`}>
+      <Popover.Root>
+        <Popover.Trigger
+          class={`cursor-pointer ${growButton ? "w-full" : "w-fit"} px-4 py-2 rounded bg-violet-800 text-white`}
+        >
+          Create Thread
+        </Popover.Trigger>
+
+        <Popover.Content
+          transition={fly}
+          sideOffset={8}
+          class="bg-violet-800 p-4 rounded"
+        >
+          <form
+            onsubmit={createThread}
+            class="text-white flex flex-col gap-4"
+          >
+            <label class="flex flex-col gap-1">
+              Thread Title
+              <input
+                bind:value={threadTitleInput}
+                type="text"
+                placeholder="Notes"
+                class="border px-4 py-2 rounded"
+              />
+            </label>
+            <Popover.Close>
+              <button
+                type="submit"
+                class="text-black px-4 py-2 bg-white rounded w-full text-center"
+              >
+                Confirm
+              </button>
+            </Popover.Close>
+          </form>
+        </Popover.Content>
+      </Popover.Root>
+    </div>
+  {/if}
+  <menu class="relative flex items-center gap-2 px-2 w-fit self-end">
     <Toggle.Root
       bind:pressed={isThreading.value}
       disabled={tab !== "chat"}
@@ -328,137 +456,10 @@
       title="Copy invite link"
       class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
       onclick={() => {
-        navigator.clipboard.writeText(
-          `${page.url.protocol}//${page.url.host}/invite/dm/${user.agent?.assertDid}`,
-        );
+        navigator.clipboard.writeText(`${page.url.href}`);
       }}
     >
       <Icon icon="icon-park-outline:copy-link" color="white" class="text-2xl" />
     </Button.Root>
-    <Button.Root
-      class="p-2 cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
-    >
-      <Icon icon="basil:settings-alt-solid" color="white" class="text-2xl" />
-    </Button.Root>
   </menu>
-</header>
-
-{#if !channel}
-  <div class="flex w-full h-full justify-center items-center">
-    <div class="flex flex-col items-center gap-8">
-      {#if profile}
-        <Avatar.Root class="w-40">
-          <Avatar.Image src={profile.avatar} class="rounded-full" />
-          <Avatar.Fallback>
-            <AvatarBeam name={profile.handle} />
-          </Avatar.Fallback>
-        </Avatar.Root>
-
-        <span class="flex flex-col gap-2 text-white text-center font-bold text-2xl">
-          <h2>{`${profile.displayName ?? ""}`}</h2>
-          <h3 class="text-gray-300">@{profile.handle}</h3>
-        </span>
-      {/if}
-
-      <Button.Root
-        class="bg-white h-fit font-medium px-4 py-2 flex gap-2 items-center justify-center rounded-lg hover:scale-105 active:scale-95 transition-all duration-150 m-auto"
-        onclick={openDirectMessage}
-      >
-        <Icon icon="ri:add-fill" class="text-lg" />
-        Open Direct Message
-      </Button.Root>
-    </div>
-  </div>
-{/if}
-
-{@render chatTab()}
-{@render threadsTab()}
-
-{#snippet chatTab()}
-  {#if channel && tab === "chat"}
-    <ChatArea source={{ type: "channel", channel }} />
-    <form onsubmit={sendMessage} class="flex flex-col">
-      {#if replyingTo}
-        <div
-          class="flex justify-between bg-violet-800 text-white rounded-t-lg px-4 py-2"
-        >
-          <div class="flex flex-col gap-1">
-            <h5 class="flex gap-2 items-center">
-              Replying to
-              <Avatar.Root class="w-4">
-                <Avatar.Image
-                  src={replyingTo.profile.avatarUrl}
-                  class="rounded-full"
-                />
-                <Avatar.Fallback>
-                  <AvatarBeam name={replyingTo.profile.handle} />
-                </Avatar.Fallback>
-              </Avatar.Root>
-              <strong>{replyingTo.profile.handle}</strong>
-            </h5>
-            <p class="text-gray-300 text-ellipsis italic">
-              {@html renderMarkdownSanitized(replyingTo.content)}
-            </p>
-          </div>
-          <Button.Root
-            type="button"
-            onclick={() => (replyingTo = null)}
-            class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150"
-          >
-            <Icon icon="zondicons:close-solid" />
-          </Button.Root>
-        </div>
-      {/if}
-      <input
-        type="text"
-        class={`w-full px-4 py-2 flex-none text-white bg-violet-900 ${replyingTo ? "rounded-b-lg" : "rounded-lg"}`}
-        placeholder="Say something..."
-        bind:value={messageInput}
-      />
-    </form>
-  {/if}
-{/snippet}
-
-{#snippet threadsTab()}
-  {#if channel && tab === "threads"}
-    {#if currentThread}
-      <section class="flex flex-col gap-4 items-start">
-        <menu class="px-4 py-2 flex w-full justify-between">
-          <Button.Root
-            onclick={() => goto(page.url.pathname)}
-            class="flex gap-2 items-center text-white cursor-pointer hover:scale-105 transitiona-all duration-150"
-          >
-            <Icon icon="uil:left" />
-            Back
-          </Button.Root>
-          <Dialog title="Delete Thread" description="The thread will be unrecoverable once deleted">
-            {#snippet dialogTrigger()}
-              <Icon icon="tabler:trash" color="red" class="text-2xl" />
-            {/snippet}
-            <Button.Root
-              onclick={() => deleteThread(page.url.searchParams.get("thread")!)}
-              class="flex items-center gap-3 px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
-            >
-              Confirm Delete
-            </Button.Root>
-          </Dialog>
-        </menu>
-
-        {#each currentThread.timeline as id}
-          <ChatMessage {id} messages={channel.view.messages} />
-        {/each}
-      </section>
-    {:else}
-      <ul class="overflow-y-auto px-2 gap-3 flex flex-col">
-        {#each Object.entries(channel.view.threads) as [id, thread] (id)}
-          <ThreadRow
-            {id}
-            {thread}
-            onclick={() => goto(`?thread=${id}`)}
-            onclickDelete={() => deleteThread(id)}
-          />
-        {/each}
-      </ul>
-    {/if}
-  {/if}
 {/snippet}

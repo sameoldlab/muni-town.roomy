@@ -1,10 +1,9 @@
 <script lang="ts">
   import { ScrollArea } from "bits-ui";
+  import { onNavigate } from "$app/navigation";
   import ChatMessage from "./ChatMessage.svelte";
   import type { Autodoc } from "$lib/autodoc/peer";
   import type { Channel, Space } from "$lib/schemas/types";
-  import { page } from "$app/state";
-  import { onNavigate } from "$app/navigation";
 
   let {
     source,
@@ -47,7 +46,7 @@
 </script>
 
 <ScrollArea.Root>
-  <ScrollArea.Viewport bind:el={viewport} class="w-full h-full">
+  <ScrollArea.Viewport bind:el={viewport} class="w-full max-w-screen h-full">
     <ScrollArea.Content>
       <ol class="flex flex-col gap-4">
         {#each timeline as id (id)}
