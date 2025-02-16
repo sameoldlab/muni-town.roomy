@@ -2,6 +2,7 @@
   import type { Autodoc } from "$lib/autodoc/peer";
   import ChatArea from "$lib/components/ChatArea.svelte";
   import { g } from "$lib/global.svelte";
+  import Dialog from "$lib/components/Dialog.svelte";
   import type {
     Did,
     Space,
@@ -15,7 +16,6 @@
   import {
     Avatar,
     Button,
-    Dialog,
     Popover,
     ScrollArea,
     Separator,
@@ -214,6 +214,54 @@
     toast.success("Thread deleted", { position: "bottom-end" });
     goto(page.url.pathname);
   }
+
+  //
+  // Settings Dialog
+  //
+
+  let showSettingsDialog = $state(false);
+  let channelNameInput = $state("");
+  let channelCategoryInput = $state(undefined) as undefined | string;
+  $effect(() => {
+    channelNameInput = channel?.name || "";
+    channelCategoryInput = Object.entries(space.view.categories).find(
+      ([_id, category]) => category.channels.includes(page.params.channel),
+    )?.[0];
+  });
+  function saveSettings() {
+    space?.change((space) => {
+      if (channelNameInput) {
+        space.channels[page.params.channel].name = channelNameInput;
+      }
+      Object.entries(space.categories).forEach(([catId, category]) => {
+        if (channelCategoryInput !== catId) {
+          const idx = category.channels.indexOf(page.params.channel);
+          if (idx !== -1) {
+            category.channels.splice(idx, 1);
+          }
+        }
+        if (channelCategoryInput) {
+          const category = space.categories[channelCategoryInput];
+          if (!category.channels.includes(page.params.channel)) {
+            category.channels.push(page.params.channel);
+          }
+          const idx = space.sidebarItems.findIndex(
+            (x) => x.type == "channel" && x.id == page.params.channel,
+          );
+          if (idx !== -1) {
+            space.sidebarItems.splice(idx, 1);
+          }
+        } else if (
+          !space.sidebarItems.find(
+            (x) => x.type == "channel" && x.id == page.params.channel,
+          )
+        ) {
+          space.sidebarItems.push({ type: "channel", id: page.params.channel });
+        }
+      });
+    });
+    showSettingsDialog = false;
+  }
 </script>
 
 <header class="flex flex-none items-center justify-between border-b-1 pb-4">
@@ -228,7 +276,9 @@
 
     <span class="flex gap-2 items-center">
       {#if !isMobile || (isMobile && !currentThread)}
-        <h4 class={`${isMobile && "line-clamp-1 overflow-hidden text-ellipsis"} text-white text-lg font-bold`}>
+        <h4
+          class={`${isMobile && "line-clamp-1 overflow-hidden text-ellipsis"} text-white text-lg font-bold`}
+        >
           {channel?.name}
         </h4>
       {/if}
@@ -245,33 +295,33 @@
     </span>
   </div>
 
-    <Tabs.Root bind:value={tab}>
-      <Tabs.List class="grid grid-cols-2 gap-4 border text-white p-1 rounded">
-        <Tabs.Trigger
-          value="chat"
-          onclick={() => goto(page.url.pathname)}
-          class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded"
-        >
-          <Icon icon="tabler:message" color="white" class="text-2xl" />
-          {#if !isMobile}
-            <p>Chat</p>
-          {/if}
-        </Tabs.Trigger>
-        <Tabs.Trigger
-          value="threads"
-          class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded"
-        >
-          <Icon
-            icon="material-symbols:thread-unread-rounded"
-            color="white"
-            class="text-2xl"
-          />
-          {#if !isMobile}
-            <p>Threads</p>
-          {/if}
-        </Tabs.Trigger>
-      </Tabs.List>
-    </Tabs.Root>
+  <Tabs.Root bind:value={tab}>
+    <Tabs.List class="grid grid-cols-2 gap-4 border text-white p-1 rounded">
+      <Tabs.Trigger
+        value="chat"
+        onclick={() => goto(page.url.pathname)}
+        class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded"
+      >
+        <Icon icon="tabler:message" color="white" class="text-2xl" />
+        {#if !isMobile}
+          <p>Chat</p>
+        {/if}
+      </Tabs.Trigger>
+      <Tabs.Trigger
+        value="threads"
+        class="flex gap-2 w-full justify-center transition-all duration-150 items-center px-4 py-1 data-[state=active]:bg-violet-800 rounded"
+      >
+        <Icon
+          icon="material-symbols:thread-unread-rounded"
+          color="white"
+          class="text-2xl"
+        />
+        {#if !isMobile}
+          <p>Threads</p>
+        {/if}
+      </Tabs.Trigger>
+    </Tabs.List>
+  </Tabs.Root>
 
   {#if !isMobile}
     <div class="flex">
@@ -287,7 +337,7 @@
 {/if}
 
 {#snippet chatTab()}
-  {#if space} 
+  {#if space}
     <ChatArea
       source={{ type: "space", space, channelId: page.params.channel }}
     />
@@ -353,50 +403,21 @@
             <Icon icon="uil:left" />
             Back
           </Button.Root>
-          <Dialog.Root>
-            <Dialog.Trigger
-              class="hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer"
-            >
+          <Dialog title="Delete Thread" bind:isDialogOpen={showSettingsDialog}>
+            {#snippet dialogTrigger()}
               <Icon icon="tabler:trash" color="red" class="text-2xl" />
-            </Dialog.Trigger>
-            <Dialog.Portal>
-              <Dialog.Overlay
-                transition={fade}
-                transitionConfig={{ duration: 150 }}
-                class="fixed inset-0 z-50 bg-black/80"
-              />
-              <Dialog.Content
-                class="fixed p-5 flex flex-col text-white gap-4 w-dvw max-w-(--breakpoint-sm) left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%] rounded-lg border bg-purple-950"
+            {/snippet}
+            <div class="flex flex-col items-center gap-4">
+              <p>The thread will be unrecoverable once deleted.</p>
+              <Button.Root
+                onclick={() =>
+                  deleteThread(page.url.searchParams.get("thread")!)}
+                class="flex items-center gap-3 px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
               >
-                <Dialog.Title
-                  class="text-bold font-bold text-xl flex items-center justify-center gap-4"
-                >
-                  <Icon
-                    icon="ri:alarm-warning-fill"
-                    color="red"
-                    class="text-2xl"
-                  />
-                  <span> Delete Thread </span>
-                  <Icon
-                    icon="ri:alarm-warning-fill"
-                    color="red"
-                    class="text-2xl"
-                  />
-                </Dialog.Title>
-                <Separator.Root class="border border-white" />
-                <div class="flex flex-col items-center gap-4">
-                  <p>The thread will be unrecoverable once deleted.</p>
-                  <Button.Root
-                    onclick={() =>
-                      deleteThread(page.url.searchParams.get("thread")!)}
-                    class="flex items-center gap-3 px-4 py-2 max-w-[20em] bg-red-600 text-white rounded-lg hover:scale-[102%] active:scale-95 transition-all duration-150"
-                  >
-                    Confirm Delete
-                  </Button.Root>
-                </div>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
+                Confirm Delete
+              </Button.Root>
+            </div>
+          </Dialog>
         </menu>
 
         <ScrollArea.Root>
@@ -450,10 +471,7 @@
           sideOffset={8}
           class="bg-violet-800 p-4 rounded"
         >
-          <form
-            onsubmit={createThread}
-            class="text-white flex flex-col gap-4"
-          >
+          <form onsubmit={createThread} class="text-white flex flex-col gap-4">
             <label class="flex flex-col gap-1">
               Thread Title
               <input
@@ -476,7 +494,7 @@
       </Popover.Root>
     </div>
   {/if}
-  <menu class="relative flex items-center gap-2 px-2 w-fit self-end">
+  <menu class="relative flex items-center gap-3 px-2 w-fit self-end">
     <Toggle.Root
       bind:pressed={isThreading.value}
       disabled={tab !== "chat"}
@@ -497,5 +515,45 @@
     >
       <Icon icon="icon-park-outline:copy-link" color="white" class="text-2xl" />
     </Button.Root>
+
+    <Dialog title="Channel Settings" bind:isDialogOpen={showSettingsDialog}>
+      {#snippet dialogTrigger()}
+        <Button.Root
+          title="Channel Settings"
+          class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150 m-auto flex"
+        >
+          <Icon icon="lucide:settings" color="white" class="text-2xl" />
+        </Button.Root>
+      {/snippet}
+
+      <form class="flex flex-col gap-4 w-full" onsubmit={saveSettings}>
+        <label>
+          Name
+          <input
+            bind:value={channelNameInput}
+            placeholder="channel-name"
+            class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
+          />
+        </label>
+        {#if space}
+          <select bind:value={channelCategoryInput}>
+            <option class="bg-violet-900 text-white" value={undefined}
+              >Category: None</option
+            >
+            {#each Object.keys(space.view.categories) as categoryId}
+              {@const category = space.view.categories[categoryId]}
+              <option class="bg-violet-900 text-white" value={categoryId}
+                >Category: {category.name}</option
+              >
+            {/each}
+          </select>
+        {/if}
+        <Button.Root
+          class={`px-4 py-2 bg-white text-black rounded-lg disabled:bg-white/50 active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 hover:scale-[102%]`}
+        >
+          Save Settings
+        </Button.Root>
+      </form>
+    </Dialog>
   </menu>
 {/snippet}
