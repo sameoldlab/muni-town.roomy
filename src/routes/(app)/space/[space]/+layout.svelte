@@ -7,7 +7,6 @@
   import { page } from "$app/state";
   import { g } from "$lib/global.svelte";
   import { goto } from "$app/navigation";
-  import { slide } from "svelte/transition";
   import { outerWidth } from "svelte/reactivity/window";
 
   import type { Space } from "$lib/schemas/types";
@@ -79,6 +78,20 @@
         knownMembers: [],
       });
     });
+  }
+
+  //
+  // Category Edit Dialog
+  //
+
+  let showCategoryDialog = $state(false);
+  let editingCategory = $state("");
+  let categoryNameInput = $state("");
+  function saveCategory() {
+    space?.change((space) => {
+      space.categories[editingCategory].name = categoryNameInput;
+    });
+    showCategoryDialog = false;
   }
 </script>
 
@@ -180,8 +193,46 @@
         <h2 class="flex gap-2 items-center justify-start text-white">
           <Icon icon="basil:folder-solid" />
           {category.name}
+
+          <span class="flex-grow" />
+
+          {#if isAdmin}
+            <Dialog
+              title="Channel Settings"
+              bind:isDialogOpen={showCategoryDialog}
+            >
+              {#snippet dialogTrigger()}
+                <Button.Root
+                  title="Channel Settings"
+                  class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150 m-auto flex"
+                  onclick={() => {
+                    editingCategory = item.id;
+                    categoryNameInput = category.name;
+                  }}
+                >
+                  <Icon icon="lucide:settings" color="white" class="text-2xl" />
+                </Button.Root>
+              {/snippet}
+
+              <form class="flex flex-col gap-4 w-full" onsubmit={saveCategory}>
+                <label>
+                  Name
+                  <input
+                    bind:value={categoryNameInput}
+                    placeholder="channel-name"
+                    class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
+                  />
+                </label>
+                <Button.Root
+                  class={`px-4 py-2 bg-white text-black rounded-lg disabled:bg-white/50 active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 hover:scale-[102%]`}
+                >
+                  Save Category
+                </Button.Root>
+              </form>
+            </Dialog>
+          {/if}
         </h2>
-        <hr class="mb-4" />
+        <hr />
         <ToggleGroup.Root
           type="single"
           bind:value={currentChannelId}
@@ -194,7 +245,7 @@
               value={channelId}
               class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
             >
-              <h3 class="flex justify-start items-center gap-2 ml-1">
+              <h3 class="flex justify-start items-center gap-2 ml-2">
                 <Icon icon="basil:comment-solid" />
                 {channel.name}
               </h3>
@@ -209,7 +260,7 @@
             value={item.id}
             class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white py-2 rounded-md"
           >
-            <h3 class="flex justify-start items-center gap-2">
+            <h3 class="flex justify-start items-center gap-2 px-2">
               <Icon icon="basil:comment-solid" />
               {channel.name}
             </h3>
