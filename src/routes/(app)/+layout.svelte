@@ -63,7 +63,10 @@
       });
     });
     setTimeout(() => {
-      g.spaces[id].change((doc) => (doc.name = newSpaceName));
+      g.spaces[id].change((doc) => {
+        doc.name = newSpaceName;
+        doc.admins.push(user.agent!.assertDid);
+      });
       newSpaceName = "";
     }, 0);
     isNewSpaceDialogOpen = false;
