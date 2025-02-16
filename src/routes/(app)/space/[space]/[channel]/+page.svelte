@@ -219,6 +219,9 @@
   // Settings Dialog
   //
 
+  let isAdmin = $derived(
+    user.agent && space && space.view.admins.includes(user.agent.assertDid),
+  );
   let showSettingsDialog = $state(false);
   let channelNameInput = $state("");
   let channelCategoryInput = $state(undefined) as undefined | string;
@@ -516,44 +519,46 @@
       <Icon icon="icon-park-outline:copy-link" color="white" class="text-2xl" />
     </Button.Root>
 
-    <Dialog title="Channel Settings" bind:isDialogOpen={showSettingsDialog}>
-      {#snippet dialogTrigger()}
-        <Button.Root
-          title="Channel Settings"
-          class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150 m-auto flex"
-        >
-          <Icon icon="lucide:settings" color="white" class="text-2xl" />
-        </Button.Root>
-      {/snippet}
+    {#if isAdmin}
+      <Dialog title="Channel Settings" bind:isDialogOpen={showSettingsDialog}>
+        {#snippet dialogTrigger()}
+          <Button.Root
+            title="Channel Settings"
+            class="cursor-pointer hover:scale-105 active:scale-95 transition-all duration-150 m-auto flex"
+          >
+            <Icon icon="lucide:settings" color="white" class="text-2xl" />
+          </Button.Root>
+        {/snippet}
 
-      <form class="flex flex-col gap-4 w-full" onsubmit={saveSettings}>
-        <label>
-          Name
-          <input
-            bind:value={channelNameInput}
-            placeholder="channel-name"
-            class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
-          />
-        </label>
-        {#if space}
-          <select bind:value={channelCategoryInput}>
-            <option class="bg-violet-900 text-white" value={undefined}
-              >Category: None</option
-            >
-            {#each Object.keys(space.view.categories) as categoryId}
-              {@const category = space.view.categories[categoryId]}
-              <option class="bg-violet-900 text-white" value={categoryId}
-                >Category: {category.name}</option
+        <form class="flex flex-col gap-4 w-full" onsubmit={saveSettings}>
+          <label>
+            Name
+            <input
+              bind:value={channelNameInput}
+              placeholder="channel-name"
+              class="w-full outline-hidden border border-white px-4 py-2 rounded-sm bg-transparent"
+            />
+          </label>
+          {#if space}
+            <select bind:value={channelCategoryInput}>
+              <option class="bg-violet-900 text-white" value={undefined}
+                >Category: None</option
               >
-            {/each}
-          </select>
-        {/if}
-        <Button.Root
-          class={`px-4 py-2 bg-white text-black rounded-lg disabled:bg-white/50 active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 hover:scale-[102%]`}
-        >
-          Save Settings
-        </Button.Root>
-      </form>
-    </Dialog>
+              {#each Object.keys(space.view.categories) as categoryId}
+                {@const category = space.view.categories[categoryId]}
+                <option class="bg-violet-900 text-white" value={categoryId}
+                  >Category: {category.name}</option
+                >
+              {/each}
+            </select>
+          {/if}
+          <Button.Root
+            class={`px-4 py-2 bg-white text-black rounded-lg disabled:bg-white/50 active:scale-95 transition-all duration-150 flex items-center justify-center gap-2 hover:scale-[102%]`}
+          >
+            Save Settings
+          </Button.Root>
+        </form>
+      </Dialog>
+    {/if}
   </menu>
 {/snippet}
