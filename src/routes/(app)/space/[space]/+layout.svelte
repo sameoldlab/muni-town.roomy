@@ -174,63 +174,49 @@
     <hr />
 
     <!-- Category and Channels -->
-    <Accordion.Root multiple class="flex flex-col gap-2 w-full text-white">
-      {#each space.view.sidebarItems as item}
-        {#if item.type == "category"}
-          {@const category = space.view.categories[item.id]}
-          <Accordion.Item value={item.id}>
-            <Accordion.Header>
-              <Accordion.Trigger
-                class="w-full flex justify-between items-center px-2 py-4 rounded-lg hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5"
-              >
-                <h2 class="flex gap-2 items-center justify-start">
-                  <Icon icon="basil:folder-solid" />
-                  {category.name}
-                </h2>
-                <Icon icon="ph:caret-up-down-bold" />
-              </Accordion.Trigger>
-            </Accordion.Header>
-            <Accordion.Content transition={slide}>
-              <hr class="mb-4" />
-              <ToggleGroup.Root
-                type="single"
-                bind:value={currentChannelId}
-                class="flex flex-col gap-2 items-center"
-              >
-                {#each category.channels as channelId}
-                  {@const channel = space.view.channels[channelId]}
-                  <ToggleGroup.Item
-                    onclick={() =>
-                      goto(`/space/${page.params.space}/${channelId}`)}
-                    value={channelId}
-                    class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
-                  >
-                    <h3 class="flex justify-start items-center gap-2">
-                      <Icon icon="basil:comment-solid" />
-                      {channel.name}
-                    </h3>
-                  </ToggleGroup.Item>
-                {/each}
-              </ToggleGroup.Root>
-            </Accordion.Content>
-          </Accordion.Item>
-        {:else}
-          {@const channel = space.view.channels[item.id]}
-          <ToggleGroup.Root type="single" bind:value={currentChannelId}>
+    {#each space.view.sidebarItems as item}
+      {#if item.type == "category"}
+        {@const category = space.view.categories[item.id]}
+        <h2 class="flex gap-2 items-center justify-start text-white">
+          <Icon icon="basil:folder-solid" />
+          {category.name}
+        </h2>
+        <hr class="mb-4" />
+        <ToggleGroup.Root
+          type="single"
+          bind:value={currentChannelId}
+          class="flex flex-col gap-2 items-center"
+        >
+          {#each category.channels as channelId}
+            {@const channel = space.view.channels[channelId]}
             <ToggleGroup.Item
-              onclick={() => goto(`/space/${page.params.space}/${item.id}`)}
-              value={item.id}
+              onclick={() => goto(`/space/${page.params.space}/${channelId}`)}
+              value={channelId}
               class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white px-4 py-2 rounded-md"
             >
-              <h3 class="flex justify-start items-center gap-2">
+              <h3 class="flex justify-start items-center gap-2 ml-1">
                 <Icon icon="basil:comment-solid" />
                 {channel.name}
               </h3>
             </ToggleGroup.Item>
-          </ToggleGroup.Root>
-        {/if}
-      {/each}
-    </Accordion.Root>
+          {/each}
+        </ToggleGroup.Root>
+      {:else}
+        {@const channel = space.view.channels[item.id]}
+        <ToggleGroup.Root type="single" bind:value={currentChannelId}>
+          <ToggleGroup.Item
+            onclick={() => goto(`/space/${page.params.space}/${item.id}`)}
+            value={item.id}
+            class="w-full text-start hover:scale-105 transition-all duration-150 active:scale-95 hover:bg-white/5 border border-transparent data-[state=on]:border-white data-[state=on]:scale-98 data-[state=on]:bg-white/5 text-white py-2 rounded-md"
+          >
+            <h3 class="flex justify-start items-center gap-2">
+              <Icon icon="basil:comment-solid" />
+              {channel.name}
+            </h3>
+          </ToggleGroup.Item>
+        </ToggleGroup.Root>
+      {/if}
+    {/each}
   </nav>
 
   <!-- Events/Room Content -->
