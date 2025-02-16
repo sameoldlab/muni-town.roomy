@@ -194,7 +194,7 @@
           <Icon icon="basil:folder-solid" />
           {category.name}
 
-          <span class="flex-grow" />
+          <span class="flex-grow"></span>
 
           {#if isAdmin}
             <Dialog
@@ -210,7 +210,7 @@
                     categoryNameInput = category.name;
                   }}
                 >
-                  <Icon icon="lucide:settings" color="white" class="text-2xl" />
+                  <Icon icon="lucide:settings" color="white" class="text-xl" />
                 </Button.Root>
               {/snippet}
 
