@@ -21,7 +21,8 @@
     message.author,
   );
   let messageRepliedTo = $derived(message.replyTo && messages[message.replyTo]);
-  let profileRepliedTo = messageRepliedTo && getProfile(messageRepliedTo.author);
+  let profileRepliedTo =
+    messageRepliedTo && getProfile(messageRepliedTo.author);
 
   // TODO: refactor to $derived
   let reactionHandles = $state({}) as { [reaction: string]: string[] };
@@ -126,7 +127,7 @@
             isDrawerOpen = true;
           }
         }}
-        class="flex flex-col text-start gap-2 text-white w-full"
+        class="flex flex-col text-start gap-2 text-white w-full min-w-0"
       >
         <section class="flex items-center gap-2 flex-wrap w-fit">
           <a
@@ -138,7 +139,7 @@
           {@render timestamp()}
         </section>
 
-        <p class="text-lg prose-invert chat">
+        <p class="text-lg prose-invert chat min-w-0 max-w-full overflow-hidden text-ellipsis">
           {@html renderMarkdownSanitized(message.content)}
         </p>
       </Button.Root>
@@ -288,7 +289,9 @@
             <AvatarBeam name={profileRepliedTo.handle} />
           </Avatar.Fallback>
         </Avatar.Root>
-        <h5 class="text-white font-medium text-ellipsis">{profileRepliedTo.handle}</h5>
+        <h5 class="text-white font-medium text-ellipsis">
+          {profileRepliedTo.handle}
+        </h5>
       </div>
       <p class="line-clamp-1 basis-1/2 md:basis-auto overflow-hidden italic">
         {@html renderMarkdownSanitized(messageRepliedTo.content)}
@@ -302,6 +305,11 @@
 
   .chat :global(a) {
     @apply underline;
+  }
+
+  .chat :global(*) {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .chat :global(blockquote) {

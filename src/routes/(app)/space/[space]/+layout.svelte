@@ -225,7 +225,7 @@
 
   <!-- Events/Room Content -->
   {#if !isMobile}
-    <main class="flex flex-col gap-4 bg-violet-950 rounded-lg p-4 grow">
+    <main class="flex flex-col gap-4 bg-violet-950 rounded-lg p-4 grow min-w-0">
       {@render children()}
     </main>
   {:else if page.params.channel}

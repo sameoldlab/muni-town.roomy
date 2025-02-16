@@ -108,7 +108,7 @@
 
 <!-- Container -->
 <div
-  class={`relative flex ${isMobile ? "p-2 gap-1" : "gap-2 p-4"} bg-violet-900 w-screen h-screen`}
+  class={`relative flex max-w-full ${isMobile ? "p-2 gap-1" : "gap-2 p-4"} bg-violet-900 w-screen h-screen`}
 >
   <Toaster />
   <!-- Server Bar -->
