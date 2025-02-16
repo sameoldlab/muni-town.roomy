@@ -48,17 +48,22 @@ async function updateSchema<T>(name: string, change: Automerge.ChangeFn<T>) {
 //   doc.timeline = [];
 // });
 
-exportSchema<Space>("space", (space) => {
-  space.threads = {};
-  space.messages = {};
-  space.channels = {};
-  space.categories = {};
-  space.sidebarItems = [];
-  space.name = "";
-  space.avatarUrl = "";
-  space.description = "";
-});
+// exportSchema<Space>("space", (space) => {
+//   space.threads = {};
+//   space.messages = {};
+//   space.channels = {};
+//   space.categories = {};
+//   space.sidebarItems = [];
+//   space.name = "";
+//   space.avatarUrl = "";
+//   space.description = "";
+// });
 
 // updateSchema<Catalog>("catalog", (doc) => {
 //   doc.spaces = [];
+// });
+
+// updateSchema<Space>("space", (doc) => {
+//   doc.moderators = [];
+//   doc.admins = [];
 // });

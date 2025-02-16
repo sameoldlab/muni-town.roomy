@@ -67,6 +67,8 @@ export type SpaceCategory = {
 export type SidebarItem = { type: "category" | "channel"; id: Ulid };
 
 export type Space = {
+  admins: Ulid[];
+  moderators: Ulid[];
   threads: { [ulid: Ulid]: Thread };
   messages: { [ulid: Ulid]: Message };
   channels: { [ulid: Ulid]: SpaceChannel };
