@@ -41,7 +41,7 @@
   onNavigate(() => {
     setTimeout(() => {
       if (virtualizer) virtualizer.scrollToIndex(timeline.length - 1);
-    }, 0);
+    }, 100);
   });
   $effect(() => {
     scrollToEnd;
