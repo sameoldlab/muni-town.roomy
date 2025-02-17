@@ -5,6 +5,7 @@
   import type { Autodoc } from "$lib/autodoc/peer";
   import type { Channel, Space } from "$lib/schemas/types";
   import { Virtualizer } from "virtua/svelte";
+  import { setContext } from "svelte";
 
   let {
     source,
@@ -25,14 +26,21 @@
       : source.space.view.channels[source.channelId]?.timeline,
   );
 
+  setContext("scrollToMessage", (id: string) => {
+    const idx = timeline.indexOf(id);
+    if (idx !== -1 && virtualizer)
+      virtualizer.scrollToIndex(idx, { smooth: true });
+  });
+
   // ScrollArea
   let viewport: HTMLDivElement | undefined = $state();
+  let virtualizer: Virtualizer<string> | undefined = $state();
 
   // Go to the end of the ScrollArea
   let scrollToEnd = $state(false);
   onNavigate(() => {
     setTimeout(() => {
-      scrollToEnd = true;
+      if (virtualizer) virtualizer.scrollToIndex(timeline.length - 1);
     }, 0);
   });
   $effect(() => {
@@ -66,7 +74,8 @@
         -->
         {#key viewport}
           <Virtualizer
-            data={timeline}
+            bind:this={virtualizer}
+            data={timeline || []}
             getKey={(k, _) => k}
             scrollRef={viewport}
           >

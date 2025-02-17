@@ -63,6 +63,7 @@
     id: Ulid,
     reaction: string,
   ) => void;
+  const scrollToMessage = getContext("scrollToMessage") as (id: Ulid) => void;
 
   function onEmojiPick(event: Event) {
     // @ts-ignore
@@ -83,8 +84,7 @@
     if (!message.replyTo) {
       return;
     }
-    let element = document.getElementById(message.replyTo);
-    element?.scrollIntoView({ behavior: "smooth" });
+    scrollToMessage(message.replyTo);
   }
 
   $effect(() => {
@@ -139,7 +139,9 @@
           {@render timestamp()}
         </section>
 
-        <p class="text-lg prose-invert chat min-w-0 max-w-full overflow-hidden text-ellipsis">
+        <p
+          class="text-lg prose-invert chat min-w-0 max-w-full overflow-hidden text-ellipsis"
+        >
           {@html renderMarkdownSanitized(message.content)}
         </p>
       </Button.Root>
