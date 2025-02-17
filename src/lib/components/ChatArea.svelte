@@ -54,7 +54,7 @@
   });
 </script>
 
-<ScrollArea.Root>
+<ScrollArea.Root type="always">
   <ScrollArea.Viewport bind:el={viewport} class="w-full max-w-full h-full">
     <ScrollArea.Content style="display: block;">
       <ol class="flex flex-col gap-4 max-w-full">
@@ -92,7 +92,7 @@
     class="flex h-full w-2.5 touch-none select-none rounded-full border-l border-l-transparent p-px transition-all hover:w-3 hover:bg-dark-10 mr-1"
   >
     <ScrollArea.Thumb
-      class="relative flex-1 rounded-full bg-violet-950 opacity-75 transition-opacity hover:opacity-100"
+      class="relative flex-1 rounded-full bg-violet-950 transition-opacity"
     />
   </ScrollArea.Scrollbar>
   <ScrollArea.Corner />
