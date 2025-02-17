@@ -40,6 +40,7 @@
     "npm:ulidx@^2.4.1": "2.4.1",
     "npm:underscore@^1.13.7": "1.13.7",
     "npm:vaul-svelte@~0.3.2": "0.3.2_svelte@5.19.3__acorn@8.14.0",
+    "npm:virtua@0.40": "0.40.0_svelte@5.19.3__acorn@8.14.0",
     "npm:vite-plugin-arraybuffer@^0.0.8": "0.0.8",
     "npm:vite-plugin-top-level-await@^1.4.4": "1.4.4_vite@6.0.11",
     "npm:vite-plugin-wasm@^3.4.1": "3.4.1_vite@6.0.11",
@@ -2076,6 +2077,12 @@
         "svelte@5.19.3_acorn@8.14.0"
       ]
     },
+    "virtua@0.40.0_svelte@5.19.3__acorn@8.14.0": {
+      "integrity": "sha512-B/9Mk8wCWukcC5bLxCCt6DBytTOydnPRVQfqLAnC+ybsD47A6oarxFLOF2h3++CtR0bTShsGaHIgnIePQCQLtA==",
+      "dependencies": [
+        "svelte@5.19.3_acorn@8.14.0"
+      ]
+    },
     "vite-node@3.0.5": {
       "integrity": "sha512-02JEJl7SbtwSDJdYS537nU6l+ktdvcREfLksk/NDAqtdKWGqHl+joXzEubHROmS3E6pip+Xgu2tFezMu75jH7A==",
       "dependencies": [
@@ -2217,6 +2224,7 @@
         "npm:ulidx@^2.4.1",
         "npm:underscore@^1.13.7",
         "npm:vaul-svelte@~0.3.2",
+        "npm:virtua@0.40",
         "npm:vite-plugin-arraybuffer@^0.0.8",
         "npm:vite-plugin-top-level-await@^1.4.4",
         "npm:vite-plugin-wasm@^3.4.1",

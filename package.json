@@ -23,7 +23,8 @@
     "svelte-boring-avatars": "^1.2.6",
     "svelte-french-toast": "^1.2.0",
     "ulidx": "^2.4.1",
-    "vaul-svelte": "^0.3.2"
+    "vaul-svelte": "^0.3.2",
+    "virtua": "^0.40.0"
   },
   "devDependencies": {
     "@atproto/lexicon": "^0.4.5",
