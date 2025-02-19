@@ -13,14 +13,7 @@
   import { page } from "$app/state";
   import { user } from "$lib/user.svelte";
   import { setContext } from "svelte";
-  import {
-    Avatar,
-    Button,
-    Popover,
-    ScrollArea,
-    Tabs,
-    Toggle,
-  } from "bits-ui";
+  import { Avatar, Button, Popover, ScrollArea, Tabs, Toggle } from "bits-ui";
   import { AvatarBeam } from "svelte-boring-avatars";
   import Icon from "@iconify/svelte";
   import { fly } from "svelte/transition";
@@ -50,18 +43,6 @@
     }
   });
   let imageFiles: FileList | null = $state(null);
-
-  // // Load bluesky profile
-  // let profile = $state(undefined) as ProfileViewDetailed | undefined;
-  // $effect(() => {
-  //   if (user.agent && !profile) {
-  //     user.agent.getProfile({ actor: page.params.did }).then((resp) => {
-  //       if (resp.success) {
-  //         profile = resp.data;
-  //       }
-  //     });
-  //   }
-  // });
 
   $effect(() => {
     if (currentThread) {
@@ -353,9 +334,9 @@
               <div class="flex flex-col gap-1">
                 <h5 class="flex gap-2 items-center">
                   Replying to
-                  <AvatarImage 
-                    handle={replyingTo.authorProfile.handle} 
-                    avatarUrl={replyingTo.authorProfile.avatarUrl} 
+                  <AvatarImage
+                    handle={replyingTo.authorProfile.handle}
+                    avatarUrl={replyingTo.authorProfile.avatarUrl}
                     className="!w-4"
                   />
                   <strong>{replyingTo.authorProfile.handle}</strong>
@@ -376,25 +357,30 @@
           <div class="relative">
             <input
               type="text"
-              class={[replyingTo ? "rounded-b-lg" : "rounded-lg", "w-full px-4 py-2 flex-none text-white bg-violet-900"]}
+              class={[
+                replyingTo ? "rounded-b-lg" : "rounded-lg",
+                "w-full px-4 py-2 flex-none text-white bg-violet-900",
+              ]}
               placeholder="Say something..."
               bind:value={messageInput}
             />
-            <label
-              class="cursor-pointer text-white hover:text-gray-300 absolute right-3 top-1/2 -translate-y-1/2"
-            >
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                class="hidden"
-                onchange={handleImageSelect}
-              />
-              <Icon
-                icon="material-symbols:add-photo-alternate"
-                class="text-2xl"
-              />
-            </label>
+            {#if isAdmin}
+              <label
+                class="cursor-pointer text-white hover:text-gray-300 absolute right-3 top-1/2 -translate-y-1/2"
+              >
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  class="hidden"
+                  onchange={handleImageSelect}
+                />
+                <Icon
+                  icon="material-symbols:add-photo-alternate"
+                  class="text-2xl"
+                />
+              </label>
+            {/if}
           </div>
           <!-- Image preview -->
           {#if imageFiles?.length}
@@ -462,14 +448,12 @@
               <ol class="flex flex-col gap-4">
                 {#each currentThread.timeline as id}
                   {@const message = space.view.messages[id]}
-                  <ChatMessage 
-                    {id} 
+                  <ChatMessage
+                    {id}
                     {message}
-                    messageRepliedTo={
-                      message.replyTo
+                    messageRepliedTo={message.replyTo
                       ? space.view.messages[message.replyTo]
-                      : undefined
-                    }
+                      : undefined}
                   />
                 {/each}
               </ol>
