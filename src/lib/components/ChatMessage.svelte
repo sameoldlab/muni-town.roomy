@@ -20,23 +20,22 @@
     messageRepliedTo?: Message;
   };
 
-  let { 
-    id, 
-    message,
-    messageRepliedTo,
-  }: Props = $props();
+  let { id, message, messageRepliedTo }: Props = $props();
 
   // doesn't change after render, so $derived is not necessary
   const authorProfile = getProfile(message.author);
-  const profileRepliedTo = messageRepliedTo && getProfile(messageRepliedTo.author);
+  const profileRepliedTo =
+    messageRepliedTo && getProfile(messageRepliedTo.author);
 
   // set initial set with entries, no need for $effect
-  let reactionHandles = $state(Object.fromEntries(
-    Object.entries(message.reactions).map(([reaction, dids]) => [
-      reaction,
-      dids.map((did) => getProfile(did).handle),
-    ])
-  ));
+  let reactionHandles = $state(
+    Object.fromEntries(
+      Object.entries(message.reactions).map(([reaction, dids]) => [
+        reaction,
+        dids.map((did) => getProfile(did).handle),
+      ]),
+    ),
+  );
 
   let isMobile = $derived((outerWidth.current ?? 0) < 640);
   let isDrawerOpen = $state(false);
@@ -51,8 +50,18 @@
   let isEmojiToolbarPickerOpen = $state(false);
   let isEmojiRowPickerOpen = $state(false);
 
-  const selectMessage = getContext("selectMessage") as (messageId: Ulid) => void;
-  const removeSelectedMessage = getContext("removeSelectedMessage") as (messageId: Ulid) => void;
+  const isAdmin = getContext("isAdmin") as () => boolean;
+  let mayDelete = $derived(isAdmin() || user.agent?.did == message.author);
+
+  const selectMessage = getContext("selectMessage") as (
+    messageId: Ulid,
+  ) => void;
+  const deleteMessage = getContext("deleteMessage") as (
+    messageId: Ulid,
+  ) => void;
+  const removeSelectedMessage = getContext("removeSelectedMessage") as (
+    messageId: Ulid,
+  ) => void;
 
   const setReplyTo = getContext("setReplyTo") as (value: {
     id: Ulid;
@@ -109,7 +118,17 @@
       emojiRowPicker.addEventListener("emoji-click", onEmojiPick);
     }
   });
+
+  let shiftDown = $state(false);
+  function onKeydown({ shiftKey }: KeyboardEvent) {
+    shiftDown = shiftKey;
+  }
+  function onKeyup({ shiftKey }: KeyboardEvent) {
+    shiftDown = shiftKey;
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} onkeyup={onKeyup} />
 
 <li {id} class={`flex flex-col ${isMobile && "max-w-screen"}`}>
   {@render replyBanner()}
@@ -118,8 +137,14 @@
     class="relative group w-full h-fit flex flex-col gap-4 px-2 py-2.5 hover:bg-white/5 transition-all duration-75"
   >
     <div class="flex gap-4">
-      <a href={`https://bsky.app/profile/${authorProfile.handle}`} target="_blank">
-        <AvatarImage handle={authorProfile.handle} avatarUrl={authorProfile.avatarUrl} />
+      <a
+        href={`https://bsky.app/profile/${authorProfile.handle}`}
+        target="_blank"
+      >
+        <AvatarImage
+          handle={authorProfile.handle}
+          avatarUrl={authorProfile.avatarUrl}
+        />
       </a>
 
       <Button.Root
@@ -208,16 +233,27 @@
             </Popover.Content>
           </Popover.Root>
         </div>
-        <Button.Root
-          onclick={() => {
-            setReplyTo({ id, authorProfile, content: message.content });
-            isDrawerOpen = false;
-          }}
-          class="text-white p-4 flex gap-4 items-center bg-violet-800 w-full rounded-lg"
-        >
-          <Icon icon="fa6-solid:reply" color="white" />
-          Reply
-        </Button.Root>
+        <div class="flex flex-col gap-2">
+          <Button.Root
+            onclick={() => {
+              setReplyTo({ id, authorProfile, content: message.content });
+              isDrawerOpen = false;
+            }}
+            class="text-white p-4 flex gap-4 items-center bg-violet-800 w-full rounded-lg"
+          >
+            <Icon icon="fa6-solid:reply" color="white" />
+            Reply
+          </Button.Root>
+          {#if mayDelete}
+            <Button.Root
+              onclick={() => deleteMessage(id)}
+              class="text-white p-4 flex gap-4 items-center bg-violet-800 w-full rounded-lg"
+            >
+              <Icon icon="tabler:trash" color="red" />
+              Delete
+            </Button.Root>
+          {/if}
+        </div>
       </Drawer>
     {:else}
       <Toolbar.Root
@@ -245,8 +281,17 @@
             <emoji-picker bind:this={emojiToolbarPicker}></emoji-picker>
           </Popover.Content>
         </Popover.Root>
+        {#if shiftDown && mayDelete}
+          <Toolbar.Button
+            onclick={() => deleteMessage(id)}
+            class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
+          >
+            <Icon icon="tabler:trash" color="red" />
+          </Toolbar.Button>
+        {/if}
         <Toolbar.Button
-          onclick={() => setReplyTo({ id, authorProfile, content: message.content })}
+          onclick={() =>
+            setReplyTo({ id, authorProfile, content: message.content })}
           class="p-2 hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-150 rounded cursor-pointer"
         >
           <Icon icon="fa6-solid:reply" color="white" />

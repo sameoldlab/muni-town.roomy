@@ -61,6 +61,18 @@
   setContext("removeSelectedMessage", (message: Ulid) => {
     selectedMessages = selectedMessages.filter((m) => m != message);
   });
+  setContext("deleteMessage", (message: Ulid) => {
+    space.change((doc) => {
+      Object.values(doc.channels).forEach((x) => {
+        const idx = x.timeline.indexOf(message);
+        if (idx !== -1) x.timeline.splice(idx, 1);
+      });
+      Object.values(doc.threads).forEach((x) => {
+        const idx = x.timeline.indexOf(message);
+        if (idx !== -1) x.timeline.splice(idx, 1);
+      });
+    });
+  });
 
   $effect(() => {
     if (!isThreading.value && selectedMessages.length > 0) {

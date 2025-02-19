@@ -12,6 +12,7 @@
   import type { Space } from "$lib/schemas/types";
   import type { Autodoc } from "$lib/autodoc/peer";
   import { user } from "$lib/user.svelte";
+  import { setContext } from "svelte";
 
   let { children } = $props();
   let isMobile = $derived((outerWidth.current || 0) < 640);
@@ -23,6 +24,7 @@
   let isAdmin = $derived(
     space && user.agent && space.view.admins.includes(user.agent.assertDid),
   );
+  setContext("isAdmin", () => isAdmin);
 
   let showNewCategoryDialog = $state(false);
   let newCategoryName = $state("");
@@ -97,7 +99,10 @@
 
 {#if space}
   <nav
-    class={[!isMobile && "max-w-[16rem] border-r-2 border-violet-900", "p-4 flex flex-col gap-4 w-full"]}
+    class={[
+      !isMobile && "max-w-[16rem] border-r-2 border-violet-900",
+      "p-4 flex flex-col gap-4 w-full",
+    ]}
   >
     <div class="flex items-center justify-between px-2">
       <h1 class="text-2xl font-extrabold text-white text-ellipsis">
@@ -272,7 +277,9 @@
 
   <!-- Events/Room Content -->
   {#if !isMobile}
-    <main class="flex flex-col gap-4 bg-violet-950 rounded-lg p-4 grow min-w-0 h-full overflow-clip">
+    <main
+      class="flex flex-col gap-4 bg-violet-950 rounded-lg p-4 grow min-w-0 h-full overflow-clip"
+    >
       {@render children()}
     </main>
   {:else if page.params.channel}
