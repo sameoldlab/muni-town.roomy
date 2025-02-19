@@ -63,6 +63,8 @@
   });
   setContext("deleteMessage", (message: Ulid) => {
     space.change((doc) => {
+      // TODO: don't remove from timeline, just delete ID? We need to eventually add a marker
+      // showing the messages is deleted in the timeline.
       Object.values(doc.channels).forEach((x) => {
         const idx = x.timeline.indexOf(message);
         if (idx !== -1) x.timeline.splice(idx, 1);
@@ -71,6 +73,7 @@
         const idx = x.timeline.indexOf(message);
         if (idx !== -1) x.timeline.splice(idx, 1);
       });
+      delete doc.messages[message];
     });
   });
 
@@ -208,6 +211,21 @@
   let isAdmin = $derived(
     user.agent && space && space.view.admins.includes(user.agent.assertDid),
   );
+  let mayUploadImages = $derived.by(() => {
+    if (isAdmin) return true;
+
+    let messagesByUser = Object.values(space.view.messages).filter(
+      (x) => user.agent && x.author == user.agent.assertDid,
+    );
+    if (messagesByUser.length > 5) return true;
+    return !!messagesByUser.find(
+      (message) =>
+        !!Object.values(message.reactions).find(
+          (reactedUsers) =>
+            !!reactedUsers.find((user) => !!space.view.admins.includes(user)),
+        ),
+    );
+  });
   let showSettingsDialog = $state(false);
   let channelNameInput = $state("");
   let channelCategoryInput = $state(undefined) as undefined | string;
@@ -376,7 +394,7 @@
               placeholder="Say something..."
               bind:value={messageInput}
             />
-            {#if isAdmin}
+            {#if mayUploadImages}
               <label
                 class="cursor-pointer text-white hover:text-gray-300 absolute right-3 top-1/2 -translate-y-1/2"
               >
