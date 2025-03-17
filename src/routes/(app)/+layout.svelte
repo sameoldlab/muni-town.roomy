@@ -8,7 +8,6 @@
   import { g } from "$lib/global.svelte";
   import { user } from "$lib/user.svelte";
   import { cleanHandle } from "$lib/utils";
-  import { themeChange } from "theme-change";
 
   import Icon from "@iconify/svelte";
   import Dialog from "$lib/components/Dialog.svelte";
@@ -45,8 +44,6 @@
   onMount(async () => {
     await user.init();
   });
-
-  onMount(() => { themeChange(false); });
 
   onMount(() => {
     if (page.params.did) {
