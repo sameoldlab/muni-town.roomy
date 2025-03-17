@@ -6,8 +6,8 @@
   "tos_uri": "https://muni-town-roomy.pages.dev",
   "policy_uri": "https://muni-town-roomy.pages.dev",
   "redirect_uris": [
-    "https://muni-town-roomy.pages.dev/oauth/callback",
-    "dev.pages.muni-town-roomy:/oauth/callback"
+    "dev.pages.muni-town-roomy:/oauth/callback",
+    "https://muni-town-roomy.pages.dev/oauth/callback"
   ],
   "scope": "atproto transition:generic transition:chat.bsky",
   "grant_types": [
