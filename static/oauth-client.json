@@ -1,13 +1,13 @@
 {
-  "client_id": "https://roomy-tauri.cloudflare-94f.workers.dev/oauth-client.json",
+  "client_id": "https://muni-town-roomy.pages.dev/oauth-client.json",
   "client_name": "Roomy",
-  "client_uri": "https://roomy-tauri.cloudflare-94f.workers.dev",
-  "logo_uri": "https://roomy-tauri.cloudflare-94f.workers.dev/favicon.png",
-  "tos_uri": "https://roomy-tauri.cloudflare-94f.workers.dev",
-  "policy_uri": "https://roomy-tauri.cloudflare-94f.workers.dev",
+  "client_uri": "https://muni-town-roomy.pages.dev",
+  "logo_uri": "https://muni-town-roomy.pages.dev/favicon.png",
+  "tos_uri": "https://muni-town-roomy.pages.dev",
+  "policy_uri": "https://muni-town-roomy.pages.dev",
   "redirect_uris": [
-    "https://roomy-tauri.cloudflare-94f.workers.dev/oauth/callback",
-    "dev.workers.cloudflare-94f.roomy-tauri:/oauth/callback"
+    "https://muni-town-roomy.pages.dev/oauth/callback",
+    "dev.pages.muni-town-roomy:/oauth/callback"
   ],
   "scope": "atproto transition:generic transition:chat.bsky",
   "grant_types": [
