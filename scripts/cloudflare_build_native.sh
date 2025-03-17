@@ -12,13 +12,13 @@ $deno run build
 
 # Add oauth-client configuration
 echo '{
-  "client_id": "https://dev.roomy.chat/oauth-client.json",
+  "client_id": "https://roomy-tauri.cloudflare-94f.workers.dev/oauth-client.json",
   "client_name": "Roomy",
-  "client_uri": "https://dev.roomy.chat",
-  "logo_uri": "https://dev.roomy.chat/favicon.png",
-  "tos_uri": "https://dev.roomy.chat",
-  "policy_uri": "https://dev.roomy.chat",
-  "redirect_uris": ["chat.roomy.dev:/oauth/callback"],
+  "client_uri": "https://roomy-tauri.cloudflare-94f.workers.dev",
+  "logo_uri": "https://roomy-tauri.cloudflare-94f.workers.dev/favicon.png",
+  "tos_uri": "https://roomy-tauri.cloudflare-94f.workers.dev",
+  "policy_uri": "https://roomy-tauri.cloudflare-94f.workers.dev",
+  "redirect_uris": ["dev.workers.cloudflare-94f.roomy-tauri:/oauth/callback"],
   "scope": "atproto transition:generic transition:chat.bsky",
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],

@@ -41,7 +41,8 @@
         "schemes": [
           "dev.chat.roomy",
           "chat.roomy",
-          "roomy"
+          "roomy",
+          "dev.workers.cloudflare-94f.roomy-tauri"
         ]
       }
     }
