@@ -1,6 +1,6 @@
 # Roomy
 
-Experimental eventual-p2p group chat, built with [AT Protocol](https://atproto.com/) and [Automerge](https://automerge.org/).
+Gardenable group chat made with [AT Protocol](https://atproto.com/), [Loro](https://loro.dev) and [Leaf SDK](https://github.com/muni-town/leaf).
 
 Currently working on producing a functional proof-of-concept. See the
 [Roadmap](https://github.com/orgs/muni-town/projects/8/views/4).
