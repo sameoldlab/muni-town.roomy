@@ -309,6 +309,14 @@
 
 {#snippet channelsSidebar()}
   <div transition:slide class="flex flex-col gap-4">
+    <!-- Links Channels -->
+    <a
+      href="/{page.params.space}/links"
+      class="w-full cursor-pointer btn btn-ghost justify-start border border-transparent data-[state=on]:border-primary data-[state=on]:text-primary flex items-center gap-2 px-3"
+    >
+        <Icon icon="material-symbols:bookmark-star" />
+        Links
+    </a>
     <!-- Category and Channels -->
     {#each sidebarItems.value as item}
       {@const category = item.tryCast(Category)}
