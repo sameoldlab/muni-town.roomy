@@ -126,6 +126,17 @@ $effect.root(() => {
         console.error("Error opening thread:", e);
         goto("/");
       }
+    } else if (g.space && page.route.id?.endsWith('/links')) {
+      try {
+        // request "Links channel"
+        // links should be already processed data with messages contining links from all the channels and threads
+        /* g.roomy
+          .open(Channel, "links" as EntityIdStr)
+          .then((channel) => (g.channel = channel)); */
+      } catch (e) {
+        console.error("Error opening links:", e);
+        goto('/')
+      }
     } else {
       g.channel = undefined;
     }
