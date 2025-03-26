@@ -12,8 +12,9 @@
   import { slide } from "svelte/transition";
   import type { Item } from "$lib/tiptap/editor";
   import { getProfile } from "$lib/profile.svelte";
-  import { derivePromise } from "$lib/utils.svelte";
-  import { Category, Channel, Message } from "@roomy-chat/sdk";
+  import { derivePromise, resolveLeafId } from "$lib/utils.svelte";
+  import { Category, Channel, Message, Space } from "@roomy-chat/sdk";
+  import toast from "svelte-french-toast";
 
   let { children } = $props();
   let isMobile = $derived((outerWidth.current || 0) < 640);
@@ -108,7 +109,7 @@
   let showNewCategoryDialog = $state(false);
   let newCategoryName = $state("");
   async function createCategory() {
-    if (!g.space) return;
+    if (!g.roomy || !g.space) return;
 
     const category = await g.roomy.create(Category);
     category.name = newCategoryName;
@@ -120,11 +121,59 @@
     showNewCategoryDialog = false;
   }
 
+  let saveSpaceLoading = $state(false);
+  let showSpaceSettings = $state(false);
+  let newSpaceHandle = $state() as string;
+  let verificationFailed = $state(false);
+  $effect(() => {
+    if (!showSpaceSettings) {
+      newSpaceHandle = g.space?.handles.get(0) || "";
+      verificationFailed = false;
+      saveSpaceLoading = false;
+    }
+  });
+  async function saveSpace() {
+    if (!g.space) return;
+    saveSpaceLoading = true;
+
+    if (!newSpaceHandle) {
+      g.space.handles.clear();
+      g.space.commit();
+      saveSpaceLoading = false;
+      showSpaceSettings = false;
+      toast.success("Saved space with without handle.", {
+        position: "bottom-right",
+      });
+      return;
+    }
+
+    try {
+      const id = await resolveLeafId(newSpaceHandle);
+      if (!id) {
+        verificationFailed = true;
+        saveSpaceLoading = false;
+        return;
+      }
+      g.space.handles.clear();
+      g.space.handles.push(newSpaceHandle);
+      g.space.commit();
+      saveSpaceLoading = false;
+      showSpaceSettings = false;
+      toast.success("Space handle successfully verified & saved!", {
+        position: "bottom-right",
+      });
+    } catch (e) {
+      saveSpaceLoading = false;
+      verificationFailed = true;
+      console.error(e);
+    }
+  }
+
   let showNewChannelDialog = $state(false);
   let newChannelName = $state("");
   let newChannelCategory = $state(undefined) as undefined | Category;
   async function createChannel() {
-    if (!g.space) return;
+    if (!g.roomy || !g.space) return;
     const channel = await g.roomy.create(Channel);
     channel.appendAdminsFrom(g.space);
     channel.name = newChannelName;
@@ -166,9 +215,94 @@
       "px-4 py-5 flex flex-col gap-4 w-full",
     ]}
   >
-    <h1 class="text-2xl font-extrabold text-base-content text-ellipsis flex">
-      {g.space.name}
-    </h1>
+    <div class="flex justify-between">
+      <h1 class="text-2xl font-extrabold text-base-content text-ellipsis flex">
+        {g.space.name}
+      </h1>
+
+      {#if g.isAdmin}
+        <Dialog title="Space Settings" bind:isDialogOpen={showSpaceSettings}>
+          {#snippet dialogTrigger()}
+            <Button.Root
+              title="Space Settings"
+              class="btn w-full justify-start join-item text-base-content"
+            >
+              <Icon icon="lucide:settings" class="size-6" />
+            </Button.Root>
+          {/snippet}
+
+          <form class="flex flex-col gap-6" onsubmit={saveSpace}>
+            <h2 class="font-bold text-xl">Handle</h2>
+            <div class="flex flex-col gap-2">
+              <p>
+                Space handles are created with DNS records and allow your space
+                to be reached at a URL like <code
+                  >https://roomy.chat/example.org</code
+                >.
+              </p>
+              {#if !!newSpaceHandle}
+                {@const subdomain = newSpaceHandle
+                  .split(".")
+                  .slice(0, -2)
+                  .join(".")}
+                <p>
+                  Add the following DNS record to your DNS provider to use the
+                  domain as your handle.
+                </p>
+                <div class="max-w-full overflow-x-auto min-w-0">
+                  <table class="table text-[0.85em]">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Host</th>
+                        <th>Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>TXT</td>
+                        <td>
+                          _leaf{subdomain ? "." + subdomain : ""}
+                        </td>
+                        <td>
+                          "id={g.space.id}"
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              {:else}
+                <p>Provide a domain to see which DNS record to add for it.</p>
+              {/if}
+            </div>
+            <label class="input w-full">
+              <span class="label">Handle</span>
+              <input bind:value={newSpaceHandle} placeholder="example.org" />
+            </label>
+
+            {#if verificationFailed}
+              <div role="alert" class="alert alert-error">
+                <span
+                  >Verification failed. It may take several minutes before DNS
+                  records are propagated. If you have configured them correctly
+                  try again in a few minutes.</span
+                >
+              </div>
+            {/if}
+
+            <Button.Root
+              class="btn btn-primary"
+              bind:disabled={saveSpaceLoading}
+            >
+              {#if saveSpaceLoading}
+                <span class="loading loading-spinner"></span>
+              {/if}
+              {!!newSpaceHandle ? "Verify" : "Save Without Handle"}
+            </Button.Root>
+          </form>
+        </Dialog>
+      {/if}
+    </div>
 
     <div class="divider my-0"></div>
 
@@ -386,10 +520,10 @@
                       >
                         <h3 class="flex justify-start items-center gap-2 px-2">
                           <Icon icon="basil:comment-solid" />
-                          {#await g.roomy.open(Channel, channelId)}
+                          {#await g.roomy && g.roomy.open(Channel, channelId)}
                             ...
                           {:then channel}
-                            {channel.name}
+                            {channel?.name}
                           {/await}
                         </h3>
                       </ToggleGroup.Item>

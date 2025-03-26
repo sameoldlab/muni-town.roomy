@@ -1,5 +1,6 @@
 import type { DidDocument } from "@atproto/oauth-client-browser";
 import { decodeBase32 } from "./base32";
+import type { EntityIdStr } from "@muni-town/leaf";
 
 /** Cleans a handle string by removing any characters not valid for a domain. */
 export function cleanHandle(handle: string): string {
@@ -29,6 +30,20 @@ export async function resolvePublicKey(did: string): Promise<Uint8Array> {
   const json = await resp.json();
   keyCache[did] = decodeBase32(json.publicKey);
   return keyCache[did];
+}
+
+export async function resolveLeafId(
+  handle: string,
+): Promise<EntityIdStr | undefined> {
+  const resp = await fetch(
+    `https://leaf-resolver.roomy.chat/xrpc/town.muni.01JQ1SV7YGYKTZ9JFG5ZZEFDNK.resolve-leaf-id?domain=${encodeURIComponent(handle)}`,
+    {
+      headers: [["accept", "application/json"]],
+    },
+  );
+  const json = await resp.json();
+  const id = json.id;
+  return id;
 }
 
 /**

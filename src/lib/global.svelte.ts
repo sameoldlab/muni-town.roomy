@@ -18,6 +18,7 @@ import { goto } from "$app/navigation";
 import { untrack } from "svelte";
 
 import * as roomy from "@roomy-chat/sdk";
+import { resolveLeafId } from "./utils.svelte";
 (window as any).r = roomy;
 
 // Reload app when this module changes to prevent accumulated connections.
@@ -64,24 +65,14 @@ $effect.root(() => {
       } else if (page.params.space) {
         console.log("space ID", page.params.space);
         if (page.params.space.includes(".")) {
-          fetch(
-            `https://leaf-resolver.roomy.chat/xrpc/town.muni.01JQ1SV7YGYKTZ9JFG5ZZEFDNK.resolve-leaf-id?domain=${encodeURIComponent(page.params.space)}`,
-            {
-              headers: [["accept", "application/json"]],
-            },
-          ).then(async (resp) => {
-            console.log("got resp", resp);
-            const json = await resp.json();
-            const id = json.id;
-            console.log("id", id);
+          resolveLeafId(page.params.space).then(async (id) => {
             if (!id) {
               console.error("Leaf ID not found for domain:", page.params.space);
               goto("/home");
               return;
             }
 
-            g.roomy!
-              .open(Space, id as EntityIdStr)
+            g.roomy!.open(Space, id)
               .then((space) => {
                 console.log("space from domain", space);
                 g.currentCatalog = id;
@@ -93,13 +84,13 @@ $effect.root(() => {
           });
         } else {
           console.log("id id", page.params.space);
-          g.roomy!
-            .open(Space, page.params.space as EntityIdStr)
-            .then((space) => {
+          g.roomy!.open(Space, page.params.space as EntityIdStr).then(
+            (space) => {
               console.log("space from id", space);
               g.currentCatalog = page.params.space!;
               g.space = space;
-            });
+            },
+          );
         }
       }
     });
