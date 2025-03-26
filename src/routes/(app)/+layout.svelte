@@ -77,7 +77,7 @@
 {/if}
 
 <!-- Container -->
-<div class="flex w-screen h-screen bg-base-100">
+<div class="overflow-contain flex w-screen h-screen bg-base-100">
   <Toaster />
   <!-- Server Bar -->
 
