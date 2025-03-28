@@ -16,7 +16,7 @@
   import { Button, Popover, Tabs } from "bits-ui";
 
   import { format, isToday } from "date-fns";
-  import { derivePromise } from "$lib/utils.svelte";
+  import { derivePromise, parseLinks } from "$lib/utils.svelte";
   import { g } from "$lib/global.svelte";
   import {
     Announcement,
@@ -152,7 +152,6 @@
         )
       : undefined;
     */
-
     const message = await g.roomy.create(Message);
     message.authors.push(user.agent.assertDid);
     message.bodyJson = JSON.stringify(messageInput);
@@ -161,6 +160,11 @@
     if (replyingTo) message.replyTo = replyingTo;
 
     // TODO: image upload refactor with tiptap
+
+    if (parseLinks(messageInput)) {
+      g.space.highlights.push(message)
+      g.space.commit()
+    }
 
     g.channel.timeline.push(message);
     g.channel.commit();

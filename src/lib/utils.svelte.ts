@@ -1,5 +1,6 @@
 import type { DidDocument } from "@atproto/oauth-client-browser";
 import { decodeBase32 } from "./base32";
+import type { JSONContent } from "@tiptap/core";
 
 /** Cleans a handle string by removing any characters not valid for a domain. */
 export function cleanHandle(handle: string): string {
@@ -54,6 +55,26 @@ export function derivePromise<T>(
     });
   });
   return state;
+}
+
+/**
+ * Find urls in TipTap content
+ * */
+export function parseLinks(jsonContent: JSONContent) {
+  if (!jsonContent.content) return null
+
+  const urlRegex =
+    /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/gi;
+
+  const contentString = jsonContent.content.flatMap((c) => {
+    let text: string = "";
+    if (!c.content) { return }
+    for (const obj of c.content) {
+      if (obj.type === "text") text += obj.text + "\n";
+    }
+    return text;
+  })[0];
+  return contentString?.match(urlRegex)
 }
 
 // export function unreadCount<Channel>(
