@@ -10,12 +10,24 @@
   import { getContext } from "svelte";
   import Link from "@tiptap/extension-link";
   import { g } from "$lib/global.svelte";
-  import { Content } from "@roomy-chat/sdk";
+  import { Channel, WikiPage } from "@roomy-chat/sdk";
+  import { derivePromise } from "$lib/utils.svelte";
 
-  let channelAsWiki = $derived(g.channel?.forceCast(Content));
+  const wikis = derivePromise([], async () => {
+    return g.space && g.channel && g.channel instanceof Channel
+      ? (await g.channel.wikipages.items()).filter((x) => !x.softDeleted)
+      : [];
+  });
+  let selectedWiki: WikiPage | undefined = $state(wikis.value[0]);
+  $effect(() => {
+    if (wikis.value.length > 0 && !selectedWiki) {
+      selectedWiki = wikis.value[0];
+    }
+  });
+  let isEditingWiki = $state(false);
+
   let wikiRenderedHtml = $state("");
   let processedHtml = $state("");
-  let isEditingWiki = $state(false);
   let editorElement: HTMLElement;
   let editor: BlockNoteEditor | null;
 
@@ -133,6 +145,53 @@
   let urlInputValue = $state("https://");
   let urlPromptCallback: ((url: string) => void) | null = $state(null);
 
+  let wikiTitleDialogVisible = $state(false);
+  let newWikiTitle = $state("");
+  let deleteDialogVisible = $state(false);
+  let wikiToDelete: WikiPage | undefined = $state();
+
+  function selectWiki(wiki: any) {
+    selectedWiki = wiki;
+    isEditingWiki = false;
+  }
+
+  function createWiki() {
+    newWikiTitle = "";
+    wikiTitleDialogVisible = true;
+  }
+
+  async function submitWikiTitle() {
+    if (!g.space || !g.channel || !(g.channel instanceof Channel)) return;
+    if (!newWikiTitle) {
+      toast.error("Title cannot be empty", { position: "bottom-end" });
+      return;
+    }
+    // Create a temporary wiki with the provided title
+    const wiki = await g.space.create(WikiPage);
+    selectWiki(wiki);
+
+    wikiTitleDialogVisible = false;
+    try {
+      selectedWiki;
+      wiki.name = newWikiTitle;
+
+      g.channel.wikipages.push(wiki);
+      g.channel?.commit();
+
+      g.space.wikipages.push(wiki);
+      g.space.commit();
+      wiki.commit();
+    } catch (e) {
+      console.error("Error creating wiki", e);
+      toast.error("Failed to create wiki", { position: "bottom-end" });
+    }
+    setEditingWiki(true);
+  }
+
+  function cancelWikiTitle() {
+    wikiTitleDialogVisible = false;
+  }
+
   function setEditingWiki(value: boolean) {
     if (value && !g.isAdmin) {
       toast.error("Only admins can edit the wiki", { position: "bottom-end" });
@@ -149,6 +208,26 @@
     } else if (editor) {
       editor = null;
     }
+  }
+
+  function showDeleteDialog(wiki: any, event: Event) {
+    event.stopPropagation();
+    wikiToDelete = wiki;
+    deleteDialogVisible = true;
+  }
+
+  function confirmDeleteWiki() {
+    if (wikiToDelete) {
+      wikiToDelete.softDeleted = true;
+      wikiToDelete.commit();
+    }
+    deleteDialogVisible = false;
+    wikiToDelete = undefined;
+  }
+
+  function cancelDeleteWiki() {
+    deleteDialogVisible = false;
+    wikiToDelete = undefined;
   }
 
   const EditorHandler = (editor: BlockNoteEditor) => {
@@ -496,9 +575,9 @@
           }
         }
       });
-      if (channelAsWiki) {
+      if (selectedWiki) {
         try {
-          const parsedContent = JSON.parse(channelAsWiki.bodyJson);
+          const parsedContent = JSON.parse(selectedWiki.bodyJson);
           setTimeout(() => {
             if (editor && editor.document) {
               editor.replaceBlocks(editor.document, parsedContent);
@@ -618,11 +697,11 @@
   });
 
   $effect(() => {
-    if (!channelAsWiki || channelAsWiki.bodyJson == "{}") {
+    if (!selectedWiki || selectedWiki.bodyJson == "{}") {
       wikiRenderedHtml = "";
       return;
     }
-    const json = JSON.parse(channelAsWiki.bodyJson);
+    const json = JSON.parse(selectedWiki.bodyJson);
     try {
       const rendererEditor = BlockNoteEditor.create();
       rendererEditor
@@ -639,11 +718,11 @@
   });
 
   async function saveWikiContent() {
-    if (!editor || !g.space || !channelAsWiki) return;
+    if (!editor || !g.space || !selectedWiki) return;
     try {
-      channelAsWiki.bodyJson = JSON.stringify(editor.document);
-      channelAsWiki.updatedDate = new Date();
-      channelAsWiki.commit();
+      const res = JSON.stringify(editor.document);
+      selectedWiki.bodyJson = res;
+      selectedWiki.commit();
 
       setEditingWiki(false);
       toast.success("Wiki saved successfully", { position: "bottom-end" });
@@ -715,14 +794,69 @@
   });
 </script>
 
-<div class="flex flex-col gap-4 h-full overflow-y-auto p-2">
-  {#if !channelAsWiki || isEditingWiki}
-    <section class="wiki-editor-container">
-      {#if isEditingWiki}
+<!-- NEW: Two-column layout for multiple wikis -->
+<div class="flex h-full overflow-y-auto">
+  <aside class="w-1/4 border-r p-4">
+    <div class="mb-4 flex justify-between items-center">
+      <h3 class="text-xl font-bold text-base-content">Wikis</h3>
+      {#if g.isAdmin}
+        <button class="btn btn-primary btn-sm text-lg" onclick={createWiki}>
+          +
+        </button>
+      {/if}
+    </div>
+    <ul>
+      {#each wikis.value as wiki}
+        {#if !wiki.softDeleted}
+          <li
+            class="wiki-item mb-2 p-2 rounded cursor-pointer {wiki.id ===
+            selectedWiki?.id
+              ? 'bg-base-200'
+              : ''}"
+            onclick={() => selectWiki(wiki)}
+          >
+            <div class="flex justify-between items-center group">
+              <span>{wiki.name}</span>
+              {#if g.isAdmin}
+                <div class="delete-container">
+                  <button
+                    class="btn btn-error btn-xs delete-button hidden group-hover:block"
+                    onclick={(e) => showDeleteDialog(wiki, e)}
+                  >
+                    <Icon icon="tabler:trash" />
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </li>
+        {/if}
+      {/each}
+    </ul>
+  </aside>
+
+  <main class="flex-1 p-4">
+    <!-- If no wiki selected, show guidance -->
+    {#if !selectedWiki}
+      <div
+        class="flex justify-center items-center p-8 border border-dashed border-base-content/30 rounded-lg"
+      >
+        {#if g.isAdmin}
+          <p class="text-base-content/70">
+            No wiki page is available. Please create one.
+          </p>
+        {:else}
+          <p class="text-base-content/70">No wiki page is available.</p>
+        {/if}
+      </div>
+    {:else if isEditingWiki}
+      <section class="wiki-editor-container">
         <div class="mb-4 flex justify-between items-center">
-          <h3 class="text-xl font-bold text-base-content">
-            {g.channel?.name} Wiki
-          </h3>
+          <input
+            type="text"
+            bind:value={selectedWiki.name}
+            class="input input-bordered flex-1 mr-2"
+            placeholder="Wiki title"
+          />
           <div class="flex gap-2">
             <Button.Root
               onclick={() => setEditingWiki(false)}
@@ -885,49 +1019,31 @@
             </div>
           {/if}
         </div>
-      {:else}
-        <div
-          class="flex justify-center items-center p-8 border border-dashed border-base-content/30 rounded-lg"
-        >
+      </section>
+    {:else}
+      <section class="wiki-content">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="text-xl font-bold text-base-content">
+            {selectedWiki.name}
+          </h3>
           {#if g.isAdmin}
             <Button.Root
               onclick={() => setEditingWiki(true)}
               class="btn btn-primary"
             >
               <Icon icon="tabler:edit" />
-              Create Wiki Page
+              Edit Wiki
             </Button.Root>
-          {:else}
-            <p class="text-base-content/70">
-              No wiki page exists yet. Only channel admins can create one.
-            </p>
           {/if}
         </div>
-      {/if}
-    </section>
-  {:else}
-    <section class="wiki-content">
-      <div class="flex justify-between items-center mb-4">
-        <h3 class="text-xl font-bold text-base-content">
-          {g.channel?.name} Wiki
-        </h3>
-        {#if g.isAdmin}
-          <Button.Root
-            onclick={() => setEditingWiki(true)}
-            class="btn btn-primary"
-          >
-            <Icon icon="tabler:edit" />
-            Edit Wiki
-          </Button.Root>
-        {/if}
-      </div>
-      <div class="wiki-rendered p-4 bg-base-300/30 rounded-lg">
-        <div class="wiki-html text-base-content">
-          {@html processedHtml}
+        <div class="wiki-rendered p-4 bg-base-300/30 rounded-lg">
+          <div class="wiki-html text-base-content">
+            {@html processedHtml}
+          </div>
         </div>
-      </div>
-    </section>
-  {/if}
+      </section>
+    {/if}
+  </main>
 </div>
 
 {#if urlPromptVisible}
@@ -957,6 +1073,59 @@
           <button type="submit" class="btn btn-primary"> Add Link </button>
         </div>
       </form>
+    </div>
+  </div>
+{/if}
+
+{#if wikiTitleDialogVisible}
+  <div
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-[110]"
+  >
+    <div
+      class="bg-base-300 border border-base-content/20 rounded-lg shadow-lg p-6 max-w-md w-full"
+    >
+      <h3 class="text-lg font-bold text-base-content mb-4">Enter Wiki Title</h3>
+      <form onsubmit={submitWikiTitle} class="flex flex-col gap-4">
+        <input
+          type="text"
+          bind:value={newWikiTitle}
+          placeholder="Enter wiki title..."
+          class="input input-bordered w-full"
+          autofocus
+        />
+        <div class="flex justify-end gap-3 mt-2">
+          <button
+            type="button"
+            class="btn btn-outline"
+            onclick={cancelWikiTitle}
+          >
+            Cancel
+          </button>
+          <button type="submit" class="btn btn-primary"> Confirm </button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
+
+{#if deleteDialogVisible}
+  <div
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-[120]"
+  >
+    <div
+      class="bg-base-300 border border-base-content/20 rounded-lg shadow-lg p-6 max-w-md w-full"
+    >
+      <h3 class="text-lg font-bold text-base-content mb-4">Confirm Deletion</h3>
+      <p class="mb-4 text-base-content">
+        Are you sure you want to delete this wiki: {wikiToDelete?.name}?
+      </p>
+      <div class="flex justify-end gap-3">
+        <button class="btn btn-outline" onclick={cancelDeleteWiki}
+          >Cancel</button
+        >
+        <button class="btn btn-error" onclick={confirmDeleteWiki}>Delete</button
+        >
+      </div>
     </div>
   </div>
 {/if}
