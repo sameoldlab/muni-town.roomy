@@ -57,8 +57,8 @@
   let loginError = $state("");
   async function login() {
     loginLoading = true;
-    window.open('https://google.com')
-    return 
+    // window.open('https://google.com')
+    // return 
     try {
       handleInput = cleanHandle(handleInput);
       await user.loginWithHandle(handleInput);
