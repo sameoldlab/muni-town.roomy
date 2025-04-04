@@ -5,9 +5,11 @@
 
   let error = $state("");
 
+  console.log(';hel')
   onMount(async () => {
     await atproto.init();
     const searchParams = new URL(globalThis.location.href).searchParams;
+    console.log(searchParams)
 
     atproto.oauth
       .callback(searchParams)

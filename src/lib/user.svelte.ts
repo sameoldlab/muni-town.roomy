@@ -182,6 +182,14 @@ export const user = {
         path.pathname = url.pathname;
         window.location.href = path.href;
       });
+    } else if (window.matchMedia('(display-mode: standalone)').matches) {
+      const popup = window.open(url, "testing")
+      window.addEventListener('message', (e) => {
+        console.log(e)
+
+        // check if running as PWA
+        popup?.close()
+      })
     } else {
       window.location.href = url.href;
 

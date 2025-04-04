@@ -95,6 +95,10 @@ export function derivePromise<T>(
   return state;
 }
 
+export function isRunningStandalone(): boolean {
+  return window.matchMedia('(display-mode: standalone)').matches
+}
+
 // export function unreadCount<Channel>(
 //   doc: Doc<Channel>,
 //   viewedHeads: Automerge.Heads,
