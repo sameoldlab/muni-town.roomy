@@ -1,14 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { Editor, Node, mergeAttributes } from "@tiptap/core";
+  import { Editor, mergeAttributes } from "@tiptap/core";
   import StarterKit from "@tiptap/starter-kit";
   import Placeholder from "@tiptap/extension-placeholder";
   import Image from "@tiptap/extension-image";
   import { initUserMention, initSpaceContextMention } from "$lib/tiptap/editor";
-  import {
-    type Item,
-    initKeyboardShortcutHandler,
-  } from "$lib/tiptap/editor";
+  import { type Item, initKeyboardShortcutHandler } from "$lib/tiptap/editor";
   import { g } from "$lib/global.svelte";
   import { createCompleteExtensions } from "$lib/tiptap/editor";
   import { user } from "$lib/user.svelte";
@@ -19,22 +16,25 @@
   // Custom Image extension that adds a visual indicator for local images
   const CustomImage = Image.extend({
     renderHTML({ HTMLAttributes }) {
-      const attrs = mergeAttributes(this.options.HTMLAttributes, HTMLAttributes);
-      const isLocal = attrs['data-local'] === 'true';
+      const attrs = mergeAttributes(
+        this.options.HTMLAttributes,
+        HTMLAttributes,
+      );
+      const isLocal = attrs["data-local"] === "true";
 
       if (isLocal) {
         // For local images, wrap in a container with a label
         return [
-          'div',
-          { class: 'image-container' },
-          ['img', { ...attrs, class: `${attrs.class || ''} local-image` }],
-          ['span', { class: 'local-image-label' }, 'Local preview']
+          "div",
+          { class: "image-container" },
+          ["img", { ...attrs, class: `${attrs.class || ""} local-image` }],
+          ["span", { class: "local-image-label" }, "Local preview"],
         ];
       }
 
       // For regular images, just return the img tag
-      return ['img', attrs];
-    }
+      return ["img", attrs];
+    },
   });
 
   type Props = {
@@ -51,7 +51,8 @@
     users,
     context,
     onEnter,
-    placeholder = "Write something ...", editMode = false,
+    placeholder = "Write something ...",
+    editMode = false,
   }: Props = $props();
   let element: HTMLDivElement | undefined = $state();
 
@@ -65,7 +66,7 @@
   let lastDeps = $state({
     users: JSON.stringify(users),
     context: JSON.stringify(context),
-    onEnter: onEnter.toString()
+    onEnter: onEnter.toString(),
   });
 
   // Wrapped send handler for spinner
@@ -104,7 +105,7 @@
     // Only use CustomImage, not the standard Image extension
     CustomImage.configure({
       HTMLAttributes: {
-        class: 'max-w-[300px] max-h-[300px] object-contain relative',
+        class: "max-w-[300px] max-h-[300px] object-contain relative",
       },
     }),
     initKeyboardShortcutHandler({ onEnter: wrappedOnEnter }),
@@ -135,7 +136,6 @@
         hasFocus = false;
       },
     });
-
   });
 
   // Flag to track whether an image is being uploaded
@@ -166,13 +166,17 @@
       localImageUrls.add(localUrl);
 
       // Insert image into editor with the local URL
-      tiptap.chain().focus().insertContent({
-        type: "image",
-        attrs: {
-          src: localUrl,
-          'data-local': 'true' // Mark as local image
-        }
-      }).run();
+      tiptap
+        .chain()
+        .focus()
+        .insertContent({
+          type: "image",
+          attrs: {
+            src: localUrl,
+            "data-local": "true", // Mark as local image
+          },
+        })
+        .run();
 
       // Update content state to ensure persistence
       content = tiptap.getJSON();
@@ -181,7 +185,9 @@
       if (input) input.value = "";
     } catch (error) {
       console.error("Error creating image preview:", error);
-      toast.error("Failed to create image preview", { position: "bottom-right" });
+      toast.error("Failed to create image preview", {
+        position: "bottom-right",
+      });
     }
   }
 
@@ -192,49 +198,45 @@
     isUploading = true;
     const uploadButton = document.querySelector('[aria-label="Upload image"]');
     if (uploadButton) {
-      uploadButton.setAttribute('disabled', 'true');
-      uploadButton.setAttribute('title', 'Uploading...');
+      uploadButton.setAttribute("disabled", "true");
+      uploadButton.setAttribute("title", "Uploading...");
     }
 
     try {
       // Create a deep copy of the content to modify
       const contentCopy = JSON.parse(JSON.stringify(content));
-      console.log("Original content before upload:", contentCopy);
 
       // Process all local images
-      const uploadPromises: Promise<{localUrl: string, remoteUrl: string}>[] = [];
+      const uploadPromises: Promise<{ localUrl: string; remoteUrl: string }>[] =
+        [];
 
       // Start all uploads in parallel
       for (const [localUrl, file] of localImages.entries()) {
-        console.log("Uploading local image:", localUrl);
         uploadPromises.push(
-          user.uploadBlob(file)
-            .then(result => {
-              console.log("Upload successful, CDN URL:", result.url);
+          user
+            .uploadBlob(file)
+            .then((result) => {
               return { localUrl, remoteUrl: result.url };
             })
-            .catch(error => {
+            .catch((error) => {
               console.error("Error uploading image:", error);
-              toast.error("Failed to upload an image", { position: "bottom-right" });
+              toast.error("Failed to upload an image", {
+                position: "bottom-right",
+              });
               // Return the local URL as both to avoid breaking the content
               return { localUrl, remoteUrl: localUrl };
-            })
+            }),
         );
       }
 
       // Wait for all uploads to complete
       const results = await Promise.all(uploadPromises);
-      console.log("Upload results:", results);
 
       // Replace local URLs with remote URLs in the content
       for (const { localUrl, remoteUrl } of results) {
-        console.log(`Replacing ${localUrl} with ${remoteUrl}`);
-
         // Replace in the editor content
         replaceImageUrlInContent(contentCopy, localUrl, remoteUrl);
       }
-
-      console.log("Updated content after replacement:", contentCopy);
 
       // Clean up local URLs after successful replacement
       for (const { localUrl } of results) {
@@ -245,7 +247,6 @@
 
       // If tiptap editor is available, update its content too
       if (tiptap) {
-        console.log("Updating tiptap editor content");
         tiptap.commands.setContent(contentCopy);
       }
 
@@ -257,8 +258,8 @@
     } finally {
       isUploading = false;
       if (uploadButton) {
-        uploadButton.removeAttribute('disabled');
-        uploadButton.setAttribute('title', 'Upload image');
+        uploadButton.removeAttribute("disabled");
+        uploadButton.setAttribute("title", "Upload image");
       }
     }
   }
@@ -267,36 +268,36 @@
   function replaceImageUrlInContent(
     contentObj: Record<string, unknown> | Array<unknown> | null | undefined,
     oldUrl: string,
-    newUrl: string
+    newUrl: string,
   ) {
     if (!contentObj) return;
 
     // If it's an array, process each item
     if (Array.isArray(contentObj)) {
       for (const item of contentObj) {
-        if (item && typeof item === 'object') {
-          replaceImageUrlInContent(item as Record<string, unknown>, oldUrl, newUrl);
+        if (item && typeof item === "object") {
+          replaceImageUrlInContent(
+            item as Record<string, unknown>,
+            oldUrl,
+            newUrl,
+          );
         }
       }
       return;
     }
 
     // If it's an object, check if it's an image node
-    if (typeof contentObj === 'object') {
+    if (typeof contentObj === "object") {
       const obj = contentObj as Record<string, unknown>;
 
-      if (obj.type === 'image' &&
-          obj.attrs &&
-          typeof obj.attrs === 'object') {
-
+      if (obj.type === "image" && obj.attrs && typeof obj.attrs === "object") {
         const attrs = obj.attrs as Record<string, unknown>;
 
         if (attrs.src === oldUrl) {
-          console.log(`Found image with src=${oldUrl}, replacing with ${newUrl}`);
           attrs.src = newUrl;
           // Remove the local data attribute
-          if ('data-local' in attrs) {
-            attrs['data-local'] = undefined;
+          if ("data-local" in attrs) {
+            attrs["data-local"] = undefined;
           }
         }
       }
@@ -305,15 +306,18 @@
       for (const key in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, key)) {
           const value = obj[key];
-          if (value && typeof value === 'object') {
+          if (value && typeof value === "object") {
             replaceImageUrlInContent(
               value as Record<string, unknown> | Array<unknown>,
               oldUrl,
-              newUrl
+              newUrl,
             );
-          } else if (key === 'src' && typeof value === 'string' && value === oldUrl) {
+          } else if (
+            key === "src" &&
+            typeof value === "string" &&
+            value === oldUrl
+          ) {
             // Also check for direct src attributes that might not be in the attrs object
-            console.log(`Found direct src attribute with value ${oldUrl}, replacing with ${newUrl}`);
             obj[key] = newUrl;
           }
         }
@@ -321,22 +325,20 @@
     }
   }
 
-  // Action functions for event handling
   export function handleClick(node: HTMLElement) {
     const clickHandler = () => {
       fileInput?.click();
     };
 
-    node.addEventListener('click', clickHandler);
+    node.addEventListener("click", clickHandler);
 
     return {
       destroy() {
-        node.removeEventListener('click', clickHandler);
-      }
+        node.removeEventListener("click", clickHandler);
+      },
     };
   }
 
-  // Updated handleFileProcess to use processImageFile
   function handleFileProcess(event: Event) {
     const input = event.target as HTMLInputElement;
     if (!input.files?.length) return;
@@ -350,23 +352,22 @@
       handleFileProcess(event);
     };
 
-    node.addEventListener('change', changeHandler);
+    node.addEventListener("change", changeHandler);
 
     return {
       destroy() {
-        node.removeEventListener('change', changeHandler);
-      }
+        node.removeEventListener("change", changeHandler);
+      },
     };
   }
 
-  // Updated handlePaste to use processImageFile
   export function handlePaste(node: HTMLElement) {
     const pasteHandler = (event: ClipboardEvent) => {
       const items = event.clipboardData?.items;
       if (!items) return;
       // Check for image data in clipboard
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
           // Get the image file from clipboard
           const file = item.getAsFile();
           if (!file) continue;
@@ -379,12 +380,12 @@
       }
     };
 
-    node.addEventListener('paste', pasteHandler);
+    node.addEventListener("paste", pasteHandler);
 
     return {
       destroy() {
-        node.removeEventListener('paste', pasteHandler);
-      }
+        node.removeEventListener("paste", pasteHandler);
+      },
     };
   }
 
@@ -410,8 +411,6 @@
     }
   }
 
-
-
   // First effect: Create/recreate editor when dependencies change
   $effect(() => {
     if (!element) return;
@@ -420,7 +419,7 @@
     const currentDeps = {
       users: JSON.stringify(users),
       context: JSON.stringify(context),
-      onEnter: onEnter.toString()
+      onEnter: onEnter.toString(),
     };
 
     const depsChanged =
@@ -445,9 +444,9 @@
         // Only add CustomImage extension (not the standard Image extension)
         CustomImage.configure({
           HTMLAttributes: {
-            class: 'max-w-[300px] max-h-[300px] object-contain relative',
+            class: "max-w-[300px] max-h-[300px] object-contain relative",
           },
-        })
+        }),
       ];
       untrack(() => tiptap?.destroy());
       // Initialize the editor
@@ -457,17 +456,20 @@
         try {
           initialContent = JSON.parse(JSON.stringify(content));
         } catch (e) {
-          console.warn('Failed to convert initial content to plain object:', e);
+          console.warn("Failed to convert initial content to plain object:", e);
           initialContent = content as Record<string, unknown>;
         }
 
         tiptap = new Editor({
           element,
           extensions,
-          content: initialContent.type ? initialContent : { type: "doc", content: [] },
+          content: initialContent.type
+            ? initialContent
+            : { type: "doc", content: [] },
           editorProps: {
             attributes: {
-              class: "w-full px-3 py-2 rounded bg-base-300 text-base-content outline-none",
+              class:
+                "w-full px-3 py-2 rounded bg-base-300 text-base-content outline-none",
             },
           },
           onUpdate: (ctx) => {
@@ -483,13 +485,15 @@
           },
         });
       } catch (error) {
-        console.error('Error initializing editor:', error);
-        toast.error("Failed to initialize editor", { position: "bottom-right" });
+        console.error("Error initializing editor:", error);
+        toast.error("Failed to initialize editor", {
+          position: "bottom-right",
+        });
       }
 
       // Ensure fileInput is properly initialized
       if (!fileInput) {
-        console.warn('File input not initialized properly');
+        console.warn("File input not initialized properly");
       }
     }
   });
@@ -508,11 +512,13 @@
         // Try to convert to plain object using JSON serialization
         plainContent = JSON.parse(JSON.stringify(content));
       } catch (e) {
-        console.warn('Failed to convert content to plain object:', e);
+        console.warn("Failed to convert content to plain object:", e);
         plainContent = content as Record<string, unknown>;
       }
 
-      const newContent = plainContent.type ? plainContent : { type: "doc", content: [] };
+      const newContent = plainContent.type
+        ? plainContent
+        : { type: "doc", content: [] };
 
       // Only update if content is actually different
       if (!isEqual(currentContent, newContent)) {
@@ -520,11 +526,13 @@
         try {
           tiptap.commands.setContent(newContent);
         } finally {
-          setTimeout(() => { isInternalUpdate = false; }, 0);
+          setTimeout(() => {
+            isInternalUpdate = false;
+          }, 0);
         }
       }
     } catch (error) {
-      console.error('Error updating editor content:', error);
+      console.error("Error updating editor content:", error);
     }
   });
 
@@ -538,6 +546,109 @@
     tiptap?.destroy();
   });
 </script>
+
+{#if !g.isBanned}
+  <div class="flex items-center gap-2">
+    <!-- Plus icon button for image upload -->
+    {#if !editMode}
+      <button
+        type="button"
+        class="p-1 rounded hover:bg-base-200 disabled:opacity-50 cursor-pointer"
+        aria-label="Upload image"
+        use:handleClick
+        tabindex="-1"
+        disabled={tiptap == null || isUploading}
+        title={isUploading
+          ? "Uploading..."
+          : localImages.size > 0
+            ? `${localImages.size} image${localImages.size > 1 ? "s" : ""} will be uploaded when you send`
+            : "Upload image"}
+      >
+        {#if isUploading}
+          <!-- Loading spinner -->
+          <div class="animate-spin h-5 w-5">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+          </div>
+        {:else}
+          <!-- Regular upload icon -->
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <rect
+              x="9"
+              y="4"
+              width="2"
+              height="12"
+              rx="1"
+              fill="currentColor"
+            />
+            <rect
+              x="4"
+              y="9"
+              width="12"
+              height="2"
+              rx="1"
+              fill="currentColor"
+            />
+          </svg>
+        {/if}
+      </button>
+      <!-- Hidden file input for image upload -->
+      <input
+        type="file"
+        accept="image/*"
+        bind:this={fileInput}
+        class="hidden"
+        use:handleChange
+        tabindex="-1"
+      />
+    {/if}
+    <!-- Tiptap editor -->
+    <div
+      bind:this={element}
+      class="flex-1 relative"
+      use:handlePaste
+      ondragover={handleDragOver}
+      ondragleave={handleDragLeave}
+      ondrop={handleDrop}
+      role="region"
+      aria-label="Chat editor and image drop area"
+    >
+      {#if isDragOver}
+        <div
+          class="absolute inset-0 z-10 bg-base-200/80 border-4 border-primary rounded flex justify-center items-center pointer-events-none select-none"
+        >
+          <span class="text-lg font-semibold text-primary"
+            >Drop image to upload</span
+          >
+        </div>
+      {/if}
+    </div>
+  </div>
+{:else}
+  <div
+    class="w-full px-3 py-2 rounded bg-base-300 text-base-content outline-none cursor-not-allowed"
+  >
+    Your account has been banned in this space.
+  </div>
+{/if}
+
 <style>
   /* Style for local image previews */
   :global(.local-image) {
@@ -567,69 +678,3 @@
     z-index: 1;
   }
 </style>
-
-{#if !g.isBanned}
-  <div class="flex items-center gap-2">
-    <!-- Plus icon button for image upload -->
-    {#if !editMode}
-      <button
-        type="button"
-        class="p-1 rounded hover:bg-base-200 disabled:opacity-50 cursor-pointer"
-        aria-label="Upload image"
-        use:handleClick
-        tabindex="-1"
-        disabled={tiptap == null || isUploading}
-        title={isUploading ? "Uploading..." : localImages.size > 0 ? `${localImages.size} image${localImages.size > 1 ? 's' : ''} will be uploaded when you send` : "Upload image"}
-      >
-        {#if isUploading}
-          <!-- Loading spinner -->
-          <div class="animate-spin h-5 w-5">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-          </div>
-        {:else}
-          <!-- Regular upload icon -->
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-            <rect x="9" y="4" width="2" height="12" rx="1" fill="currentColor"/>
-            <rect x="4" y="9" width="12" height="2" rx="1" fill="currentColor"/>
-          </svg>
-        {/if}
-      </button>
-      <!-- Hidden file input for image upload -->
-      <input
-        type="file"
-        accept="image/*"
-        bind:this={fileInput}
-        class="hidden"
-        use:handleChange
-        tabindex="-1"
-      />
-    {/if}
-    <!-- Tiptap editor -->
-    <div
-      bind:this={element}
-      class="flex-1 relative"
-      use:handlePaste
-      ondragover={handleDragOver}
-      ondragleave={handleDragLeave}
-      ondrop={handleDrop}
-      role="region"
-      aria-label="Chat editor and image drop area"
-    >
-      {#if isDragOver}
-        <div class="absolute inset-0 z-10 bg-base-200/80 border-4 border-primary rounded flex justify-center items-center pointer-events-none select-none">
-          <span class="text-lg font-semibold text-primary">Drop image to upload</span>
-        </div>
-      {/if}
-    </div>
-  </div>
-
-{:else}
-  <div
-    class="w-full px-3 py-2 rounded bg-base-300 text-base-content outline-none cursor-not-allowed"
-  >
-    Your account has been banned in this space.
-  </div>
-{/if}

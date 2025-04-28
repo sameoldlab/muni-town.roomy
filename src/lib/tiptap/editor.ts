@@ -16,8 +16,7 @@ import type {
   SuggestionKeyDownProps,
   SuggestionProps,
 } from "@tiptap/suggestion";
-import type { Editor } from '@tiptap/core';
-// Import types needed for the editor
+import type { Editor } from "@tiptap/core";
 import { convertUrlsToLinks } from "$lib/urlUtils";
 
 /* Keyboard Shortcuts: used to add and override existing shortcuts */
@@ -84,9 +83,7 @@ function suggestion({
     char,
     pluginKey: new PluginKey(pluginKey),
     items: ({ query }: { query: string }) => {
-      return items
-        .filter((item) => fuzzyMatch(item.label, query))
-        .slice(0, 5);
+      return items.filter((item) => fuzzyMatch(item.label, query)).slice(0, 5);
     },
     render: () => {
       let wrapper: HTMLDivElement;
@@ -195,15 +192,10 @@ export const initSpaceContextMention = ({
   });
 
 /* Utilities */
-export const extensions = [
-  StarterKit.configure({ heading: false }),
-  Image,
-];
+export const extensions = [StarterKit.configure({ heading: false }), Image];
 
 // Base extensions without mention plugins
-export const baseExtensions = [
-  ...extensions,
-];
+export const baseExtensions = [...extensions];
 
 // Create a complete set of extensions including the mention extensions
 // This is used when we don't need to configure mentions with specific users/context
@@ -221,18 +213,18 @@ export const completeExtensions = [
 export function createCompleteExtensions({
   users = [],
   context = [],
-  includeImage = true
+  includeImage = true,
 }: {
-  users?: Item[],
-  context?: Item[],
-  includeImage?: boolean
+  users?: Item[];
+  context?: Item[];
+  includeImage?: boolean;
 }) {
   // Use any[] to avoid TypeScript compatibility issues
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any[] = [];
 
   // Add all base extensions except image
-  for (const ext of baseExtensions.filter(ext => ext.name !== 'image')) {
+  for (const ext of baseExtensions.filter((ext) => ext.name !== "image")) {
     result.push(ext);
   }
 
@@ -241,9 +233,9 @@ export function createCompleteExtensions({
     result.push(
       Image.configure({
         HTMLAttributes: {
-          class: 'max-w-[300px] max-h-[300px] object-contain relative',
+          class: "max-w-[300px] max-h-[300px] object-contain relative",
         },
-      })
+      }),
     );
   }
 
@@ -256,7 +248,7 @@ export function createCompleteExtensions({
         char: "@",
         pluginKey: "userMention",
       }),
-    })
+    }),
   );
 
   result.push(
@@ -267,26 +259,27 @@ export function createCompleteExtensions({
         char: "#",
         pluginKey: "spaceContextMention",
       }),
-    })
+    }),
   );
 
   return result;
-};
+}
 
 export const editorSchema = getSchema(extensions);
 
 export function getContentHtml(content: JSONContent) {
   try {
     // Check if content is empty or invalid
-    if (!content || typeof content !== 'object' || Object.keys(content).length === 0) {
-      return ''; // Return empty string for empty content
+    if (
+      !content ||
+      typeof content !== "object" ||
+      Object.keys(content).length === 0
+    ) {
+      return ""; // Return empty string for empty content
     }
 
     // Ensure content has the required structure for TipTap
-    const validContent = !content.type
-      ? { type: 'doc', content: [] }
-      : content;
-
+    const validContent = !content.type ? { type: "doc", content: [] } : content;
 
     // Generate HTML from the content using TipTap with complete extensions
     // to ensure all node types (including mentions) are properly rendered
@@ -294,7 +287,7 @@ export function getContentHtml(content: JSONContent) {
     const html = generateHTML(validContent, completeExtensions);
 
     // Check if the content contains an image node
-    const hasImageNode = content.content?.some(node => node.type === 'image');
+    const hasImageNode = content.content?.some((node) => node.type === "image");
 
     // If there's an image, don't convert URLs to links to prevent breaking image src attributes
     if (hasImageNode) {
@@ -309,35 +302,46 @@ export function getContentHtml(content: JSONContent) {
   } catch (e) {
     console.error("Error generating HTML", e, "Content", content);
     // Return empty string instead of throwing to prevent UI crashes
-    return '';
+    return "";
   }
 }
 
-export async function handleImageUpload(editor: Editor, file: File, uploadFn: (file: File) => Promise<{ url: string }>) {
+export async function handleImageUpload(
+  editor: Editor,
+  file: File,
+  uploadFn: (file: File) => Promise<{ url: string }>,
+) {
   // Insert a loading placeholder
-  editor.chain().focus().insertContent({
-    type: 'image',
-    attrs: {
-      src: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjBmMGYwIi8+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTUwLCAxNTApIj48Y2lyY2xlIHI9IjMwIiBmaWxsPSJ0cmFuc3BhcmVudCIgc3Ryb2tlPSIjNjM2M2ZmIiBzdHJva2Utd2lkdGg9IjgiIHN0cm9rZS1kYXNoYXJyYXk9IjE4OC41IiBzdHJva2UtZGFzaG9mZnNldD0iMCI+PGFuaW1hdGVUcmFuc2Zvcm0gYXR0cmlidXRlTmFtZT0idHJhbnNmb3JtIiB0eXBlPSJyb3RhdGUiIHJlcGVhdENvdW50PSJpbmRlZmluaXRlIiBkdXI9IjFzIiB2YWx1ZXM9IjAgMCAwOzM2MCAwIDAiIGtleVRpbWVzPSIwOzEiPjwvYW5pbWF0ZVRyYW5zZm9ybT48L2NpcmNsZT48L2c+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIyMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgZmlsbD0iIzYzNjNmZiI+VXBsb2FkaW5nIGltYWdlLi4uPC90ZXh0Pjwvc3ZnPg==',
-      alt: 'Uploading image...',
-      'data-loading': 'true'
-    }
-  }).run();
+  editor
+    .chain()
+    .focus()
+    .insertContent({
+      type: "image",
+      attrs: {
+        src: "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjBmMGYwIi8+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTUwLCAxNTApIj48Y2lyY2xlIHI9IjMwIiBmaWxsPSJ0cmFuc3BhcmVudCIgc3Ryb2tlPSIjNjM2M2ZmIiBzdHJva2Utd2lkdGg9IjgiIHN0cm9rZS1kYXNoYXJyYXk9IjE4OC41IiBzdHJva2UtZGFzaG9mZnNldD0iMCI+PGFuaW1hdGVUcmFuc2Zvcm0gYXR0cmlidXRlTmFtZT0idHJhbnNmb3JtIiB0eXBlPSJyb3RhdGUiIHJlcGVhdENvdW50PSJpbmRlZmluaXRlIiBkdXI9IjFzIiB2YWx1ZXM9IjAgMCAwOzM2MCAwIDAiIGtleVRpbWVzPSIwOzEiPjwvYW5pbWF0ZVRyYW5zZm9ybT48L2NpcmNsZT48L2c+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIyMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgZmlsbD0iIzYzNjNmZiI+VXBsb2FkaW5nIGltYWdlLi4uPC90ZXh0Pjwvc3ZnPg==",
+        alt: "Uploading image...",
+        "data-loading": "true",
+      },
+    })
+    .run();
 
   // Upload the image
   return uploadFn(file)
-    .then(result => {
+    .then((result) => {
       // Find and replace the loading placeholder with the actual image
       const transaction = editor.state.tr;
       let placeholderFound = false;
 
       editor.state.doc.descendants((node, pos) => {
-        if (node.type.name === 'image' && node.attrs['data-loading'] === 'true') {
+        if (
+          node.type.name === "image" &&
+          node.attrs["data-loading"] === "true"
+        ) {
           transaction.setNodeMarkup(pos, undefined, {
             ...node.attrs,
             src: result.url,
-            alt: 'User uploaded image',
-            'data-loading': null
+            alt: "User uploaded image",
+            "data-loading": null,
           });
           placeholderFound = true;
           return false; // Stop traversal once we find the placeholder
@@ -349,22 +353,29 @@ export async function handleImageUpload(editor: Editor, file: File, uploadFn: (f
         editor.view.dispatch(transaction);
       } else {
         // If placeholder not found (rare case), insert the image directly
-        editor.chain().focus().insertContent({
-          type: 'image',
-          attrs: {
-            src: result.url,
-            alt: 'User uploaded image'
-          }
-        }).run();
+        editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: "image",
+            attrs: {
+              src: result.url,
+              alt: "User uploaded image",
+            },
+          })
+          .run();
       }
 
       return result;
     })
-    .catch(error => {
+    .catch((error) => {
       // Remove the loading placeholder on error
       const transaction = editor.state.tr;
       editor.state.doc.descendants((node, pos) => {
-        if (node.type.name === 'image' && node.attrs['data-loading'] === 'true') {
+        if (
+          node.type.name === "image" &&
+          node.attrs["data-loading"] === "true"
+        ) {
           transaction.delete(pos, pos + node.nodeSize);
           return false;
         }
