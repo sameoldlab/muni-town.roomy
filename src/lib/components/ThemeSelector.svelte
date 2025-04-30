@@ -96,14 +96,16 @@
 </script>
 
 <Select.Root type="single" items={selectItems} onValueChange={setTheme}>
-  <Select.Trigger class="dz-btn dz-btn-ghost hover:bg-base-200 cursor-pointer">
+  <Select.Trigger
+    class="w-full flex justify-center items-center aspect-square rounded-lg hover:bg-base-200 cursor-pointer"
+  >
     <Icon icon="material-symbols:palette-outline" class="size-6" />
   </Select.Trigger>
   <Select.Portal>
     <Select.Content
       side="right"
       sideOffset={8}
-      class="w-fit h-48 bg-base-300 p-2 rounded"
+      class="w-fit h-48 bg-base-300 p-2 rounded z-10"
     >
       <Select.Viewport>
         {#each selectItems as theme, i (i + theme.value)}

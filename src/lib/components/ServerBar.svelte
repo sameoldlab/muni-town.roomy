@@ -12,7 +12,13 @@
   import { cleanHandle } from "$lib/utils.svelte";
   import { atproto } from "$lib/atproto.svelte";
 
-  const { spaces } = $props();
+  let {
+    spaces,
+    visible,
+  }: {
+    spaces: { value: Space[] };
+    visible: boolean;
+  } = $props();
 
   let handleInput = $state("");
   let loginLoading = $state(false);
@@ -64,8 +70,12 @@
   }
 </script>
 
+<!-- Width manually set for transition to w-0 -->
 <aside
-  class="w-fit col-span-2 flex flex-col justify-between px-0 md:px-4 py-8 items-center border-r-2 border-base-200 h-screen overflow-y-auto overflow-x-hidden"
+  class="flex flex-col justify-between align-center h-full {visible
+    ? 'w-[60px] px-1 border-r-2'
+    : 'w-[0]'} py-2 border-base-200 bg-base-300 transition-[width] duration-100 ease-out"
+  class:opacity-0={!visible}
 >
   <ToggleGroup.Root
     type="single"
@@ -75,9 +85,9 @@
     <ToggleGroup.Item
       value="home"
       onclick={() => navigate("home")}
-      class="dz-btn dz-btn-ghost size-14 data-[state=on]:border-accent"
+      class="dz-btn dz-btn-ghost px-1 w-full aspect-square data-[state=on]:border-accent"
     >
-      <Icon icon="iconamoon:home-fill" font-size="1.5em" />
+      <Icon icon="iconamoon:home-fill" font-size="1.75em" />
     </ToggleGroup.Item>
 
     <div class="divider my-0"></div>
@@ -87,7 +97,7 @@
     {/each}
   </ToggleGroup.Root>
 
-  <section class="dz-menu gap-3">
+  <section class="flex flex-col items-center gap-2 p-0">
     <ThemeSelector />
     <Dialog
       title="Create Space"
@@ -98,7 +108,7 @@
       {#snippet dialogTrigger()}
         <Button.Root
           title="Create Space"
-          class="dz-btn dz-btn-ghost w-fit"
+          class="p-2 aspect-square rounded-lg hover:bg-base-200 cursor-pointer"
           disabled={!user.session}
         >
           <Icon icon="basil:add-solid" font-size="2em" />
@@ -126,12 +136,11 @@
       bind:isDialogOpen={user.isLoginDialogOpen}
     >
       {#snippet dialogTrigger()}
-        <Button.Root class="dz-btn dz-btn-ghost w-fit">
-          <AvatarImage
-            handle={user.profile.data?.handle || ""}
-            avatarUrl={user.profile.data?.avatar}
-          />
-        </Button.Root>
+        <AvatarImage
+          className="p-1 w-full cursor-pointer"
+          handle={user.profile.data?.handle || ""}
+          avatarUrl={user.profile.data?.avatar}
+        />
       {/snippet}
 
       {#if user.session}
