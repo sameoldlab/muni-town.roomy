@@ -199,7 +199,7 @@
     {#if tab === "board"}
       <AccordionTree
         items={[
-          { key: "pages", route: "wiki", items: wikis.value },
+          { key: "pages", route: "page", items: wikis.value },
           { key: "topics", route: "thread", items: availableThreads.value },
         ]}
         active={g.channel?.id ?? ""}
