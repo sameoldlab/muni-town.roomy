@@ -1,5 +1,6 @@
 {
   "$schema": "https://turborepo.com/schema.json",
+  "globalEnv": ["http_proxy", "https_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS"],
   "tasks": {
     "build-api-docs": {
       "dependsOn": ["^build-api-docs", "build-lib"],
@@ -15,7 +16,11 @@
     },
     "build-web-app": {
       "dependsOn": ["^build-web-app", "build-lib"],
-      "outputs": ["./dist/**"]
+      "outputs": ["./dist/**", "./build"]
+    },
+    "build-web-app-prod": {
+      "dependsOn": ["^build-web-app-prod", "build-lib"],
+      "outputs": ["./dist/**", "./build"]
     },
     "dev": {
       "dependsOn": ["build-lib"],
