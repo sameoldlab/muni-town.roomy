@@ -2,8 +2,12 @@ packages:
   - packages/*
 onlyBuiltDependencies:
   - '@swc/core'
+  - '@tailwindcss/oxide'
   - cbor-extract
   - core-js
   - esbuild
+  - node
+catalog:
+  jazz-tools: ^0.15
 patchedDependencies:
   '@discordjs/util': patches/@discordjs__util.patch

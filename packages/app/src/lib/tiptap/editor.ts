@@ -2,7 +2,7 @@ import { mount, unmount } from "svelte";
 import { keymap } from "@tiptap/pm/keymap";
 import { PluginKey } from "@tiptap/pm/state";
 import Mention from "@tiptap/extension-mention";
-import SuggestionSelect from "$lib/components/SuggestionSelect.svelte";
+import SuggestionSelect from "$lib/components/helper/SuggestionSelect.svelte";
 import { Extension, mergeAttributes } from "@tiptap/core";
 import type {
   SuggestionKeyDownProps,
@@ -83,6 +83,7 @@ function suggestion({
         onStart: (props: SuggestionProps) => {
           wrapper = document.createElement("div");
           props.editor.view.dom.parentNode?.appendChild(wrapper);
+          wrapper.classList.add("text-base-900", "dark:text-base-100");
 
           component = mount(SuggestionSelect, {
             target: wrapper,
@@ -147,8 +148,7 @@ const SpaceContextMentionExtension = Mention.extend({
       "a",
       mergeAttributes(
         {
-          href:
-            type === "thread" ? `/${space}/thread/${id}` : `/${space}/${id}`,
+          href: `/${space}/${id}`,
           class: `mention ${type === "thread" ? "thread-mention" : "channel-mention"} !no-underline`,
         },
         HTMLAttributes,

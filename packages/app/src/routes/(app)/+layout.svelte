@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, setContext } from "svelte";
   import { browser, dev } from "$app/environment";
-  import { AccountCoState, usePassphraseAuth } from "jazz-svelte";
+  import { AccountCoState, usePassphraseAuth } from "jazz-tools/svelte";
   import posthog from "posthog-js";
   import { Toaster } from "svelte-french-toast";
 
@@ -9,20 +9,27 @@
   import { RenderScan } from "svelte-render-scan";
 
   import { user } from "$lib/user.svelte";
-  import { Toggle, setTheme } from "$lib/utils.svelte";
-  import { type ThemeName } from "$lib/themes.ts";
-  import ServerBar from "$lib/components/ServerBar.svelte";
-  import SidebarMain from "$lib/components/SidebarMain.svelte";
+  import { Toggle } from "$lib/utils.svelte";
   import { page } from "$app/state";
   import { afterNavigate } from "$app/navigation";
-  import { LastReadList, RoomyAccount } from "$lib/jazz/schema";
-  import { wordlist } from "$lib/jazz/wordlist";
-  import { addToAllAccountsList } from "$lib/jazz/utils";
+  import {
+    addToAllAccountsList,
+    LastReadList,
+    publicGroup,
+    RoomyAccount,
+    RoomyEntityList,
+    wordlist,
+    // addToAllAccountsList,
+  } from "@roomy-chat/sdk";
 
   const me = new AccountCoState(RoomyAccount, {
     resolve: {
-      profile: true,
-      root: true,
+      profile: {
+        $onError: null,
+      },
+      root: {
+        $onError: null,
+      },
     },
   });
   const { children } = $props();
@@ -40,6 +47,9 @@
     }
   }
 
+  const profileRecordRKey = "v2";
+
+  // TODO: used in checkProfileRecord, which is unused; removed to appease husky
   async function setProfileRecord(accountId?: string, profileId?: string) {
     if (!accountId || !profileId) return false;
 
@@ -47,7 +57,7 @@
       collection: "chat.roomy.profile",
       record: { accountId, profileId },
       repo: user.agent.assertDid,
-      rkey: "self",
+      rkey: profileRecordRKey,
     });
 
     addToAllAccountsList(accountId);
@@ -55,27 +65,29 @@
     return true;
   }
 
-  async function removeProfileRecord() {
-    await user.agent?.com.atproto.repo.deleteRecord({
-      collection: "chat.roomy.profile",
-      repo: user.agent.assertDid,
-      rkey: "self",
-    });
-  }
+  // only used for testing
+  // async function removeProfileRecord() {
+  //   await user.agent?.com.atproto.repo.deleteRecord({
+  //     collection: "chat.roomy.profile",
+  //     repo: user.agent.assertDid,
+  //     rkey: "self",
+  //   });
+  // }
 
+  // TODO: not sure what is used for; removed to appease husky
   async function checkProfileRecord() {
     try {
       await user.agent?.com.atproto.repo.getRecord({
         collection: "chat.roomy.profile",
         repo: user.agent.assertDid,
-        rkey: "self",
+        rkey: profileRecordRKey,
       });
 
       recordChecked = true;
     } catch (e) {
       recordChecked = await setProfileRecord(
         me.current?.id,
-        me.current?.profile.id,
+        me.current?.profile?.id,
       );
     }
   }
@@ -84,7 +96,11 @@
 
   $effect(() => {
     if (user.agent && !recordChecked && auth.state === "signedIn") {
-      checkProfileRecord();
+      try {
+        checkProfileRecord();
+      } catch (e) {
+        console.error(e);
+      }
     }
   });
 
@@ -99,7 +115,24 @@
   });
 
   $effect(() => {
-    if (!user.profile.data?.handle || !me.current) return;
+    if (!user.profile.data?.handle || !me.current) {
+      return;
+    }
+
+    if (!me.current.profile) {
+      return;
+    }
+
+    if (me.current.profile.newJoinedSpacesTest === undefined) {
+      me.current.profile.newJoinedSpacesTest = RoomyEntityList.create(
+        [],
+        publicGroup("reader"),
+      );
+    }
+
+    if (!me.current.profile?.joinedDate === undefined) {
+      me.current.profile.joinedDate = new Date();
+    }
 
     if (me.current.profile.name !== user.profile.data?.handle) {
       me.current.profile.name = user.profile.data?.handle;
@@ -122,25 +155,11 @@
     }
   });
 
-  let themeColor = $state<ThemeName>("synthwave"); // defualt theme color
   onMount(async () => {
     await user.init();
 
-    // Set the theme color based on local storage
-    const storedColor = window.localStorage.getItem("theme") as ThemeName;
-    if (storedColor) {
-      themeColor = storedColor;
-    }
-
-    setTheme(themeColor);
-    // set color on data-theme for DaisyUI and theme-color meta tag for mobile
-    document.documentElement.setAttribute("data-theme", themeColor);
-    document
-      .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", themeColor);
-
     // Initialize PostHog for analytics
-    if (!dev && browser) {
+    if (!dev && browser && globalThis.location.hostname == "roomy.space") {
       posthog.init("phc_j80ksIuoxjfjRI7rPBmTLWx79rntg4Njz6Dixc3I3ik", {
         api_host: "https://hog.roomy.space/",
         person_profiles: "identified_only", // or 'always' to create profiles for anonymous users as well
@@ -176,22 +195,11 @@
 
     if (!me.current.root.lastRead) return;
 
-    if (page.params.channel) {
-      me.current.root.lastRead[page.params.channel] = new Date();
-    }
-
-    if (page.params.thread) {
-      me.current.root.lastRead[page.params.thread] = new Date();
+    if (page.params.object) {
+      me.current.root.lastRead[page.params.object] = new Date();
     }
   }
 </script>
-
-<svelte:head>
-  <meta name="theme-color" content={themeColor} />
-  <meta name="msapplication-navbutton-color" content={themeColor} />
-  <meta name="msapplication-TileColor" content={themeColor} />
-  <title>Roomy</title>
-</svelte:head>
 
 {#if dev}
   <!-- Displays rendering scanner for debugging.
@@ -199,40 +207,6 @@
   <!-- <RenderScan /> -->
 {/if}
 
-<!-- Container -->
-<div class="flex w-screen h-screen max-h-screen overflow-clip gap-0">
-  <Toaster />
-  <div
-    class="{page.params.space &&
-      (isSidebarVisible.value
-        ? 'flex z-1 absolute w-full'
-        : 'hidden')} sm:w-auto sm:relative sm:flex h-full overflow-clip gap-0
-      "
-  >
-    <!-- Content -->
-    <div class="flex bg-base-100 h-full">
-      <ServerBar
-        spaces={me.current?.profile.joinedSpaces}
-        visible={isSpacesVisible.value || !page.params.space}
-        me={me.current}
-      />
-      {#if page.params.space}
-        <SidebarMain />
-      {/if}
-    </div>
-    <!-- Overlay -->
-    {#if page.params.space}
-      <button
-        onclick={() => {
-          isSidebarVisible.toggle();
-        }}
-        aria-label="toggle navigation"
-        class="{!isSidebarVisible.value
-          ? 'hidden w-full'
-          : 'sm:hidden'} cursor-pointer grow-2 h-full bg-black/10"
-      ></button>
-    {/if}
-  </div>
+<Toaster />
 
-  {@render children()}
-</div>
+{@render children()}
