@@ -6,6 +6,7 @@
     ChildrenComponent,
     removeFromFolder,
     RoomyEntity,
+    SubThreadsComponent,
     type RoomyAccount,
   } from "@roomy-chat/sdk";
   import {
@@ -24,6 +25,7 @@
     currentEntity,
     space,
     level = 0,
+    subthreads,
   }: {
     children: co.loaded<typeof ChildrenComponent.schema> | undefined | null;
     me: co.loaded<typeof RoomyAccount> | undefined | null;
@@ -32,7 +34,21 @@
     currentEntity?: co.loaded<typeof RoomyEntity> | undefined | null;
     space: co.loaded<typeof RoomyEntity> | undefined | null;
     level?: number;
+    subthreads?:
+      | co.loaded<typeof SubThreadsComponent.schema>
+      | undefined
+      | null;
   } = $props();
+
+  let recentSubthreads = $derived.by(() => {
+    const subthreadsIter = subthreads && me && subthreads.byMe?.all;
+    let array = [];
+    if (!subthreadsIter) return [];
+    for (const subthread of subthreadsIter) {
+      array.push(subthread.value);
+    }
+    return array;
+  });
 
   let orderedChildren = $derived(children ?? []);
 
@@ -73,10 +89,8 @@
 {#if isEditing}
   <div
     class={[
-      "flex flex-col gap-2 w-full pb-6 min-h-10 flex-1 rounded-xl p-px max-w-full",
-      level > 0
-        ? "border border-accent-400/30 dark:border-accent-900/50 py-1"
-        : "",
+      "flex flex-col w-full pb-6 min-h-10 flex-1 max-w-full rounded-xl p-px",
+      level > 0 ? "bg-base-400/10 dark:bg-base-900/20 py-1 -ml-2 pl-2" : "",
     ]}
     use:dragHandleZone={{
       items:
@@ -95,7 +109,7 @@
             level < 1 && child?.components?.[ChildrenComponent.id] && index > 0
               ? "mt-4.5"
               : "mt-2.5",
-            "absolute -left-2 top-0",
+            "z-10 ",
           ]}
         >
           <Icon icon="lucide:grip-vertical" class="!size-3" />
@@ -114,7 +128,34 @@
     {/each}
   </div>
 {:else}
-  <div class={["flex flex-col gap-2 w-full"]}>
+  <!-- 
+      In general, if an object has subthreads, it doesn't tend to have other children. 
+      But if it does, render recent subthreads first. 
+  -->
+  {#if subthreads && me}
+    <div class="flex flex-col w-full pl-3 rounded-full">
+      {#each [...recentSubthreads.values()]
+        .sort((a, b) => {
+          return a && b ? a._lastUpdatedAt - b._lastUpdatedAt : -1;
+        })
+        .slice(-3) as subthread, index (subthread?.id)}
+        <div class="flex items-start gap-2 w-full">
+          <SidebarObject
+            object={subthread}
+            {me}
+            bind:isEditing
+            {editEntity}
+            {space}
+            level={level + 1}
+            {index}
+            isSubthread
+          />
+        </div>
+      {/each}
+    </div>
+  {/if}
+  <!-- Render regular children -->
+  <div class={["flex flex-col w-full", level > 0 ? "pl-3" : ""]}>
     {#each (children ?? []).filter((x) => x && !x?.softDeleted) as child, index (child?.id)}
       <div class="flex items-start gap-2 w-full">
         <SidebarObject

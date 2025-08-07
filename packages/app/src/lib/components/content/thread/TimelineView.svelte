@@ -3,11 +3,10 @@
   import Icon from "@iconify/svelte";
   import ChatArea from "$lib/components/content/thread/ChatArea.svelte";
   import ChatInput from "$lib/components/content/thread/ChatInput.svelte";
-  import { Button } from "@fuxui/base";
+  import { Button, Input } from "@fuxui/base";
   import { co } from "jazz-tools";
   import {
     LastReadList,
-    Message,
     RoomyAccount,
     RoomyEntity,
     addToInbox,
@@ -22,8 +21,13 @@
     BansComponent,
     SubThreadsComponent,
     AllMembersComponent,
+    HiddenInComponent,
+    BranchThreadIdComponent,
+    ReplyToComponent,
+    PlainTextContentComponent,
   } from "@roomy-chat/sdk";
   import { AccountCoState, CoState } from "jazz-tools/svelte";
+  import { setInputFocus } from "./ChatInput.svelte";
   import { user } from "$lib/user.svelte";
   import { replyTo } from "./message/ChatMessage.svelte";
   import MessageRepliedTo from "./message/MessageRepliedTo.svelte";
@@ -39,6 +43,7 @@
   let threading = $state({
     active: false,
     selectedMessages: [] as string[],
+    name: "",
   });
 
   let { objectId, spaceId }: { objectId: string; spaceId: string } = $props();
@@ -103,7 +108,7 @@
   const me = new AccountCoState(RoomyAccount, {
     resolve: {
       profile: {
-        newJoinedSpacesTest: true,
+        joinedSpaces: true,
       },
     },
   });
@@ -152,12 +157,24 @@
 
   let messageInput: string = $state("");
 
-  // thread maker
-  let threadTitleInput = $state("");
-
   let filesInMessage: File[] = $state([]);
 
-  // @ts-ignore Temporary until threads are added back
+  function startThreading(id?: string) {
+    threading.active = true;
+    id && threading.selectedMessages.push(id);
+    setInputFocus();
+  }
+
+  function toggleSelect(id: string) {
+    const index = threading?.selectedMessages.indexOf(id) ?? -1;
+    if (index > -1) {
+      threading?.selectedMessages.splice(index, 1);
+    } else {
+      threading?.selectedMessages.push(id);
+    }
+  }
+
+  // @ts-ignore
   async function handleCreateThread(e: SubmitEvent) {
     e.preventDefault();
     const messageIds = <string[]>[];
@@ -171,37 +188,64 @@
       })
       .sort((a, b) => a[1] - b[1]);
 
-    let firstMessage: co.loaded<typeof Message> | undefined = undefined;
+    let firstMessage: co.loaded<typeof RoomyEntity> | undefined = undefined;
 
     for (const [messageId, _] of sortedMessages) {
       messageIds.push(messageId);
 
-      const message = await Message.load(messageId, {
+      const message = await RoomyEntity.load(messageId, {
         resolve: {
-          hiddenIn: true,
+          components: {
+            $each: true,
+          },
         },
       });
       if (!message) {
         console.error("Message not found when creating thread", messageId);
         continue;
       }
+      const hiddenIn = await HiddenInComponent.schema.load(
+        message.components[HiddenInComponent.id] || "",
+      );
       // hide all messages except the first message in original thread
       if (firstMessage) {
-        if (threadId) message.hiddenIn.push(threadId);
+        if (threadId) hiddenIn?.hiddenIn?.push(threadId);
       } else {
         firstMessage = message;
       }
     }
 
-    let newThread = await createThread(threadTitleInput, permissions.current!);
+    if (
+      !firstMessage ||
+      !firstMessage.components ||
+      !firstMessage.components[PlainTextContentComponent.id]
+    )
+      throw new Error("No components found on first message");
+
+    const firstMessageContent = await PlainTextContentComponent.schema.load(
+      firstMessage.components[PlainTextContentComponent.id]!,
+    );
+
+    let newThreadName = threading.name || firstMessageContent?.content;
+
+    if (!newThreadName) throw new Error("No thread name");
+
+    // TODO: fix this hack
+    if (newThreadName.includes("<p>"))
+      newThreadName = newThreadName.split("<p>")[1]!;
+    if (newThreadName.includes("</p>"))
+      newThreadName = newThreadName.split("</p>")[0]!;
+
+    let newThread = await createThread(newThreadName, permissions.current!);
 
     // add all messages to the new thread
     for (const messageId of messageIds) {
       newThread.thread.timeline.push(messageId);
     }
 
-    if (firstMessage) {
-      firstMessage.threadId = newThread.roomyObject.id;
+    if (firstMessage && firstMessage.components) {
+      firstMessage.components[BranchThreadIdComponent.id] =
+        newThread.roomyObject.id;
     }
 
     const allThreadsId = space.current?.components?.[AllThreadsComponent.id];
@@ -216,6 +260,8 @@
       const subThreads = await SubThreadsComponent.schema.load(subThreadsId);
       subThreads?.push(newThread.roomyObject);
     }
+
+    console.log("Created Subthread", newThread.roomyObject.id);
 
     threading.active = false;
     threading.selectedMessages = [];
@@ -286,11 +332,12 @@
       return;
     }
 
-    const message = await createMessage(
+    const { roomyObject: message } = await createMessage(
       messageInput,
-      undefined,
-      filesUrls,
       permissions.current,
+      {
+        embeds: filesUrls,
+      },
     );
 
     let timeline = threadContent.current?.timeline;
@@ -299,9 +346,9 @@
       timeline.push(message.id);
     }
     if (replyTo.id) {
-      message.replyTo = replyTo.id;
-      const replyToMessage = await Message.load(replyTo.id);
-      const userId = replyToMessage?._edits?.content?.by?.id;
+      message.components[ReplyToComponent.id] = replyTo.id;
+      const replyToMessage = await RoomyEntity.load(replyTo.id);
+      const userId = replyToMessage?._edits?.components?.by?.id;
       if (userId) {
         addToInbox(
           userId,
@@ -439,7 +486,7 @@
   let context = $derived([...threads]);
 
   let hasJoinedSpace = $derived(
-    me.current?.profile?.newJoinedSpacesTest?.some(
+    me.current?.profile?.joinedSpaces?.some(
       (joinedSpace) => joinedSpace?.id === space.current?.id,
     ),
   );
@@ -464,6 +511,8 @@
         {threadId}
         allowedToInteract={hasJoinedSpace && !isBanned}
         {threading}
+        {startThreading}
+        {toggleSelect}
       />
     </div>
 
@@ -488,6 +537,49 @@
             <Icon icon="zondicons:close-solid" />
           </Button>
         </div>
+      {/if}
+      {#if threading.active}
+        <div
+          class="flex items-start justify-between bg-secondary text-secondary-content rounded-t-lg px-2 py-2"
+        >
+          <div
+            class="px-2 flex flex-wrap items-center gap-1 overflow-hidden text-xs w-full"
+          >
+            <span class="shrink-0 text-base-900 dark:text-base-100"
+              >Creating thread with</span
+            >
+            {#if threading.selectedMessages[0]}
+              <div class="max-w-[28rem]">
+                <MessageRepliedTo messageId={threading.selectedMessages[0]} />
+              </div>
+            {/if}
+            {#if threading.selectedMessages.length > 1}
+              <span class="shrink-0 text-base-900 dark:text-base-100"
+                >and {threading.selectedMessages.length - 1} other message{threading
+                  .selectedMessages.length > 2
+                  ? "s"
+                  : ""}</span
+              >
+            {:else if threading.selectedMessages.length === 0}
+              <span class="shrink-0 text-base-900 dark:text-base-100"
+                >no messages</span
+              >
+            {/if}
+          </div>
+          <Button
+            variant="ghost"
+            onclick={() => {
+              threading.active = false;
+              threading.selectedMessages = [];
+            }}
+            class="flex-shrink-0"
+          >
+            <Icon icon="zondicons:close-solid" />
+          </Button>
+        </div>
+        <label for="thread-name" class="px-4 py-2 text-xs font-medium"
+          >Thread name (optional):</label
+        >
       {/if}
       <div class="w-full py-1">
         {#if user.session}
@@ -519,17 +611,32 @@
                 {/if}
 
                 <div class="flex w-full pl-2 gap-2">
-                  <UploadFileButton {processImageFile} />
-
-                  {#key users.length + context.length}
-                    <ChatInput
-                      bind:content={messageInput}
-                      {users}
-                      {context}
-                      onEnter={sendMessage}
-                      {processImageFile}
-                    />
-                  {/key}
+                  {#if threading.active}
+                    <form onsubmit={handleCreateThread}>
+                      <Input
+                        bind:value={threading.name}
+                        id="thread-name"
+                        class="grow ml-2"
+                      />
+                      <Button type="submit"
+                        ><Icon icon="tabler:needle-thread" />Create
+                        <span class="hidden sm:inline-block sm:-ml-1"
+                          >Thread</span
+                        ></Button
+                      >
+                    </form>
+                  {:else}
+                    <UploadFileButton {processImageFile} />
+                    {#key users.length + context.length}
+                      <ChatInput
+                        bind:content={messageInput}
+                        {users}
+                        {context}
+                        onEnter={sendMessage}
+                        {processImageFile}
+                      />
+                    {/key}
+                  {/if}
                 </div>
                 <FullscreenImageDropper {processImageFile} />
 

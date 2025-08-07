@@ -2,16 +2,22 @@ import { Account, co, Group, z } from "jazz-tools";
 import { publicGroup } from "./group.js";
 import {
   Embed,
+  EmbedsComponent,
+  HiddenInComponent,
   ImageUrlEmbed,
-  Message,
+  PlainTextContentComponent,
   Reaction,
+  ReactionList,
+  ReactionsComponent,
+  ReplyToComponent,
   SubThreadsComponent,
   ThreadComponent,
   Timeline,
+  UserAccessTimesComponent,
   VideoUrlEmbed,
 } from "../schema/threads.js";
 import { createRoomyEntity } from "./roomyentity.js";
-import { AllPermissions } from "../schema/index.js";
+import { AllPermissions, RoomyEntity } from "../schema/index.js";
 
 export async function createThread(
   name: string,
@@ -89,20 +95,26 @@ export type VideoUrlEmbedCreate = {
   };
 };
 
+interface CreateMessageOptions {
+  replyTo?: string,
+  embeds?: (ImageUrlEmbedCreate | VideoUrlEmbedCreate)[];
+  created?: Date;
+  updated?: Date;
+}
+
 export async function createMessage(
   input: string,
-  replyTo?: string,
-  embeds?: (ImageUrlEmbedCreate | VideoUrlEmbedCreate)[],
-  permissions?: Record<string, string>,
+  permissions: Record<string, string>,
+  opts?: CreateMessageOptions
 ) {
-  const publicReadGroupId = permissions?.[AllPermissions.publicRead]!;
-  const publicReadGroup = await Group.load(publicReadGroupId);
+  const publicReadGroupId = permissions?.[AllPermissions.publicRead];
+  const publicReadGroup = await Group.load(publicReadGroupId || "");
 
   const messageGroup = Group.create();
   messageGroup.addMember(publicReadGroup!, "reader");
 
-  const addReactionsGroupId = permissions?.[AllPermissions.reactToMessages]!;
-  const addReactionsGroup = await Group.load(addReactionsGroupId);
+  const addReactionsGroupId = permissions?.[AllPermissions.reactToMessages];
+  const addReactionsGroup = await Group.load(addReactionsGroupId || "");
 
   const reactionsGroup = Group.create();
   reactionsGroup.addMember(publicReadGroup!, "reader");
@@ -118,13 +130,65 @@ export async function createMessage(
   );
   hiddenInGroup.addMember(hideMessagesInThreadsGroup!, "writer");
 
-  let embedsList;
-  if (embeds && embeds.length > 0) {
+  const { roomyObject, entityGroup, componentsGroup } = await createRoomyEntity("", permissions);
+
+  if (!roomyObject.components) {
+    throw new Error("RoomyObject components is undefined");
+  }
+
+  const editEntityComponentsGroupId =
+    permissions[AllPermissions.editEntityComponents]!;
+  const editEntityComponentsGroup = await Group.load(
+    editEntityComponentsGroupId,
+  );
+  componentsGroup.addMember(editEntityComponentsGroup!, "writer");
+
+  const editEntityGroupId = permissions[AllPermissions.editEntities]!;
+  const editEntityGroup = await Group.load(editEntityGroupId);
+  componentsGroup.addMember(editEntityGroup!, "writer");
+
+  const editMessagesGroupId = permissions[AllPermissions.editMessages]!;
+  const editMessagesGroup = await Group.load(editMessagesGroupId);
+  entityGroup.addMember(editMessagesGroup!, "writer");
+
+  const content = PlainTextContentComponent.schema.create(
+    { content: input },
+    componentsGroup,
+  );
+  roomyObject.components[PlainTextContentComponent.id] = content.id
+
+  const userAccessTimes = UserAccessTimesComponent.schema.create(
+    {
+      createdAt: opts?.created || new Date(),
+      updatedAt: opts?.updated || new Date()
+    },
+    componentsGroup,
+  );
+  roomyObject.components[UserAccessTimesComponent.id] = userAccessTimes.id
+
+  const hiddenIn = HiddenInComponent.schema.create(
+    {
+      hiddenIn: co.list(z.string()).create([])
+    },
+    componentsGroup,
+  );
+  roomyObject.components[HiddenInComponent.id] = hiddenIn.id
+
+  if (opts?.replyTo) {
+    roomyObject.components[ReplyToComponent.id] = opts?.replyTo;
+  }
+
+  const reactions = ReactionsComponent.schema.create({
+    reactions: ReactionList.create([])
+  },
+    reactionsGroup);
+  roomyObject.components[ReactionsComponent.id] = reactions.id;
+
+  if (opts?.embeds && opts.embeds.length > 0) {
     const embedsGroup = Group.create();
     embedsGroup.addMember(publicReadGroup!, "reader");
-
-    embedsList = co.list(Embed).create([], embedsGroup);
-    for (const embed of embeds) {
+    let embedsList = co.list(Embed).create([], embedsGroup);
+    for (const embed of opts.embeds) {
       const embedGroup = Group.create();
       embedGroup.addMember(publicReadGroup!, "reader");
 
@@ -153,26 +217,22 @@ export async function createMessage(
         );
       }
     }
+    const embeds = EmbedsComponent.schema.create({
+      embeds: embedsList
+    },
+      embedsGroup);
+
+    // only add embeds component if there are any embeds
+    roomyObject.components[EmbedsComponent.id] = embeds.id;
   }
 
-  const message = Message.create(
-    {
-      content: input,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      reactions: co.list(Reaction).create([], reactionsGroup),
-      replyTo: replyTo,
-      hiddenIn: co.list(z.string()).create([], hiddenInGroup),
-      embeds: embedsList,
-    },
-    messageGroup,
-  );
+  // skip AuthorComponent and ThreadIdComponent - can be added later if needed
 
-  return message;
+  return { roomyObject, content, hiddenIn, reactions };
 }
 
 export function messageHasAdmin(
-  message: co.loaded<typeof Message>,
+  message: co.loaded<typeof RoomyEntity>,
   admin: co.loaded<typeof Account>,
 ) {
   if (!admin) return false;
