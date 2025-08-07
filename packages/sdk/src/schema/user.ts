@@ -3,7 +3,10 @@ import {
   createInbox,
   publicGroup,
 } from "../functions/index.js";
+import { MediaUploadQueue } from "./import.js";
 import { RoomyEntity, RoomyEntityList } from "./index.js";
+
+export const SpaceList = co.list(RoomyEntity);
 
 export const LastReadList = co.record(z.string(), z.date());
 
@@ -26,13 +29,17 @@ export const RoomyProfile = co.profile({
   bannerUrl: z.string().optional(),
   description: z.string().optional(),
   joinedDate: z.date().optional(),
-  newJoinedSpacesTest: co.list(RoomyEntity),
+  joinedSpaces: co.list(RoomyEntity),
+
+  threadSubscriptions: z.optional(co.list(z.string())), // List of thread IDs user is subscribed to
+  hiddenFeedPosts: z.optional(co.list(z.string())), // List of AT Proto URIs for hidden feed posts
 
   activityLog: co.record(z.string(), z.string()),
 });
 
 export const RoomyRoot = co.map({
   lastRead: LastReadList,
+  uploadQueue: z.optional(MediaUploadQueue),
 });
 
 export const RoomyAccount = co
@@ -52,7 +59,7 @@ export const RoomyAccount = co
         {
           name: creationProps?.name ?? "Anonymous",
           roomyInbox: createInbox(),
-          newJoinedSpacesTest: RoomyEntityList.create(
+          joinedSpaces: RoomyEntityList.create(
             [],
             publicGroup("reader"),
           ),

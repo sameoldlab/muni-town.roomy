@@ -47,8 +47,6 @@
     }
   }
 
-  const profileRecordRKey = "v2";
-
   // TODO: used in checkProfileRecord, which is unused; removed to appease husky
   async function setProfileRecord(accountId?: string, profileId?: string) {
     if (!accountId || !profileId) return false;
@@ -57,7 +55,7 @@
       collection: "chat.roomy.profile",
       record: { accountId, profileId },
       repo: user.agent.assertDid,
-      rkey: profileRecordRKey,
+      rkey: "self",
     });
 
     addToAllAccountsList(accountId);
@@ -74,13 +72,12 @@
   //   });
   // }
 
-  // TODO: not sure what is used for; removed to appease husky
   async function checkProfileRecord() {
     try {
       await user.agent?.com.atproto.repo.getRecord({
         collection: "chat.roomy.profile",
         repo: user.agent.assertDid,
-        rkey: profileRecordRKey,
+        rkey: "self",
       });
 
       recordChecked = true;
@@ -123,8 +120,8 @@
       return;
     }
 
-    if (me.current.profile.newJoinedSpacesTest === undefined) {
-      me.current.profile.newJoinedSpacesTest = RoomyEntityList.create(
+    if (me.current.profile.joinedSpaces === undefined) {
+      me.current.profile.joinedSpaces = RoomyEntityList.create(
         [],
         publicGroup("reader"),
       );
