@@ -17,6 +17,7 @@
     inReplyToStatusId?: string;
     inReplyToUserId?: string;
     replies: Map<string, SimplifiedTweet>;
+    importedId?: string;
   }
 
   export interface UserMention {
@@ -365,6 +366,7 @@
   import {
     addToFolder,
     AllThreadsComponent,
+    BranchThreadIdComponent,
     co,
     CoFeed,
     createMessage,
@@ -382,11 +384,22 @@
   } from "@roomy-chat/sdk";
   import { AccountCoState, CoState } from "jazz-tools/svelte";
   import toast from "svelte-french-toast";
+  import { writable } from "svelte/store";
 
-  interface QueuedTweet {
-    tweet: SimplifiedTweet;
-    status: "pending" | "posted" | "failed";
-    id?: string;
+  function mapStore<T>(initial: Map<string, T>) {
+    const { subscribe, set, update } = writable(initial);
+
+    return {
+      subscribe,
+      set,
+      update,
+      setItem: (key: string, value: any) =>
+        update((m) => {
+          m.set(key, value);
+          return m;
+        }),
+      // Add other Map methods as needed
+    };
   }
 
   let logs = $state<string[]>([]);
@@ -395,7 +408,10 @@
   let fileList = $state<File[]>([]);
   let isImporting = $state(false);
   let isFinished = $state(false);
-  let tweetsQueue = $state<Map<string, QueuedTweet>>(new Map());
+  let tweets = mapStore<SimplifiedTweet>(new Map());
+  let importedTweets = $derived(
+    Array.from($tweets.values()).filter((t) => !!t.importedId).length,
+  );
   let twitterAccountId = $state("");
   let space = $derived(
     new CoState(RoomyEntity, page.params.space, {
@@ -457,6 +473,9 @@
     permissions.current?.ensureLoaded({
       resolve: true,
     });
+    allThreads.current?.ensureLoaded({
+      resolve: true,
+    });
   });
 
   $effect(() => {
@@ -488,6 +507,9 @@
       container.scrollTop = container.scrollHeight;
     }
   });
+
+  const tweetKey = (tweet: SimplifiedTweet) =>
+    `${new Date(tweet.createdAt).valueOf()}-${tweet.id}`;
 
   let pending: string[] = [];
   let scheduled = false;
@@ -553,7 +575,6 @@
     }
 
     // case 3 - no parent found
-    console.log("pathological case: no parent found", parentId);
     return null;
   }
 
@@ -591,7 +612,8 @@
       throw new Error("Thread content or subthreads content not found");
     return {
       timeline: threadContent.timeline,
-      subThreadsFeed,
+      id: channel.roomyObject.id,
+      childSubThreads: subThreadsFeed,
     };
   }
 
@@ -602,11 +624,17 @@
     subThreads: co.loaded<typeof SubThreadsComponent>,
     parentId: string,
   ) {
-    parentId; //use?
+    const parentMessage = await RoomyEntity.load(parentId, {
+      resolve: { components: { $each: true } },
+    });
+    if (!parentMessage || !parentMessage.components)
+      throw new Error("Parent message not found");
     const channel = await createThread(name, permissions);
     if (!channel) throw new Error("Channel could not be created");
-    allThreads.push(channel.roomyObject); // is this right?
+    allThreads.push(channel.roomyObject);
     subThreads.push(channel.roomyObject);
+    parentMessage.components[BranchThreadIdComponent.id] =
+      channel.roomyObject.id;
     if (!channel.roomyObject.components[ThreadComponent.id])
       throw new Error("Thread component not found in channel");
     const threadContent = await ThreadContent.load(
@@ -621,13 +649,14 @@
       throw new Error("Thread content or subthreads content not found");
     return {
       timeline: threadContent.timeline,
+      id: channel.roomyObject.id,
     };
   }
 
   async function importTweets() {
     if (isImporting) return;
     try {
-      if (!space.current || allThreads.current)
+      if (!space.current || !allThreads.current)
         throw new Error("No current space");
       if (!permissions.current) {
         console.log("permisions", permissions);
@@ -660,49 +689,46 @@
       // Then, create channels
       let mainChannel = await createAndInsertChannel(
         "Tweets",
-        permissions.current!,
-        space.current!,
-        allThreads.current!,
+        permissions.current,
+        space.current,
+        allThreads.current,
       );
       let repliesChannel = await createAndInsertChannel(
         "Replies",
-        permissions.current!,
-        space.current!,
-        allThreads.current!,
+        permissions.current,
+        space.current,
+        allThreads.current,
       );
       let retweetsChannel = await createAndInsertChannel(
         "Retweets",
-        permissions.current!,
-        space.current!,
-        allThreads.current!,
+        permissions.current,
+        space.current,
+        allThreads.current,
       );
 
-      pushLog("🌱 Channel created: Twitter Import.");
+      pushLog("🌱 Channels created: Tweets, Replies, Retweets.");
 
       pushLog("📚 Organising tweets into threads...");
 
-      const allTweets = [...tweetsQueue.values()].map((t) => t.tweet);
+      const allTweets = [...$tweets.values()].map((t) => t);
       const rootTweets = new Map(
         allTweets
           .filter((t) => !t.inReplyToStatusId)
           .filter((t) => !t.text.startsWith("RT @"))
-          .map((t) => [`${new Date(t.createdAt).valueOf()}-${t.id}`, t]),
+          .map((t) => [tweetKey(t), t]),
+      );
+
+      const selfReplies = allTweets.filter(
+        (t) => !!t.inReplyToStatusId && t.inReplyToUserId === twitterAccountId,
       );
       const replies = allTweets.filter(
         (t) => !!t.inReplyToStatusId && t.inReplyToUserId !== twitterAccountId,
       );
-      const retweets = allTweets.filter((t) => t.text.startsWith("RT @"));
-      const selfReplies = allTweets.filter(
-        (t) => !!t.inReplyToStatusId && t.inReplyToUserId === twitterAccountId,
-      );
-
       const repliesMap = new Map(
         selfReplies
           .map((r) => [r.id, r.inReplyToStatusId!] as const)
           .concat(replies.map((r) => [r.id, r.inReplyToStatusId!] as const)),
       );
-
-      console.log("rootTweets", rootTweets);
 
       // sort tweets into thread tree
       for (const reply of selfReplies) {
@@ -713,71 +739,62 @@
           repliesMap,
         );
         if (parent) {
-          parent.replies.set(
-            `${new Date(reply.createdAt).valueOf()}-${reply.id}`,
-            reply,
-          ); // does this mutate the rootTweets map?
+          parent.replies.set(tweetKey(reply), reply);
+        } else {
+          // it probably is a reply to someone else
+          replies.push(reply);
         }
       }
+
+      const retweets = allTweets.filter((t) => t.text.startsWith("RT @"));
 
       const postTweet = async (
         tweet: SimplifiedTweet,
         channel: {
           timeline: CoFeed<string>;
-          subThreads?: co.loaded<typeof SubThreadsComponent>;
+          id: string;
+          childSubThreads?: co.loaded<(typeof SubThreadsComponent)["schema"]>;
         },
       ) => {
+        if (tweet.importedId) return;
         // for each one, we have to get the URL for any attached media
-        const uploadMediaUrls = Object.keys(uploadQueue!).filter(
-          (path) => tweet.id && path.includes(tweet.id),
-        );
-        const uploadMedia = uploadMediaUrls
-          .map((key) => uploadQueue![key])
-          .filter((m) => m && m.url);
-        const uploadedMediaImageUrls = uploadMedia
-          .filter((m) => m!.mediaType === "image")
-          .map((m) => {
-            return {
-              type: "imageUrl",
-              data: {
-                url: m!.url!,
-              },
-            } as const;
-          });
-        const uploadedMediaVideoUrls = uploadMedia
-          .filter((m) => m!.mediaType === "video")
-          .map((m) => {
-            return {
-              type: "videoUrl",
-              data: {
-                url: m!.url!,
-              },
-            } as const;
-          });
-
-        // and then, post the message in the channel
-        let fileUrlEmbeds: (ImageUrlEmbedCreate | VideoUrlEmbedCreate)[] = [];
-        fileUrlEmbeds.push(...uploadedMediaImageUrls);
-        fileUrlEmbeds.push(...uploadedMediaVideoUrls);
+        const fileEmbeds: (ImageUrlEmbedCreate | VideoUrlEmbedCreate)[] =
+          Object.entries(uploadQueue!)
+            .filter(
+              ([path, m]) => tweet.id && path.includes(tweet.id) && m?.url,
+            )
+            .map(
+              ([_, m]) =>
+                ({
+                  type: m!.mediaType === "image" ? "imageUrl" : "videoUrl",
+                  data: { url: m!.url! },
+                }) as const,
+            );
 
         const messageText = tweet.text;
 
         // TODO: Add AuthorComponent with 'twitter:' prefix to show it is imported
-        const message = await createMessage(messageText, {
-          permissions: permissions.current!,
-          embeds: fileUrlEmbeds,
+        const message = await createMessage(messageText, permissions.current!, {
+          embeds: fileEmbeds,
           created: new Date(tweet.createdAt),
         });
         channel.timeline.push(message.roomyObject.id);
 
-        // for tweets in the root channel with replies,
-        // we create a subthread and post replies there
-        if (channel.subThreads && tweet.replies.size > 0) {
+        tweet.importedId = message.roomyObject.id;
+        tweets.setItem(tweetKey(tweet), tweet);
+
+        // allow UI updates to catch up
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+
+        // 'childSubThreads' should only be present when processing root tweets
+        if (channel.childSubThreads && tweet.replies.size > 0) {
+          // for tweets in the root channel with replies,
+          // we create a subthread and post replies there
           const subThread = await createAndInsertSubthread(
             messageText,
             permissions.current!,
             allThreads.current!,
-            channel.subThreads,
+            channel.childSubThreads,
             message.roomyObject.id,
           );
 
@@ -795,7 +812,7 @@
 
         // for tweets in a subthread that have replies,
         // we post them in that subthread
-        if (!channel.subThreads && tweet.replies.size > 0) {
+        if (!channel.childSubThreads && tweet.replies.size > 0) {
           // sort replies and post in the current channel (which is a subthread)
           const replyKeys = Array.from(tweet.replies.keys()).sort();
           for (const replyKey of replyKeys) {
@@ -806,20 +823,32 @@
         }
       };
 
+      pushLog("🦜 Importing Tweets");
+
       // sort tweets
       const sortedRootTweetKeys = Array.from(rootTweets.keys()).sort();
+
       for (const key of sortedRootTweetKeys) {
-        const tweet = rootTweets.get(key)!;
+        const tweet = rootTweets.get(key);
+        if (!tweet) {
+          console.error(`Tweet with ID ${key} not found`);
+          continue;
+        }
         await postTweet(tweet, mainChannel);
       }
+
+      pushLog("✅ Imported Tweets");
 
       const sortedReplies = replies.sort(
         (a, b) =>
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );
+
       for (const reply of sortedReplies) {
         await postTweet(reply, repliesChannel);
       }
+
+      pushLog("✅ Imported Replies");
 
       const sortedRetweets = retweets
         .reverse()
@@ -827,8 +856,9 @@
           (a, b) =>
             new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
         );
-      for (const tweet of sortedRetweets) {
-        await postTweet(tweet, retweetsChannel);
+
+      for (const retweet of sortedRetweets) {
+        await postTweet(retweet, retweetsChannel);
       }
 
       pushLog(
@@ -845,6 +875,11 @@
         position: "bottom-right",
       });
     }
+
+    console.log(
+      "Remaining tweets",
+      Array.from($tweets.values()).filter((tweet) => !tweet.importedId),
+    );
     isImporting = false;
     isFinished = true;
   }
@@ -859,17 +894,16 @@
 
   async function parseTweets(text: string, part: number) {
     const newText = text.replace(`window.YTD.tweets.part${part} = `, "");
-    const tweets = JSON.parse(newText);
-    pushLog(`🐤 Tweets part${part} parsed, found ${tweets.length} tweets`);
+    const tweetObjects = JSON.parse(newText);
+    pushLog(
+      `🐤 Tweets part${part} parsed, found ${tweetObjects.length} tweets`,
+    );
 
-    const parsedTweets = parseTweetsArray(tweets);
+    const parsedTweets = parseTweetsArray(tweetObjects);
     console.log("Parsed Tweets", parsedTweets);
     for (const tweet of parsedTweets) {
       // insert tweet into map keyed by unix timestamp + id, so we can post in order
-      tweetsQueue.set(`${new Date(tweet.createdAt).valueOf()}-${tweet.id}`, {
-        tweet,
-        status: "pending",
-      });
+      tweets.setItem(tweetKey(tweet), tweet);
     }
   }
 
@@ -1000,6 +1034,14 @@
             > uploaded...
           </p>
         {/if}
+        <p class="mt-2">
+          <strong class="text-accent-700">
+            {importedTweets}
+            out of {$tweets.size}
+            tweets
+          </strong>
+          imported...
+        </p>
       </div>
     </div>
 
