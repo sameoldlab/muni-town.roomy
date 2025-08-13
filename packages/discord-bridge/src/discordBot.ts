@@ -1,6 +1,5 @@
 import {
   Bot,
-  Channel,
   ChannelTypes,
   CompleteDesiredProperties,
   createBot,
@@ -19,6 +18,7 @@ import {
 
 import {
   discordLatestMessageInChannelForBridge,
+  discordWebhookTokensForBridge,
   registeredBridges,
   syncedIdsForBridge,
 } from "./db";
@@ -33,7 +33,6 @@ import {
   ThreadComponent,
   addToFolder,
   AuthorComponent,
-  addComponent,
   AllPermissions,
   Group,
 } from "@roomy-chat/sdk";
@@ -51,6 +50,7 @@ export const desiredProperties = {
     content: true,
     channelId: true,
     author: true,
+    webhookId: true,
   },
   guild: {
     id: true,
@@ -68,6 +68,10 @@ export const desiredProperties = {
     id: true,
     discriminator: true,
   },
+  webhook: {
+    id: true,
+    token: true,
+  },
   interaction: {
     id: true,
     type: true,
@@ -78,7 +82,9 @@ export const desiredProperties = {
   },
 } satisfies RecursivePartial<TransformersDesiredProperties>;
 
-type DiscordBot = Bot<CompleteDesiredProperties<typeof desiredProperties>>;
+export type DiscordBot = Bot<
+  CompleteDesiredProperties<typeof desiredProperties>
+>;
 
 export async function startBot() {
   const bot = createBot({
@@ -110,12 +116,67 @@ export async function startBot() {
       async interactionCreate(interaction) {
         await handleSlashCommandInteraction(interaction);
       },
+
+      // Handle new messages
+      async messageCreate(message) {
+        // We don't handle realtime messages while we are in the middle of backfilling, otherwise we
+        // might be indexing at the same time and incorrectly update the latest message seen in the
+        // channel.
+        if (!doneBackfillingFromDiscord) return;
+
+        const guildId = message.guildId;
+        const channelId = message.channelId;
+        if (!guildId) {
+          console.error("Guild ID not present on Discord message event");
+          return;
+        }
+        if (!channelId) {
+          console.error("Channel ID not present on Discord message event");
+          return;
+        }
+
+        const spaceId = await registeredBridges.get_spaceId(guildId.toString());
+        if (!spaceId) {
+          // This guild is not bridged.
+          return;
+        }
+
+        const latestMessages = discordLatestMessageInChannelForBridge({
+          discordGuildId: guildId,
+          roomySpaceId: spaceId,
+        });
+
+        const syncedIds = syncedIdsForBridge({
+          discordGuildId: guildId,
+          roomySpaceId: spaceId,
+        });
+
+        // If the channel doesn't have a roomy channel created for it yet, we need to make sure we
+        // fetch the channel name before syncing the message.
+        let channelName: undefined | string;
+        const roomyThread = await syncedIds.get_roomyId(
+          message.channelId.toString(),
+        );
+        if (!roomyThread) {
+          const channel = await bot.helpers.getChannel(message.channelId);
+          channelName = channel.name;
+        }
+
+        await syncDiscordMessageToRoomy(bot, {
+          guildId,
+          message,
+          channel: { id: message.channelId, name: channelName },
+        });
+
+        latestMessages.put(message.channelId.toString(), message.id.toString());
+      },
     },
   });
-  await bot.start();
+  bot.start();
+  return bot;
 }
 
-export let doneBackfilling = false;
+export let doneBackfillingFromDiscord = false;
 
 async function backfill(bot: DiscordBot, guildIds: bigint[]) {
   await tracer.startActiveSpan("backfill", async (span) => {
@@ -132,7 +193,7 @@ async function backfill(bot: DiscordBot, guildIds: bigint[]) {
         "backfillGuild",
         { attributes: { guildId: guildId.toString() } },
         async (span) => {
-          console.log("backfilling guild", guildId);
+          console.log("backfilling Discord guild", guildId);
           const channels = await bot.helpers.getChannels(guildId);
           for (const channel of channels.filter(
             (x) => x.type == ChannelTypes.GuildText,
@@ -169,7 +230,7 @@ async function backfill(bot: DiscordBot, guildIds: bigint[]) {
                   try {
                     for (const message of messages.reverse()) {
                       after = message.id;
-                      await syncDiscordMessageToRoomy({
+                      await syncDiscordMessageToRoomy(bot, {
                         guildId,
                         channel,
                         message,
@@ -197,21 +258,21 @@ async function backfill(bot: DiscordBot, guildIds: bigint[]) {
     }
 
     span.end();
-    doneBackfilling = true;
+    doneBackfillingFromDiscord = true;
   });
 }
 
-async function syncDiscordMessageToRoomy(opts: {
-  guildId: bigint;
-  channel: SetupDesiredProps<
-    Channel,
-    CompleteDesiredProperties<NoInfer<typeof desiredProperties>>
-  >;
-  message: SetupDesiredProps<
-    Message,
-    CompleteDesiredProperties<NoInfer<typeof desiredProperties>>
-  >;
-}) {
+async function syncDiscordMessageToRoomy(
+  bot: DiscordBot,
+  opts: {
+    guildId: bigint;
+    channel: { id: bigint; name?: string };
+    message: SetupDesiredProps<
+      Message,
+      CompleteDesiredProperties<NoInfer<typeof desiredProperties>>
+    >;
+  },
+) {
   const error = (span: Span, message: string) => {
     const error = new Error(message);
     span.recordException(error);
@@ -229,6 +290,21 @@ async function syncDiscordMessageToRoomy(opts: {
         span,
         `Registered space does not exist for guild: ${opts.guildId}`,
       );
+    }
+
+    // Skip messages sent by this bot
+    const webhookTokens = discordWebhookTokensForBridge({
+      discordGuildId: opts.guildId,
+      roomySpaceId: spaceId,
+    });
+    const channelWebhookId = (
+      await webhookTokens.get(opts.channel.id.toString())
+    )?.split(":")[0];
+    if (
+      channelWebhookId &&
+      opts.message.webhookId?.toString() == channelWebhookId
+    ) {
+      return;
     }
 
     // Skip if the message is already synced
@@ -256,10 +332,10 @@ async function syncDiscordMessageToRoomy(opts: {
     }
 
     const permissions = await getComponent(space, SpacePermissionsComponent);
-    if (!permissions) {
+    if (!(permissions && permissions[AllPermissions.publicRead])) {
       throw error(span, `Error getting permissions for space: ${spaceId}`);
     }
-    const readGroup = await Group.load(permissions[AllPermissions.publicRead]);
+    const readGroup = await Group.load(permissions[AllPermissions.publicRead]!);
     if (!readGroup) {
       throw error(
         span,
