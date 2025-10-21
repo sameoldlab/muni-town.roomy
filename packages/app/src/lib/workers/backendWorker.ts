@@ -4,8 +4,10 @@
 import { LeafClient, type IncomingEvent } from "@muni-town/leaf-client";
 import {
   type BackendInterface,
+  type ConsoleInterface,
   type BackendStatus,
   type SqliteWorkerInterface,
+  consoleLogLevels,
 } from "./types";
 import {
   messagePortInterface,
@@ -319,49 +321,11 @@ function connectMessagePort(port: MessagePortApi) {
     };
 
     // MessagePort has close event in some browsers
-    port.addEventListener("messageerror", cleanup);
-
-    // For Worker, we can't detect close directly, but we track it anyway
+    (port as MessagePort).addEventListener("messageerror", cleanup);
   }
 
   // Add port to active ports for broadcasting
   activePorts.add(port);
-
-  // Set up console forwarding once globally to broadcast to all ports
-  // This prevents nested wrapping that causes log duplication
-  if (!consoleForwardingSetup) {
-    consoleForwardingSetup = true;
-
-    const originalConsole = {
-      log: console.log,
-      warn: console.warn,
-      error: console.error,
-      info: console.info,
-      debug: console.debug,
-    };
-
-    const broadcastConsoleMessage = (
-      level: "log" | "warn" | "error" | "info" | "debug",
-      args: any[],
-    ) => {
-      // Broadcast to all active ports
-      for (const activePort of activePorts) {
-        try {
-          activePort.postMessage(["console", level, args]);
-        } catch (e) {
-          // Port might be closed, will be cleaned up later
-        }
-      }
-      // Also call original console for worker context
-      originalConsole[level](...args);
-    };
-
-    console.log = (...args: any[]) => broadcastConsoleMessage("log", args);
-    console.warn = (...args: any[]) => broadcastConsoleMessage("warn", args);
-    console.error = (...args: any[]) => broadcastConsoleMessage("error", args);
-    console.info = (...args: any[]) => broadcastConsoleMessage("info", args);
-    console.debug = (...args: any[]) => broadcastConsoleMessage("debug", args);
-  }
 
   const resetLocalDatabase = async () => {
     if (!sqliteWorker)
@@ -375,7 +339,10 @@ function connectMessagePort(port: MessagePortApi) {
   };
 
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  messagePortInterface<BackendInterface, {}>(port, {
+  const consoleInterface = messagePortInterface<
+    BackendInterface,
+    ConsoleInterface
+  >(port, {
     async login(handle) {
       if (!state.oauth) throw "OAuth not initialized";
       const url = await state.oauth.authorize(handle, {
@@ -431,35 +398,17 @@ function connectMessagePort(port: MessagePortApi) {
       if (!sqliteWorker) throw "Sqlite worker not initialized";
       resetLocalDatabase();
     },
-    async ping() {
-      console.log("Backend: Ping received");
-      return {
-        timestamp: Date.now(),
-        workerId: backendWorkerId,
-      };
-    },
-    async setActiveSqliteWorker(messagePort, resetDb = false) {
+    async setActiveSqliteWorker(messagePort) {
       console.log("Setting active SQLite worker");
       const firstUpdate = !sqliteWorker;
 
-      // a proxy object to let us call remote methods on the SQLite worker
       // eslint-disable-next-line @typescript-eslint/no-empty-object-type
       sqliteWorker = messagePortInterface<{}, SqliteWorkerInterface>(
         messagePort,
         {},
       );
 
-      try {
-        await sqliteWorker.ping();
-
-        // Set up periodic health checks
-        setupSqliteHealthCheck();
-      } catch (error) {
-        console.error("Backend: SQLite worker ping failed", error);
-        // Could trigger reconnection logic here
-      }
-
-      if (firstUpdate || resetDb) {
+      if (firstUpdate) {
         const previousSchemaVersion = await getPreviousStreamSchemaVersion();
         if (previousSchemaVersion != CONFIG.streamSchemaVersion) {
           // Reset the local database cache when the schema version changes.
@@ -477,17 +426,15 @@ function connectMessagePort(port: MessagePortApi) {
         channel.port1.onmessage = (ev) => {
           port.postMessage(ev.data);
         };
-        try {
-          console.log(`Backend: Re-establishing live query ${id}`);
-          sqliteWorker.createLiveQuery(id, channel.port2, statement);
-        } catch (error) {
-          console.error(
-            `Backend: Failed to re-establish live query ${id}`,
-            error,
-          );
-        }
+        sqliteWorker.createLiveQuery(id, channel.port2, statement);
       }
-      status.workerRunning = true;
+    },
+    async ping() {
+      console.log("Backend: Ping received");
+      return {
+        timestamp: Date.now(),
+        workerId: backendWorkerId,
+      };
     },
     async createStream(ulid, moduleId, moduleUrl, params): Promise<string> {
       if (!state.leafClient) throw new Error("Leaf client not initialized");
@@ -529,7 +476,7 @@ function connectMessagePort(port: MessagePortApi) {
       }));
       return events;
     },
-    async previewSpace(_streamId) {
+    async previewSpace(streamId) {
       await sqliteWorkerReady;
       // TODO: Replace with partial loads of space.
 
@@ -581,6 +528,19 @@ function connectMessagePort(port: MessagePortApi) {
       await state.openSpacesMaterializer?.unpauseSubscription(streamId);
     },
   });
+
+  // Set up console forwarding to main thread for debugging
+  // This intercepts console.log/warn/error/info/debug calls in the SharedWorker
+  // and forwards them to the main thread with a [SharedWorker] prefix.
+  // This is essential for debugging on Safari where SharedWorker console
+  // output is not directly visible in developer tools.
+  for (const level of consoleLogLevels) {
+    const normalLog = globalThis.console[level];
+    globalThis.console[level] = (...args) => {
+      normalLog(...args);
+      consoleInterface.log(level, args);
+    };
+  }
 }
 
 // Add periodic health check function
