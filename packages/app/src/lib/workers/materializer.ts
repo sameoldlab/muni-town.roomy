@@ -294,7 +294,42 @@ const materializers: {
           ${data.content.content}
         )`,
     ];
+    if (data.content.mimeType === 'text/markdown') {
+      const message = new TextDecoder().decode(data.content.content);
+      const hasUrl = (str: string): boolean => {
+        const http = str.indexOf('http');
+        if (
+          http === -1
+          && (str[http + 4] === ':' || (str[http + 4] === 's' && str[http + 5] === ':'))
+        ) { return true }
+        // all remaining potential urls are partials
+        if (str.indexOf('.') === -1) return false;
 
+        // includes false positives like butter.fingers
+        return /[a-z0-9][-a-z0-9]*\.[a-z]{2,}/i.test(str);
+      }
+      if (hasUrl(message)) {
+        const urlRegex = /(?:https?:\/\/)?(?:www\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,}(?:\/[^\s]*)?/gi;
+
+        const getUrls = (str: string, fn: (url: string) => void) => {
+          str.match(urlRegex)?.map(_url => {
+            let url = (_url.startsWith('http://') || _url.startsWith('https://')) ? _url : 'https://' + _url
+            fn(url)
+          })
+        }
+
+        getUrls(message, url => {
+          statements.push(sql`
+          insert into edges (head, tail, label)
+          values (
+            ${id(event.ulid)},
+            ${id(url)},
+            'link'
+          )
+        `)
+        })
+      }
+    }
     if (data.replyTo) {
       statements.push(sql`
         insert into edges (head, tail, label)
