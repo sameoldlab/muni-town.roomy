@@ -2,7 +2,8 @@
   import ChatArea, { type Message } from "./ChatArea.svelte";
   import ChatInputArea from "./ChatInputArea.svelte";
   import { setInputFocus } from "./ChatInput.svelte";
-
+  import { Button } from "@fuxui/base";
+  let { kind = "chat" } = $props();
   const threading: {
     active: boolean;
     selectedMessages: Message[];
@@ -28,9 +29,15 @@
 </script>
 
 <div class="flex flex-col flex-1 h-full min-h-0 justify-stretch">
-  <ChatArea {threading} {startThreading} {toggleSelect} />
+  <ChatArea {threading} {startThreading} {toggleSelect} {kind} />
 
-  <div class="shrink-0 mt-auto">
-    <ChatInputArea {threading} />
-  </div>
+  {#if kind === "chat"}
+    <div class="shrink-0 mt-auto">
+      <ChatInputArea {threading} />
+    </div>
+  {:else if kind === "link"}
+    <div class="shrink-0 mt-auto flex items-center flex-col">
+      <Button disabled class="w-full">Automatted Thread</Button>
+    </div>
+  {/if}
 </div>
