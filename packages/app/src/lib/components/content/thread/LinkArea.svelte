@@ -6,7 +6,7 @@
 
 <script lang="ts">
   import { ScrollArea } from "bits-ui";
-  import ChatMessage from "./message/ChatMessage.svelte";
+  // import ChatMessage from "./message/ChatMessage.svelte";
   import { Virtualizer, type VirtualizerHandle } from "virtua/svelte";
   import { setContext } from "svelte";
   import { page } from "$app/state";
@@ -15,9 +15,9 @@
   import IconTablerArrowDown from "~icons/tabler/arrow-down";
   import { LiveQuery } from "$lib/liveQuery.svelte";
   import { sql } from "$lib/utils/sqlTemplate";
- 
   import { decodeTime } from "ulidx";
   import { onNavigate } from "$app/navigation";
+  import { getLinkEmbedData } from "$lib/utils/getLinkEmbedData";
 
   export type Message = {
     id: string;
@@ -32,6 +32,7 @@
     masqueradeAuthorName: string | null;
     masqueradeAuthorAvatar: string | null;
     mergeWithPrevious: boolean | null;
+    link: string;
     replyTo: string | null;
     reactions: { reaction: string; userId: string; userName: string }[];
     media: {
@@ -41,10 +42,10 @@
   };
 
   let {
-    threading,
-    startThreading,
+    // threading,
+    // startThreading,
     virtualizer = $bindable(),
-    toggleSelect,
+    // toggleSelect,
   }: {
     threading?: { active: boolean; selectedMessages: Message[]; name: string };
     startThreading: (message?: Message) => void;
@@ -108,7 +109,7 @@
   });
   let isAtBottom = $state(true);
   let showJumpToPresent = $derived(!isAtBottom);
-  $inspect(query.result)
+  $inspect(query.result);
   let timeline = $derived.by(() => {
     if (!query.result) return [];
     // return query.result;
@@ -218,6 +219,8 @@
       setTimeout(() => (isShifting = false), 1000);
     }
   });
+  const cr = (value: string | undefined, seperator = ""): string =>
+    value !== undefined ? ` ${seperator} ${value}` : "";
 </script>
 
 <div class="grow min-h-0 relative">
@@ -284,12 +287,77 @@
               }}
             >
               {#snippet children(message: Message)}
-                <ChatMessage
-                  {message}
-                  {threading}
-                  {startThreading}
-                  {toggleSelect}
-                />
+                {#await getLinkEmbedData(message.link)}
+                  waiting
+                {:then d}
+                  {#if d}
+                    <div
+                      class="flex flex-col flex-wrap justify-stretch gap-4 min-[500px]:flex-row"
+                    >
+                      <div class="min-w-0 flex-1 px-3 py-2 flex flex-col">
+                        <p class="mb-1 mt-0 text-sm leading-none opacity-70">
+                          {cr(d.p?.n)}
+                          {cr(d.au?.n, "-")}
+                        </p>
+                        <p class="mb-1 mt-1 line-clamp-2 leading-snug">
+                          <b class="font-bold">{d.t}</b>
+                        </p>
+                        <p class="my-0 line-clamp-4 text-sm leading-tight">
+                          {cr(d.d)}
+                        </p>
+                        <div class="grow py-2"></div>
+                        {#if d.footer}
+                          <p class="mt-2 mb-0 text-sm">{d.footer.t}</p>
+                        {/if}
+                        <a href={message.link} class="title">
+                          <div
+                            class="text-sm leading-tight underline text-blue-400"
+                          >
+                            {message.link}
+                          </div>
+                        </a>
+                      </div>
+                      {#if d.imgs && d.imgs.length}
+                        <div
+                          class=" w-full flex-shrink-0 p-2 min-[500px]:max-w-40"
+                        >
+                          <img
+                            alt={d.imgs[0]?.d ?? ""}
+                            class="my-0 h-full w-full rounded object-cover"
+                            src={d.imgs[0]?.u}
+                          />
+                        </div>
+                      {/if}
+                      ${#if d.vid}
+                        <div
+                          class=" w-full flex-shrink-0 p-2 min-[500px]:max-w-40"
+                        >
+                          <video
+                            class="my-0 h-full w-full rounded object-cover"
+                            poster={d.thumb?.u}
+                            src={d.vid.u}
+                          >
+                            <track kind="captions" />
+                          </video>
+                        </div>
+                      {/if}
+                    </div>
+
+                    <div
+                      class="prose prose-a:text-accent-600 dark:prose-a:text-accent-400"
+                    >
+                      <div>img</div>
+                      <a
+                        href={message.link}
+                        target="_blank"
+                        class="text-link hover:underline"
+                        >{message.link}
+                      </a>
+                    </div>
+                  {:else}
+                    failed
+                  {/if}
+                {/await}
               {/snippet}
             </Virtualizer>
           {/key}
