@@ -309,22 +309,25 @@ const materializers: {
         return /[a-z0-9][-a-z0-9]*\.[a-z]{2,}/i.test(str);
       }
       if (hasUrl(message)) {
+        // add a <> detector
         const urlRegex = /(?:https?:\/\/)?(?:www\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,}(?:\/[^\s]*)?/gi;
 
-        const getUrls = (str: string, fn: (url: string) => void) => {
-          str.match(urlRegex)?.map(_url => {
+        const getUrls = (str: string, fn: (url: string, options: { embed: boolean }) => void) => {
+          str.match(urlRegex)?.forEach(_url => {
             let url = (_url.startsWith('http://') || _url.startsWith('https://')) ? _url : 'https://' + _url
-            fn(url)
+            let embed = true
+            fn(url, { embed })
           })
         }
 
-        getUrls(message, url => {
+        getUrls(message, (url, options) => {
           statements.push(sql`
-          insert into edges (head, tail, label)
+          insert into edges (head, tail, label, payload)
           values (
             ${id(event.ulid)},
             ${id(url)},
-            'link'
+            'link',
+            ${JSON.stringify(options)}
           )
         `)
         })
