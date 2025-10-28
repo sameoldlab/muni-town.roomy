@@ -20,6 +20,8 @@
   import { current } from "$lib/queries.svelte";
   import { ScrollArea, toast } from "@fuxui/base";
   import { cdnImageUrl } from "$lib/utils.svelte";
+  import LinkCard from "./LinkCard.svelte";
+  import { getLinkEmbedData } from "$lib/utils/getLinkEmbedData";
 
   let {
     message,
@@ -260,6 +262,13 @@
               </div>
             {/if} -->
           {/if}
+          {#each message.links.filter((l) => l.embed) as { url }}
+            {#await getLinkEmbedData(url) then og}
+              {#if og}
+                <LinkCard embed={og} {url} />
+              {/if}
+            {/await}
+          {/each}
         </div>
       </div>
     </div>

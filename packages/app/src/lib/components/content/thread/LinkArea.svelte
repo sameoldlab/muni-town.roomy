@@ -6,7 +6,6 @@
 
 <script lang="ts">
   import { ScrollArea } from "bits-ui";
-  // import ChatMessage from "./message/ChatMessage.svelte";
   import { Virtualizer, type VirtualizerHandle } from "virtua/svelte";
   import { setContext } from "svelte";
   import { page } from "$app/state";
@@ -286,13 +285,15 @@
             >
               {#snippet children(message: Message)}
                 {#await getLinkEmbedData(message.link)}
-                    waiting
-                  {:then embed}
-                    {#if embed}
-                      <LinkCard {embed} url={message.link.url} />
-                    {:else}
-                      failed
-                    {/if}
+                  <a href={message.link}>{message.link}</a>
+                {:then og}
+                  {#if og}
+                    <LinkCard embed={og} url={message.link} />
+                  {:else}
+                    <a href={message.link}>{message.link}</a>
+                  {/if}
+                {:catch}
+                  <a href={message.link}>{message.link}</a>
                 {/await}
               {/snippet}
             </Virtualizer>

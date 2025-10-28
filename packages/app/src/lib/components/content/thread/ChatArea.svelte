@@ -32,6 +32,10 @@
     masqueradeAuthorName: string | null;
     masqueradeAuthorAvatar: string | null;
     mergeWithPrevious: boolean | null;
+    links: {
+      url: string;
+      embed: boolean;
+    }[];
     replyTo: string | null;
     reactions: { reaction: string; userId: string; userName: string }[];
     media: {
@@ -84,6 +88,14 @@
           from comp_media m
           join entities me on me.id = m.entity
           where me.parent = e.id
+        ),
+        'links', (
+          select json_group_array(json_object(
+            'url', id(le.tail),
+            'embed', json_extract(le.payload, '$.embed')
+          ))
+          from edges le
+          where le.head = e.id and le.label = 'link'
         )
       ) as json
       from entities e
