@@ -12,6 +12,7 @@ import type { SqliteWorkerInterface } from "./types";
 import type { Agent } from "@atproto/api";
 import type { LeafClient } from "@muni-town/leaf-client";
 import { AsyncChannel } from "./asyncChannel";
+import type { Embed } from "$lib/types/embed-sdk";
 
 export type EventType = ReturnType<(typeof eventCodec)["dec"]>;
 
@@ -106,6 +107,8 @@ export function materializer(
   return sqlChannel;
 }
 
+/** Matches full or partial */
+const UrlRegex = /<?(https?:\/\/)*[a-z0-9][-a-z0-9]*\.[a-z]{2,}[^\s]*[a-zA-Z0-9\/]>?/gi;
 type Event = CodecType<typeof eventCodec>;
 type EventVariants = CodecType<typeof eventVariantCodec>;
 type EventVariantStr = EventVariants["kind"];
@@ -306,17 +309,20 @@ const materializers: {
         if (str.indexOf('.') === -1) return false;
 
         // includes false positives like butter.fingers
-        return /[a-z0-9][-a-z0-9]*\.[a-z]{2,}/i.test(str);
+        return UrlRegex.test(str);
       }
       if (hasUrl(message)) {
-        // add a <> detector
-        const urlRegex = /(?:https?:\/\/)?(?:www\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,}(?:\/[^\s]*)?/gi;
 
-        const getUrls = (str: string, fn: (url: string, options: { embed: boolean }) => void) => {
-          str.match(urlRegex)?.forEach(_url => {
-            let url = (_url.startsWith('http://') || _url.startsWith('https://')) ? _url : 'https://' + _url
+        const getUrls = (str: string, fn: (url: string, options: { embed: boolean, data?: Embed }) => void) => {
+          str.match(UrlRegex)?.forEach(_url => {
             let embed = true
-            fn(url, { embed })
+            if (_url.startsWith('<') && _url.endsWith('>')) {
+              embed = false
+              _url = _url.slice(1, -1)
+            }
+            let url = _url;//(_url.startsWith('http://') || _url.startsWith('https://')) ? _url : 'https://' + _url
+            let data
+            fn(url, { embed, data })
           })
         }
 
