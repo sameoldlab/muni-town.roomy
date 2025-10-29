@@ -10,12 +10,17 @@
   import { id } from "$lib/workers/encoding";
   import ToggleTabs from "$lib/components/layout/Tabs.svelte";
   import { Input, Modal, Popover, toast } from "@fuxui/base";
-  import { Box, Button, Tabs } from "@fuxui/base";
+  import { Box, Button } from "@fuxui/base";
   import SpaceAvatar from "$lib/components/spaces/SpaceAvatar.svelte";
   import { monotonicFactory, ulid } from "ulidx";
+  import { scrollContainerRef } from "$lib/utils.svelte";
+  import { fade } from "svelte/transition";
 
-  import IconMdiArrowRight from "~icons/mdi/arrow-right";
+  import IconHeroiconsChevronRight from "~icons/heroicons/chevron-right";
   import IconHeroiconsEllipsisHorizontal from "~icons/heroicons/ellipsis-horizontal";
+  import IconHeroiconsHashtag from "~icons/heroicons/hashtag";
+  import IconHeroiconsDocument from "~icons/heroicons/document";
+  import IconHeroiconsChatBubbleLeftRight from "~icons/heroicons/chat-bubble-left-right";
   import ChannelBoardView from "$lib/components/content/thread/boardView/ChannelBoardView.svelte";
   import LoadingLine from "$lib/components/helper/LoadingLine.svelte";
   import type { EventType } from "$lib/workers/materializer";
@@ -39,6 +44,27 @@
       },
     });
   }
+
+  let showPageChat = $state(false);
+
+  const ref = $derived($scrollContainerRef);
+  let shouldShowPageTitle = $state(false);
+
+  $effect(() => {
+    console.log("ref changed", ref);
+    if (!ref) return;
+
+    function handleScroll() {
+      if (ref && ref.scrollTop > 100) {
+        shouldShowPageTitle = true;
+      } else {
+        shouldShowPageTitle = false;
+      }
+    }
+
+    ref.addEventListener("scroll", handleScroll);
+    return () => ref.removeEventListener("scroll", handleScroll);
+  });
 
   let createPageDialogOpen = $state(false);
   let createPageName = $state("");
@@ -306,10 +332,26 @@
 
   {#snippet navbar()}
     <div class="relative w-full">
-      <div class="flex items-center px-2 truncate w-full">
+      <div class="flex items-center w-full max-w-full">
         <h2
-          class="text-lg font-bold max-w-full py-4 text-base-900 dark:text-base-100 flex items-center gap-2"
+          class="mr-2 max-w-full truncate font-regular shrink py-4 text-base-900 dark:text-base-100 flex items-center gap-2 transition-all duration-300"
         >
+          {#if object?.kind === "channel" || object?.kind === "thread"}
+            <div>
+              <IconHeroiconsHashtag
+                class="w-5 h-5 ml-2 shrink-0 text-base-700 dark:text-base-300"
+              />
+            </div>
+          {/if}
+
+          {#if object?.kind === "page" && shouldShowPageTitle}
+            <div in:fade={{ duration: 300 }} out:fade={{ duration: 100 }}>
+              <IconHeroiconsDocument
+                class="w-5 h-5 ml-2 shrink-0 text-base-700 dark:text-base-300 mr-1"
+              />
+            </div>
+          {/if}
+
           {#if object?.parent && object.parent.kind == "channel"}
             <a
               href={`/${page.params.space}/${object.parent.id}${object.kind == "page" ? "#pages" : object.kind == "thread" ? "#threads" : ""}`}
@@ -317,31 +359,33 @@
             >
               {object?.parent?.name}
             </a>
-            <IconMdiArrowRight />
-          {/if}
-          <span class="truncate">{object?.name}</span>
-        </h2>
-        <div class="flex items-center ml-auto gap-2">
-          {#if object?.kind == "channel"}
-            <ToggleTabs
-              items={channelTabList.map((x) => ({
-                name: x,
-                href: `#${x.toLowerCase()}`,
-              }))}
-              active={channelActiveTab}
-            />
+            <IconHeroiconsChevronRight class="w-4 h-4 shrink-0" />
           {/if}
 
+          {#if object?.kind !== "page"}
+            <span class="truncate">{object?.name}</span>
+          {:else if shouldShowPageTitle}
+            <span
+              class="truncate"
+              in:fade={{ duration: 300 }}
+              out:fade={{ duration: 100 }}>{object?.name}</span
+            >
+          {/if}
+        </h2>
+        <div class="flex items-center ml-auto shrink-0 gap-2">
           {#if current.space?.id && backendStatus.loadingSpaces}
             <div class="dark:!text-base-400 !text-base-600 mx-3">
               Downloading Entire Space...
             </div>
-          {/if}
-
-          {#if object?.kind == "thread"}
+          {:else if object?.kind == "thread"}
             <Popover>
               {#snippet child({ props })}
-                <Button {...props}>Thread Options</Button>
+                <Button {...props}>
+                  <span class="hidden md:block">Thread Options</span>
+                  <IconHeroiconsEllipsisHorizontal
+                    class="shrink-0 block md:hidden"
+                  /></Button
+                >
               {/snippet}
 
               <Button onclick={() => (promoteChannelDialogOpen = true)}
@@ -368,19 +412,26 @@
               </form>
             </Modal>
           {:else if object?.kind == "channel"}
+            <ToggleTabs
+              items={channelTabList.map((x) => ({
+                name: x,
+                href: `#${x.toLowerCase()}`,
+              }))}
+              active={channelActiveTab}
+            />
             <Button
-              class="mr-2 hidden lg:block"
+              class="hidden lg:block"
               onclick={() => (createPageDialogOpen = true)}>Create Page</Button
             >
 
             <Popover>
               {#snippet child({ props })}
                 <Button {...props}
-                  ><span class="hidden lg:block">Channel Options</span><span
-                    class="block lg:hidden"
-                    ><IconHeroiconsEllipsisHorizontal class="shrink-0" /></span
-                  ></Button
-                >
+                  ><span class="hidden lg:block">Channel Options</span
+                  ><IconHeroiconsEllipsisHorizontal
+                    class="shrink-0 block lg:hidden"
+                  />
+                </Button>
               {/snippet}
 
               <div class="flex flex-col gap-2">
@@ -410,7 +461,17 @@
               </form>
             </Modal>
           {:else if object?.kind == "page"}
-            <Tabs
+            {#if pageActiveTab == "Page"}
+              <Button
+                data-active={showPageChat}
+                variant={showPageChat ? "primary" : "secondary"}
+                onclick={() => (showPageChat = !showPageChat)}
+                ><IconHeroiconsChatBubbleLeftRight
+                  class="shrink-0"
+                />Chat</Button
+              >
+            {/if}
+            <ToggleTabs
               items={pageTabList.map((x) => ({
                 name: x,
                 href: `#${x.toLowerCase()}`,
@@ -456,7 +517,7 @@
     <TimelineView />
   {:else if object?.kind == "page"}
     {#if pageActiveTab == "Page"}
-      <PageView />
+      <PageView bind:showPageChat />
     {:else}
       <PageHistory />
     {/if}

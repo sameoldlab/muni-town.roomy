@@ -6,16 +6,21 @@
   import { sql } from "$lib/utils/sqlTemplate";
   import { backend } from "$lib/workers";
   import { id } from "$lib/workers/encoding";
-  import { Button, Prose, ScrollArea } from "@fuxui/base";
+  import { Button, Prose } from "@fuxui/base";
+  import ScrollArea from "$lib/components/layout/ScrollArea.svelte";
   import { RichTextEditor } from "@fuxui/text";
   import { patchMake, patchToText } from "diff-match-patch-es";
   import Turndown from "turndown";
   import { ulid } from "ulidx";
+  import { scrollContainerRef } from "$lib/utils.svelte";
 
   import IconTablerCheck from "~icons/tabler/check";
   import IconTablerPencil from "~icons/tabler/pencil";
+  import TimelineView from "../thread/TimelineView.svelte";
 
   let isEditing = $state(false);
+
+  let { showPageChat = $bindable(false) } = $props();
 
   let pageQuery = new LiveQuery<{ content: string }>(
     () => sql`
@@ -49,46 +54,63 @@
       },
     });
   }
+
+  let ref: HTMLDivElement | null = $state(null);
+
+  // Sync the ref to the store
+  $effect(() => {
+    console.log("Setting scroll container ref", ref);
+    scrollContainerRef.set(ref);
+  });
 </script>
 
-<ScrollArea orientation="vertical">
-  <div class="max-w-4xl mx-auto w-full px-4 py-8">
-    <div class="flex justify-end mb-4">
-      {#if isEditing}
-        <Button onclick={savePage}>
-          <IconTablerCheck />
-          Save
-        </Button>
-      {:else}
-        <Button
-          variant="secondary"
-          disabled={!pageQuery.result?.length}
-          onclick={() => {
-            isEditing = true;
-            editingContent = pageContent
-              ? renderMarkdownSanitized(pageContent)
-              : "";
-          }}
-        >
-          <IconTablerPencil />
-          Edit
-        </Button>
-      {/if}
-    </div>
+<div class="flex h-full">
+  <ScrollArea
+    orientation="vertical"
+    class={["relative", showPageChat ? "w-1/2" : ""]}
+    bind:ref
+  >
+    <div class="max-w-4xl mx-auto w-full px-4 pb-8">
+      <div class="flex z-10 justify-end mb-4 sticky top-4 right-4">
+        {#if isEditing}
+          <Button onclick={savePage}>
+            <IconTablerCheck />
+            Save
+          </Button>
+        {:else}
+          <Button
+            variant="secondary"
+            disabled={!pageQuery.result?.length}
+            onclick={() => {
+              isEditing = true;
+              editingContent = pageContent
+                ? renderMarkdownSanitized(pageContent)
+                : "";
+            }}
+          >
+            <IconTablerPencil />
+            Edit
+          </Button>
+        {/if}
+      </div>
 
-    <Prose>
-      {#if isEditing}
-        <RichTextEditor
-          content={editingContent}
-          onupdate={(_c, ctx) => {
-            editingContent = ctx.editor.getHTML();
-          }}
-        />
-      {:else if pageContent}
-        {@html renderMarkdownSanitized(pageContent)}
-      {:else}
-        Loading...
-      {/if}
-    </Prose>
-  </div>
-</ScrollArea>
+      <Prose>
+        {#if isEditing}
+          <RichTextEditor
+            content={editingContent}
+            onupdate={(_c, ctx) => {
+              editingContent = ctx.editor.getHTML();
+            }}
+          />
+        {:else if pageContent}
+          {@html renderMarkdownSanitized(pageContent)}
+        {:else}
+          Loading...
+        {/if}
+      </Prose>
+    </div>
+  </ScrollArea>
+  {#if showPageChat}
+    <TimelineView />
+  {/if}
+</div>
