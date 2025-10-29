@@ -18,6 +18,7 @@
   import { onNavigate } from "$app/navigation";
   import { getLinkEmbedData } from "$lib/utils/getLinkEmbedData";
   import LinkCard from "./message/LinkCard.svelte";
+  import ChatMessage from "./message/ChatMessage.svelte";
   export type Message = {
     id: string;
     content: string;
@@ -31,7 +32,10 @@
     masqueradeAuthorName: string | null;
     masqueradeAuthorAvatar: string | null;
     mergeWithPrevious: boolean | null;
-    link: string;
+    links: {
+      url: string;
+      embed: true
+    }[];
     replyTo: string | null;
     reactions: { reaction: string; userId: string; userName: string }[];
     media: {
@@ -41,10 +45,10 @@
   };
 
   let {
-    // threading,
-    // startThreading,
+    threading,
+    startThreading,
     virtualizer = $bindable(),
-    // toggleSelect,
+    toggleSelect,
   }: {
     threading?: { active: boolean; selectedMessages: Message[]; name: string };
     startThreading: (message?: Message) => void;
@@ -65,7 +69,6 @@
         'masqueradeAuthorName', oai.name,
         'masqueradeAuthorAvatar', oai.avatar,
         'masqueradeAuthorHandle', oau.handle,
-        'link', id(link_edge.tail),
         'reactions', (
           select json_group_array(json_object(
             'reaction', ed.payload,
@@ -84,6 +87,14 @@
           from comp_media m
           join entities me on me.id = m.entity
           where me.parent = e.id
+        ),
+        'links', (
+          select json_group_array(json_object(
+            'url', id(le.tail),
+            'embed', json_extract(le.payload, '$.embed')
+          ))
+          from edges le
+          where le.tail = link_edge.tail
         )
       ) as json
       from entities e
@@ -278,23 +289,20 @@
               scrollRef={viewport}
               overscan={5}
               shift={isShifting}
-              getKey={(x) => x.id}
+              getKey={(x) => `${x.id}:${x.links[0]?.url}`}
               onscroll={(o) => {
                 if (o < 100) showLastN += 50;
               }}
             >
               {#snippet children(message: Message)}
-                {#await getLinkEmbedData(message.link)}
-                  <a href={message.link}>{message.link}</a>
-                {:then og}
-                  {#if og}
-                    <LinkCard embed={og} url={message.link} />
-                  {:else}
-                    <a href={message.link}>{message.link}</a>
-                  {/if}
-                {:catch}
-                  <a href={message.link}>{message.link}</a>
-                {/await}
+                <!-- <ChatMessage {message} threading={threa}/> -->
+                <ChatMessage
+                  {message}
+                  {threading}
+                  {startThreading}
+                  {toggleSelect}
+                  showMessage={false}
+                />
               {/snippet}
             </Virtualizer>
           {/key}

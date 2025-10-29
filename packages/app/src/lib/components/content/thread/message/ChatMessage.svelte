@@ -12,6 +12,7 @@
   import MessageReactions from "./MessageReactions.svelte";
   import ChatInput from "../ChatInput.svelte";
   import IconTablerCheck from "~icons/tabler/check";
+  import IconLucideX from "~icons/lucide/x";
   import { goto } from "$app/navigation";
   import { renderMarkdownSanitized } from "$lib/markdown";
   import type { Message } from "../ChatArea.svelte";
@@ -28,11 +29,13 @@
     threading,
     startThreading,
     toggleSelect,
+    showMessage = true
   }: {
     message: Message;
     threading?: { active: boolean; selectedMessages: Message[]; name: string };
     startThreading: (message?: Message) => void;
     toggleSelect: (message: Message) => void;
+    showMessage: boolean
   } = $props();
 
   let hovered = $state(false);
@@ -254,7 +257,9 @@
               </div>
             </div>
           {:else}
+          {#if showMessage}
             {@html renderMarkdownSanitized(message.content)}
+          {/if}
 
             <!-- {#if isMessageEdited && userAccessTimes.current?.updatedAt}
               <div class="text-xs text-base-700 dark:text-base-400">
@@ -262,13 +267,22 @@
               </div>
             {/if} -->
           {/if}
-          {#each message.links.filter((l) => l.embed) as { url }}
-            {#await getLinkEmbedData(url) then og}
-              {#if og}
-                <LinkCard embed={og} {url} />
-              {/if}
-            {/await}
-          {/each}
+          {#if message.links.filter((l) => l.embed).length}
+            <div class="pr-2 flex gap-1 items-start">
+              <div class="">
+                {#each message.links.filter((l) => l.embed) as { url }}
+                  <div class="py-1">
+                    {#await getLinkEmbedData(url) then og}
+                      {#if og}
+                        <LinkCard embed={og} {url} />
+                      {/if}
+                    {/await}
+                  </div>
+                {/each}
+              </div>
+              <button class="opacity-0 hover:opacity-100 cursor-pointer transition-opacity ease-in-out duration-75"><IconLucideX /></button>
+            </div>
+          {/if}
         </div>
       </div>
     </div>
