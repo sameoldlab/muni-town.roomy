@@ -3,7 +3,9 @@
   import ChatInputArea from "./ChatInputArea.svelte";
   import { setInputFocus } from "./ChatInput.svelte";
   import { Button } from "@fuxui/base";
-  let { kind = "chat" } = $props();
+
+  export type TimelineKind = "chat" | "link";
+  let { kind = "chat" }: { kind?: TimelineKind } = $props();
   const threading: {
     active: boolean;
     selectedMessages: Message[];

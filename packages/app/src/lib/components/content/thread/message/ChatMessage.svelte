@@ -34,7 +34,7 @@
     threading?: { active: boolean; selectedMessages: Message[]; name: string };
     startThreading: (message?: Message) => void;
     toggleSelect: (message: Message) => void;
-    showMessage: boolean
+    showMessage?: boolean
   } = $props();
 
   let hovered = $state(false);
