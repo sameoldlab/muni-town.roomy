@@ -22,7 +22,6 @@
   import { ScrollArea, toast } from "@fuxui/base";
   import { cdnImageUrl } from "$lib/utils.svelte";
   import LinkCard from "./LinkCard.svelte";
-  import { getLinkEmbedData } from "$lib/utils/getLinkEmbedData";
 
   let {
     message,
@@ -267,16 +266,12 @@
               </div>
             {/if} -->
           {/if}
-          {#if message.links.filter((l) => l.embed).length}
+          {#if message.links.filter((l) => l.shouldEmbed).length}
             <div class="pr-2 flex gap-1 items-start">
               <div class="">
-                {#each message.links.filter((l) => l.embed) as { url }}
+                {#each message.links.filter((l) => l.shouldEmbed) as { url, data }}
                   <div class="py-1">
-                    {#await getLinkEmbedData(url) then og}
-                      {#if og}
-                        <LinkCard embed={og} {url} />
-                      {/if}
-                    {/await}
+                        <LinkCard embed={data} {url} />
                   </div>
                 {/each}
               </div>

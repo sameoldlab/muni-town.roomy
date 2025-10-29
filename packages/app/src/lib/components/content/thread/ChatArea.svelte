@@ -18,6 +18,7 @@
   import { id } from "$lib/workers/encoding";
   import { decodeTime } from "ulidx";
   import { onNavigate } from "$app/navigation";
+  import type { Embed } from "$lib/types/embed-sdk";
 
   export type Message = {
     id: string;
@@ -34,7 +35,8 @@
     mergeWithPrevious: boolean | null;
     links: {
       url: string;
-      embed: boolean;
+      shouldEmbed: true
+      data: Embed | null
     }[];
     replyTo: string | null;
     reactions: { reaction: string; userId: string; userName: string }[];
@@ -92,7 +94,8 @@
         'links', (
           select json_group_array(json_object(
             'url', id(le.tail),
-            'embed', json_extract(le.payload, '$.embed')
+            'shouldEmbed', json_extract(le.payload, '$.shouldEmbed'),
+            'data', json_extract(le.payload, '$.data')
           ))
           from edges le
           where le.head = e.id and le.label = 'link'

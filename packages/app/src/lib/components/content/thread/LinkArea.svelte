@@ -16,9 +16,8 @@
   import { sql } from "$lib/utils/sqlTemplate";
   import { decodeTime } from "ulidx";
   import { onNavigate } from "$app/navigation";
-  import { getLinkEmbedData } from "$lib/utils/getLinkEmbedData";
-  import LinkCard from "./message/LinkCard.svelte";
   import ChatMessage from "./message/ChatMessage.svelte";
+  import type { Embed } from "$lib/types/embed-sdk";
   export type Message = {
     id: string;
     content: string;
@@ -34,7 +33,8 @@
     mergeWithPrevious: boolean | null;
     links: {
       url: string;
-      embed: true
+      shouldEmbed: true
+      data: Embed | null
     }[];
     replyTo: string | null;
     reactions: { reaction: string; userId: string; userName: string }[];
@@ -91,10 +91,11 @@
         'links', (
           select json_group_array(json_object(
             'url', id(le.tail),
-            'embed', json_extract(le.payload, '$.embed')
+            'shouldEmbed', json_extract(le.payload, '$.shouldEmbed'),
+            'data', json_extract(le.payload, '$.data')
           ))
           from edges le
-          where le.tail = link_edge.tail
+          where le.tail = link_edge.tail and le.head = link_edge.head
         )
       ) as json
       from entities e
@@ -295,7 +296,6 @@
               }}
             >
               {#snippet children(message: Message)}
-                <!-- <ChatMessage {message} threading={threa}/> -->
                 <ChatMessage
                   {message}
                   {threading}
