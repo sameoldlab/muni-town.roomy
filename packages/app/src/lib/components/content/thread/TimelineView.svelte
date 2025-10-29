@@ -2,7 +2,6 @@
   import ChatArea, { type Message } from "./ChatArea.svelte";
   import ChatInputArea from "./ChatInputArea.svelte";
   import { setInputFocus } from "./ChatInput.svelte";
-  import { Button } from "@fuxui/base";
 
   export type TimelineKind = "chat" | "link";
   let { kind = "chat" }: { kind?: TimelineKind } = $props();
@@ -38,8 +37,8 @@
       <ChatInputArea {threading} />
     </div>
   {:else if kind === "link"}
-    <div class="shrink-0 mt-auto flex items-center flex-col">
-      <Button disabled class="w-full">Automatted Thread</Button>
+    <div class="shrink-0 mt-auto py-1 text-center w-full bg-accent-100 dark:bg-accent-900/30 cursor-not-allowed">
+        Automated Thread
     </div>
   {/if}
 </div>
