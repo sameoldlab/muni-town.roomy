@@ -34,8 +34,8 @@ export const getLinkEmbedData = (url: string) => {
         console.error(`${err.message} caused by '${err.cause}'`);
         // Avoid retrying urls with Network Errors until next refresh
         // Might have data later.
-        cache.set(url, null);
-        return null
-      } else throw new Error(err as unknown as string);
+      }
+      console.error(err)
+      return undefined
     });
 };

@@ -784,7 +784,7 @@ export interface EdgeMember {
 
 export interface EdgeLink {
   shouldEmbed: boolean;
-  data: Embed | null;
+  data?: Embed | null;
 }
 
 export type EdgesMap = {

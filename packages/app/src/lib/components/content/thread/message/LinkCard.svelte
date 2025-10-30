@@ -1,15 +1,14 @@
 <script lang="ts">
-  import type { Embed } from "$lib/types/embed-sdk";
-
+  import type {EdgeLink} from "$lib/workers/materializer"
   let {
     embed: e,
     url,
   }: {
-    embed: Embed | null;
+    embed: EdgeLink['data'];
     url: string;
   } = $props();
 
-  /** add value with separtor if it is not null */
+  /** add value with separator if it is not undefined */
   const cr = (value: string | undefined, seperator = ""): string =>
     value !== undefined ? ` ${seperator} ${value}` : "";
 </script>
