@@ -8,7 +8,7 @@
   import { AvatarBeam } from "svelte-boring-avatars";
   import { format, isToday } from "date-fns";
   import MessageToolbar from "./MessageToolbar.svelte";
-  import MessageRepliedTo from "./MessageRepliedTo.svelte";
+  import MessageContext from "./MessageContext.svelte";
   import MessageReactions from "./MessageReactions.svelte";
   import ChatInput from "../ChatInput.svelte";
   import IconTablerCheck from "~icons/tabler/check";
@@ -20,18 +20,26 @@
   import { current } from "$lib/queries.svelte";
   import { ScrollArea, toast } from "@fuxui/base";
   import { cdnImageUrl } from "$lib/utils.svelte";
+  import IconLucideImageOff from "~icons/lucide/image-off";
+  import type { MessagingState } from "../TimelineView.svelte";
 
   let {
     message,
-    threading,
+    messagingState,
     startThreading,
     toggleSelect,
   }: {
     message: Message;
-    threading?: { active: boolean; selectedMessages: Message[]; name: string };
+    messagingState?: MessagingState;
     startThreading: (message?: Message) => void;
     toggleSelect: (message: Message) => void;
   } = $props();
+
+  const threading = $derived.by(() => {
+    if (!messagingState) return null;
+    if (messagingState.kind !== "threading") return null;
+    return messagingState;
+  });
 
   let hovered = $state(false);
   let keepToolbarOpen = $state(false);
@@ -50,9 +58,9 @@
   } = $derived.by(() => {
     const defaultInfo = {
       id: message.authorDid,
-      name: message.authorName,
-      handle: message.authorHandle,
-      avatarUrl: message.authorAvatar,
+      name: message.authorName || undefined,
+      handle: message.authorHandle || undefined,
+      avatarUrl: message.authorAvatar || undefined,
       timestamp: new Date(decodeTime(message.id)),
       profileUrl: `/user/${message.authorDid}`,
     };
@@ -62,9 +70,9 @@
     try {
       return {
         id: message.masqueradeAuthor,
-        handle: message.masqueradeAuthorHandle,
-        name: message.masqueradeAuthorName,
-        avatarUrl: message.masqueradeAuthorAvatar,
+        handle: message.masqueradeAuthorHandle || undefined,
+        name: message.masqueradeAuthorName || undefined,
+        avatarUrl: message.masqueradeAuthorAvatar || undefined,
         timestamp: message.masqueradeTimestamp
           ? new Date(message.masqueradeTimestamp)
           : new Date(decodeTime(message.id)),
@@ -73,6 +81,14 @@
 
     return defaultInfo;
   });
+
+  let mediaWithErrors = $state<string[]>([]);
+
+  function markMediaError(uri: string) {
+    if (!mediaWithErrors.includes(uri)) {
+      mediaWithErrors = [...mediaWithErrors, uri];
+    }
+  }
 
   let messageByMe = $derived(message.authorDid == backendStatus.did);
 
@@ -121,30 +137,30 @@
     editingMessage.id = "";
   }
 
-  let isMessageEdited = $derived.by(() => {
-    // if (!message.current) return false;
-    // if (
-    //   !userAccessTimes.current?.createdAt ||
-    //   !userAccessTimes.current?.updatedAt
-    // )
-    //   return false;
-    // // if time between createdAt and updatedAt is less than 1 minute, we dont consider it edited
-    // return (
-    //   userAccessTimes.current?.updatedAt.getTime() -
-    //     userAccessTimes.current?.createdAt.getTime() >
-    //   1000 * 60
-    // );
-  });
+  // let isMessageEdited = $derived.by(() => {
+  // if (!message.current) return false;
+  // if (
+  //   !userAccessTimes.current?.createdAt ||
+  //   !userAccessTimes.current?.updatedAt
+  // )
+  //   return false;
+  // // if time between createdAt and updatedAt is less than 1 minute, we dont consider it edited
+  // return (
+  //   userAccessTimes.current?.updatedAt.getTime() -
+  //     userAccessTimes.current?.createdAt.getTime() >
+  //   1000 * 60
+  // );
+  // });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
   id={message.id}
-  class={`flex flex-col w-full relative max-w-screen isolate px-4 ${threading?.active ? "select-none" : ""}`}
+  class={`flex flex-col w-full relative max-w-screen isolate px-4 ${threading ? "select-none" : ""}`}
   onmouseenter={() => (hovered = true)}
   onmouseleave={() => (hovered = false)}
 >
-  {#if threading?.active}
+  {#if threading}
     <Checkbox.Root
       aria-label="Select message"
       onclick={(e) => e.stopPropagation()}
@@ -177,10 +193,18 @@
     ]}
   >
     {#if message.replyTo}
-      <MessageRepliedTo messageId={message.replyTo} />
+      <MessageContext
+        context={{
+          kind: "replying",
+          replyTo: { id: message.replyTo },
+          input: "",
+          files: [],
+        }}
+      />
     {/if}
 
-    <div class={"group relative flex w-full justify-start gap-3"}>
+    <div class="group relative flex w-full justify-start gap-3">
+      <!-- Avatar, or left margin -->
       {#if !message.mergeWithPrevious}
         <div class="size-8 sm:size-10">
           <button
@@ -206,6 +230,7 @@
       {/if}
 
       <div class="flex flex-col gap-1">
+        <!-- Username, timestamp -->
         {#if !message.mergeWithPrevious}
           <span class="flex items-center gap-2 text-sm">
             <span class="font-bold text-accent-700 dark:text-accent-400"
@@ -223,6 +248,8 @@
             {@render timestamp(metadata.timestamp)}
           </span>
         {/if}
+
+        <!-- Message text -->
         <div
           class="prose prose-a:text-accent-600 dark:prose-a:text-accent-400 dark:prose-invert prose-a:no-underline max-w-full"
         >
@@ -261,10 +288,52 @@
             {/if} -->
           {/if}
         </div>
+
+        <!-- Media -->
+        {#if message.media.length}
+          <div class="flex flex-wrap gap-4 my-3">
+            {#each message.media.filter( (x) => x.mimeType.startsWith("image"), ) as media}
+              {#if mediaWithErrors.includes(media.uri)}
+                <!-- Error Loading -->
+                <div
+                  class="w-40 h-28 flex items-center justify-center bg-base-200 dark:bg-base-800 rounded"
+                >
+                  <IconLucideImageOff class="shrink-0" />
+                </div>
+              {:else}
+                <a
+                  href={`#${encodeURIComponent(media.uri)}`}
+                  aria-label="image full screen"
+                >
+                  <!-- TODO: support input and rendering of alt text. Also, store image size (and blur hash?), so we can pre-render loading states without layout shift -->
+
+                  <img
+                    src={cdnImageUrl(media.uri, { size: "thumbnail" })}
+                    class="max-w-[15em] rounded"
+                    onerror={() => markMediaError(media.uri)}
+                  />
+                </a>
+              {/if}
+            {/each}
+
+            <!-- TODO: display videos from Bluesky CDN. -->
+
+            <!-- <div class="pl-11 md:pl-13 max-w-full flex flex-wrap gap-2 z-10">
+              {#each embeds.current?.embeds ?? [] as embed}
+                {#if embed?.type === "imageUrl"}
+                  <ImageUrlEmbed embedId={embed.embedId} />
+                {/if}
+                {#if embed?.type === "videoUrl"}
+                  <VideoUrlEmbed embedId={embed.embedId} />
+                {/if}
+              {/each}
+            </div> -->
+          </div>
+        {/if}
       </div>
     </div>
 
-    {#if (editingMessage.id !== message.id && hovered && !threading?.active) || keepToolbarOpen}
+    {#if (editingMessage.id !== message.id && hovered && !threading) || keepToolbarOpen}
       <MessageToolbar
         bind:isDrawerOpen
         canEdit={messageByMe}
@@ -282,16 +351,6 @@
       <span class="sr-only">Open toolbar</span>
     </button>
 
-    <!-- <div class="pl-11 md:pl-13 max-w-full flex flex-wrap gap-2 z-10">
-      {#each embeds.current?.embeds ?? [] as embed}
-        {#if embed?.type === "imageUrl"}
-          <ImageUrlEmbed embedId={embed.embedId} />
-        {/if}
-        {#if embed?.type === "videoUrl"}
-          <VideoUrlEmbed embedId={embed.embedId} />
-        {/if}
-      {/each}
-    </div> -->
     <!-- 
     {#if message.current?.components?.[BranchThreadIdComponent.id] && message.current?.components?.[BranchThreadIdComponent.id] !== threadId}
       <MessageThreadBadge
@@ -302,32 +361,16 @@
 
     <MessageReactions {message} />
   </div>
-
-  {#if message.media.length}
-    <div class="flex flex-wrap gap-4 my-3">
-      {#each message.media.filter( (x) => x.mimeType.startsWith("image"), ) as media}
-        <a
-          href={`#${encodeURIComponent(media.uri)}`}
-          aria-label="image full screen"
-        >
-          <img
-            src={cdnImageUrl(media.uri, { size: "thumbnail" })}
-            class="max-w-[15em]"
-          />
-        </a>
-      {/each}
-
-      <!-- TODO: display videos from Bluesky CDN. -->
-    </div>
-  {/if}
 </div>
 
 <Portal>
   {#each message.media.filter((x) => x.mimeType.startsWith("image")) as media}
+    <!-- TODO: convert to native HTML dialog modal -->
     <div
       id={encodeURIComponent(media.uri)}
       class="media-overlay"
       tabindex="0"
+      aria-label="Dismiss image zoom"
       onclick={() => {
         imageZooming = false;
         window.location.href = "#";
@@ -351,22 +394,26 @@
         X
       </a>
       <ScrollArea orientation="both" class="m-auto max-w-full max-h-full">
-        <img
-          src={cdnImageUrl(media.uri)}
-          class="transition-all duration-100 ease-linear"
-          class:no-zoom={!imageZooming}
-          onload={(e) => {
-            const img = e.currentTarget as HTMLImageElement;
-            img.setAttribute(
-              "style",
-              `max-width: ${img.naturalWidth}px; max-height: ${img.naturalHeight}px`,
-            );
-          }}
+        <button
+          aria-label="Toggle image zoom"
           onclick={(e) => {
             e.stopPropagation();
             imageZooming = !imageZooming;
           }}
-        />
+        >
+          <img
+            src={cdnImageUrl(media.uri)}
+            class="transition-all duration-100 ease-linear"
+            class:no-zoom={!imageZooming}
+            onload={(e) => {
+              const img = e.currentTarget as HTMLImageElement;
+              img.setAttribute(
+                "style",
+                `max-width: ${img.naturalWidth}px; max-height: ${img.naturalHeight}px`,
+              );
+            }}
+          />
+        </button>
       </ScrollArea>
     </div>
   {/each}

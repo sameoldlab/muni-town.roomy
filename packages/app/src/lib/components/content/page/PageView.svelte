@@ -8,7 +8,7 @@
   import { id } from "$lib/workers/encoding";
   import { Button, Prose } from "@fuxui/base";
   import ScrollArea from "$lib/components/layout/ScrollArea.svelte";
-  import { RichTextEditor } from "@fuxui/text";
+  import { RichTextEditor } from "$lib/components/richtext";
   import { patchMake, patchToText } from "diff-match-patch-es";
   import Turndown from "turndown";
   import { ulid } from "ulidx";
@@ -16,30 +16,52 @@
 
   import IconTablerCheck from "~icons/tabler/check";
   import IconTablerPencil from "~icons/tabler/pencil";
-  import TimelineView from "../thread/TimelineView.svelte";
+  import TimelineView, { setNormal } from "../thread/TimelineView.svelte";
+  import { setCommenting, type Comment } from "../thread/TimelineView.svelte";
+  import { ensureShowPageChat } from "$lib/../routes/(app)/[space=hash]/[object=ulid]/+page.svelte";
 
   let isEditing = $state(false);
+  let contentInitialised = $state(false);
 
   let { showPageChat = $bindable(false) } = $props();
 
-  let pageQuery = new LiveQuery<{ content: string }>(
+  $effect(() => {
+    console.log("showPageChat", showPageChat);
+  });
+  let pageQuery = new LiveQuery<{ content: string; latestEditId: string }>(
     () => sql`
-    select cast(data as text) as content
+    select 
+      cast(data as text) as content,
+      (
+        select id(edit_id)
+        from comp_page_edits
+        where entity = ${page.params.object && id(page.params.object)}
+        order by edit_id desc
+        limit 1
+      ) as latestEditId
     from comp_content
     where
       entity = ${page.params.object && id(page.params.object)}
     `,
   );
-  let pageContent = $derived(pageQuery.result?.[0]?.content);
-  let editingContent = $state("");
+  let pageMarkdown = $derived(pageQuery.result?.[0]?.content);
+  let latestEditId = $derived(pageQuery.result?.[0]?.latestEditId);
+  let pageHTML = $state("");
+
+  $effect(() => {
+    if (!contentInitialised && pageMarkdown) {
+      pageHTML = renderMarkdownSanitized(pageMarkdown);
+      contentInitialised = true;
+    }
+  });
 
   async function savePage() {
     if (!current.space?.id || !page.params.object) return;
 
     isEditing = false;
-    const newMarkdown = new Turndown().turndown(editingContent);
-    if (pageContent == newMarkdown) return;
-    const patch = patchToText(patchMake(pageContent || "", newMarkdown));
+    const newMarkdown = new Turndown().turndown(pageHTML);
+    if (pageMarkdown == newMarkdown) return;
+    const patch = patchToText(patchMake(pageMarkdown || "", newMarkdown));
     await backend.sendEvent(current.space.id, {
       ulid: ulid(),
       parent: page.params.object,
@@ -62,48 +84,65 @@
     console.log("Setting scroll container ref", ref);
     scrollContainerRef.set(ref);
   });
+
+  function setComment(selectedText: string, from: number, to: number) {
+    console.log("Running setComment", selectedText, from);
+    // Ensure the chat is visible
+    ensureShowPageChat();
+
+    if (selectedText.length) {
+      // Create the comment with the selected text and latest edit ID
+      const comment: Comment = {
+        snippet: selectedText.slice(0, 200), // limit to 200 chars
+        docVersion: latestEditId || "",
+        from,
+        to,
+      };
+
+      setCommenting(comment);
+    } else {
+      // If no text is selected, revert to normal mode
+      setNormal();
+    }
+  }
 </script>
 
-<div class="flex h-full">
+<div class="flex h-full gap-1 py-4 px-1">
   <ScrollArea
     orientation="vertical"
-    class={["relative", showPageChat ? "w-1/2" : ""]}
+    class={["relative grow w-full", showPageChat ? "" : ""]}
     bind:ref
   >
-    <div class="max-w-4xl mx-auto w-full px-4 pb-8">
-      <div class="flex z-10 justify-end mb-4 sticky top-4 right-4">
-        {#if isEditing}
-          <Button onclick={savePage}>
-            <IconTablerCheck />
-            Save
-          </Button>
-        {:else}
-          <Button
-            variant="secondary"
-            disabled={!pageQuery.result?.length}
-            onclick={() => {
-              isEditing = true;
-              editingContent = pageContent
-                ? renderMarkdownSanitized(pageContent)
-                : "";
-            }}
-          >
-            <IconTablerPencil />
-            Edit
-          </Button>
-        {/if}
-      </div>
-
+    <div class="flex z-10 justify-end mb-4 sticky top-0 pr-3">
+      {#if isEditing}
+        <Button onclick={savePage}>
+          <IconTablerCheck />
+          Save
+        </Button>
+      {:else}
+        <Button
+          variant="secondary"
+          disabled={!pageQuery.result?.length}
+          onclick={() => {
+            isEditing = true;
+          }}
+        >
+          <IconTablerPencil />
+          Edit
+        </Button>
+      {/if}
+    </div>
+    <div class="max-w-2xl mx-auto w-full px-4 pb-8">
       <Prose>
-        {#if isEditing}
+        {#if pageHTML}
           <RichTextEditor
-            content={editingContent}
+            content={pageHTML}
+            bind:editable={isEditing}
             onupdate={(_c, ctx) => {
-              editingContent = ctx.editor.getHTML();
+              pageHTML = ctx.editor.getHTML();
             }}
+            oncomment={setComment}
           />
-        {:else if pageContent}
-          {@html renderMarkdownSanitized(pageContent)}
         {:else}
           Loading...
         {/if}
@@ -111,6 +150,10 @@
     </div>
   </ScrollArea>
   {#if showPageChat}
-    <TimelineView />
+    <div
+      class="max-w-lg mr-2 w-full border border-base-200 dark:border-base-800 rounded-xl justify-self-end"
+    >
+      <TimelineView />
+    </div>
   {/if}
 </div>

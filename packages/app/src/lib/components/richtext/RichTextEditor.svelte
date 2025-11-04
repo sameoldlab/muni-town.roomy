@@ -1,3 +1,11 @@
+<script lang="ts" module>
+  let shouldRemoveComment = $state<CommentType[]>([]);
+
+  export function markCommentForRemoval(comment: CommentType) {
+    shouldRemoveComment = [...shouldRemoveComment, comment];
+  }
+</script>
+
 <script lang="ts">
   /***
    * From Fox UI by Flo-bit
@@ -5,7 +13,7 @@
    */
 
   import { onMount, onDestroy } from "svelte";
-  import { Editor, mergeAttributes, type Content } from "@tiptap/core";
+  import { Editor, Mark, mergeAttributes, type Content } from "@tiptap/core";
   import StarterKit from "@tiptap/starter-kit";
   import Placeholder from "@tiptap/extension-placeholder";
   import Image from "@tiptap/extension-image";
@@ -24,17 +32,21 @@
   import { cn } from "@fuxui/base";
   import { ImageUploadNode } from "./image-upload/ImageUploadNode";
   import { Transaction } from "@tiptap/pm/state";
+  import type { Comment as CommentType } from "../content/thread/TimelineView.svelte";
 
   let {
     content = $bindable({}),
+    editable = $bindable(false),
     placeholder = "Write or press / for commands",
     editor = $bindable(null),
     ref = $bindable(null),
     class: className,
     onupdate,
     ontransaction,
+    oncomment,
   }: {
     content?: Content;
+    editable?: boolean;
     placeholder?: string;
     editor?: Editor | null;
     ref?: HTMLDivElement | null;
@@ -44,9 +56,34 @@
       context: { editor: Editor; transaction: Transaction },
     ) => void;
     ontransaction?: () => void;
+    oncomment?: (selectedText: string, from: number, to: number) => void;
   } = $props();
 
-  // const lowlight = createLowlight(all);
+  $effect(() => {
+    console.log("editor is editable?", editable);
+    if (editor?.isEditable !== editable) {
+      editor?.setEditable(editable);
+    }
+  });
+
+  $effect(() => {
+    if (!editor) return;
+
+    if (shouldRemoveComment.length) {
+      for (const comment of shouldRemoveComment) {
+        editor
+          .chain()
+          .focus()
+          .setTextSelection({
+            from: comment.from,
+            to: comment.to,
+          })
+          .unsetMark("comment")
+          .run();
+      }
+      shouldRemoveComment = [];
+    }
+  });
 
   let hasFocus = true;
 
@@ -61,6 +98,35 @@
   let isStrikethrough = $state(false);
   let isLink = $state(false);
   let isImage = $state(false);
+  let isComment = $state(false);
+
+  const Comment = Mark.create({
+    name: "comment",
+    keepOnSplit: true,
+    spanning: true,
+    addOptions() {
+      return {
+        HTMLAttributes: {},
+      };
+    },
+    parseHTML() {
+      return [
+        {
+          tag: "span[data-comment]",
+        },
+      ];
+    },
+    renderHTML({ HTMLAttributes }) {
+      return [
+        "span",
+        mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, {
+          "data-comment": "true",
+          class: "bg-accent-200/60",
+        }),
+        0,
+      ];
+    },
+  });
 
   const CustomImage = Image.extend({
     // addAttributes(this) {
@@ -121,6 +187,7 @@
           return "";
         },
       }),
+      Comment.configure(),
       CustomImage.configure({
         HTMLAttributes: {
           class: "max-w-full object-contain relative rounded-2xl",
@@ -135,21 +202,34 @@
         element: menu,
         shouldShow: ({ editor }) => {
           // dont show if image selected or no selection or is code block
-          return (
+          const shouldShow =
             !editor.isActive("image") &&
             !editor.view.state.selection.empty &&
             !editor.isActive("codeBlock") &&
             !editor.isActive("link") &&
-            !editor.isActive("imageUpload")
-          );
+            !editor.isActive("imageUpload");
+          if (shouldShow) {
+            console.log("should show?");
+            menu?.classList.remove("hidden");
+          }
+          return shouldShow;
         },
+        options: {},
         pluginKey: "bubble-menu-marks",
       }),
       BubbleMenu.configure({
         element: menuLink,
         shouldShow: ({ editor }) => {
           // only show if link is selected
-          return editor.isActive("link") && !editor.view.state.selection.empty;
+          const shouldShow =
+            editor.isEditable &&
+            editor.isActive("link") &&
+            !editor.view.state.selection.empty;
+          if (shouldShow) {
+            console.log("should show link menu?");
+            menuLink?.classList.remove("hidden");
+          }
+          return shouldShow;
         },
         pluginKey: "bubble-menu-links",
       }),
@@ -183,6 +263,7 @@
     ];
 
     editor = new Editor({
+      editable,
       element: ref,
       extensions,
       editorProps: {
@@ -207,6 +288,7 @@
         isStrikethrough = ctx.editor.isActive("strike");
         isLink = ctx.editor.isActive("link");
         isImage = ctx.editor.isActive("image");
+        isComment = ctx.editor.isActive("comment");
 
         if (ctx.editor.isActive("heading", { level: 1 })) {
           selectedType = "heading-1";
@@ -229,9 +311,6 @@
       },
       content,
     });
-
-    menu?.classList.remove("hidden");
-    menuLink?.classList.remove("hidden");
   });
 
   // Flag to track whether a file is being dragged over the drop area
@@ -345,6 +424,30 @@
     }
   }
 
+  function clickedComment() {
+    if (isComment) {
+      // remove comment mark
+      editor
+        ?.chain()
+        .focus()
+        .extendMarkRange("comment")
+        .unsetMark("comment")
+        .run();
+      if (!oncomment) throw new Error("oncomment is not defined");
+      oncomment("", 0, 0);
+      return;
+    } else {
+      if (!editor) throw new Error("Editor is not defined");
+      if (!oncomment) throw new Error("oncomment is not defined");
+
+      editor.chain().focus().setMark("comment").run();
+
+      const { from, to } = editor.state.selection;
+      const selectedText = editor.state.doc.textBetween(from, to, " "); // plain text
+      oncomment(selectedText, from, to);
+    }
+  }
+
   function switchTo(value: RichTextTypes) {
     editor?.chain().focus().setParagraph().run();
 
@@ -378,6 +481,7 @@
 
 <RichTextEditorMenu
   bind:ref={menu}
+  bind:editable
   {editor}
   {isBold}
   {isItalic}
@@ -385,13 +489,21 @@
   {isStrikethrough}
   {isLink}
   {isImage}
+  {isComment}
   {clickedLink}
+  {clickedComment}
   {processImageFile}
   {switchTo}
   bind:selectedType
 />
 
-<RichTextEditorLinkMenu bind:ref={menuLink} {editor} bind:link bind:linkInput />
+<RichTextEditorLinkMenu
+  bind:ref={menuLink}
+  bind:editable
+  {editor}
+  bind:link
+  bind:linkInput
+/>
 
 <style>
   :global(.tiptap) {

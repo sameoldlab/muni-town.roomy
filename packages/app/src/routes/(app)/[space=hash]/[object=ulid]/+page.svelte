@@ -1,3 +1,16 @@
+<script lang="ts" module>
+  let showPageChat = $state(false);
+  export function toggleShowPageChat() {
+    showPageChat = !showPageChat;
+  }
+  export function ensureShowPageChat() {
+    if (!showPageChat) {
+      console.log("Does it ensure??");
+      showPageChat = true;
+    }
+  }
+</script>
+
 <script lang="ts">
   import { page } from "$app/state";
   import TimelineView from "$lib/components/content/thread/TimelineView.svelte";
@@ -45,10 +58,12 @@
     });
   }
 
-  let showPageChat = $state(false);
-
   const ref = $derived($scrollContainerRef);
   let shouldShowPageTitle = $state(false);
+
+  $effect(() => {
+    console.log("showPageChat", showPageChat);
+  });
 
   $effect(() => {
     console.log("ref changed", ref);
@@ -320,9 +335,9 @@
   );
   const object = $derived(objectQuery.result?.[0]);
 
-  // $effect(() => {
-  //   console.log("object", object);
-  // });
+  $effect(() => {
+    console.log("object", object);
+  });
 </script>
 
 <MainLayout>
@@ -352,7 +367,7 @@
             </div>
           {/if}
 
-          {#if object?.parent && object.parent.kind == "channel"}
+          {#if object?.parent && object.parent.kind == "channel" && (object?.kind !== "page" || shouldShowPageTitle)}
             <a
               href={`/${page.params.space}/${object.parent.id}${object.kind == "page" ? "#pages" : object.kind == "thread" ? "#threads" : ""}`}
               class="hover:underline underline-offset-4"
@@ -465,7 +480,7 @@
               <Button
                 data-active={showPageChat}
                 variant={showPageChat ? "primary" : "secondary"}
-                onclick={() => (showPageChat = !showPageChat)}
+                onclick={() => toggleShowPageChat()}
                 ><IconHeroiconsChatBubbleLeftRight
                   class="shrink-0"
                 />Chat</Button
