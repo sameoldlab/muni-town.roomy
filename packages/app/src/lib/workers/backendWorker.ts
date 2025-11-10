@@ -858,7 +858,6 @@ class StreamMaterializer {
 
         // Backfill events
         console.time(`finishedBackfill-${this.#streamId}`);
-        console.log("Backfilling stream:", this.#streamId);
 
         const fetchChannel = new AsyncChannel<StreamEvent[]>();
 
@@ -866,6 +865,12 @@ class StreamMaterializer {
         const latestEventBeforeBackfill = this.#latestEvent;
         (async () => {
           let fetchCursor = latestEventBeforeBackfill + 1;
+          console.log(
+            "Backfilling stream:",
+            this.#streamId,
+            "from fetchCursor",
+            fetchCursor,
+          );
           console.time(`fetchAllBatches-${this.#streamId}`);
 
           while (true) {

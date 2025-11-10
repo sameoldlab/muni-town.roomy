@@ -50,9 +50,24 @@ export function materializer(
       // reset ensured flags for each new batch
       ensuredProfiles = new Set();
 
-      const decodedEvents = events.map(
-        (e) => [e, eventCodec.dec(e.payload)] as const,
-      );
+      const decodedEvents = events
+        .map((e) => {
+          try {
+            // Convert ArrayBuffer to Uint8Array for decoding
+            const payloadBytes = new Uint8Array(e.payload);
+            return [e, eventCodec.dec(payloadBytes)] as const;
+          } catch (error) {
+            const payloadBytes = new Uint8Array(e.payload);
+            console.warn(
+              `Skipping malformed event (idx ${e.idx}): Failed to decode ${payloadBytes.length} bytes.`,
+              `This is likely from an older buggy encoder. Error:`,
+              error instanceof Error ? error.message : error,
+            );
+            // Return null to filter out this event
+            return null;
+          }
+        })
+        .filter((e): e is Exclude<typeof e, null> => e !== null);
 
       // Make sure all of the profiles we need are downloaded and inserted
       const neededProfiles = new Set<string>();
@@ -308,6 +323,168 @@ const materializers: {
 
     return statements;
   },
+
+  // Message v1
+  "space.roomy.message.create.1": async ({ streamId, user, event, data }) => {
+    const statements = [
+      ensureEntity(streamId, event.ulid, event.parent),
+      sql`
+        insert into edges (head, tail, label)
+        select 
+          ${id(event.ulid)},
+          ${id(user)},
+          'author'
+      `,
+      sql`
+        insert or replace into comp_content (entity, mime_type, data)
+        values (
+          ${id(event.ulid)},
+          ${data.content.mimeType},
+          ${data.content.content}
+        )`,
+    ];
+
+    // Handle replyTo extensions
+    data.extensions
+      .filter((ext) => ext.kind === "space.roomy.replyTo.0")
+      .forEach((reply) => {
+        statements.push(sql`
+        insert into edges (head, tail, label)
+        values (
+          ${id(event.ulid)},
+          ${id(reply.data)},
+          'reply'
+        )
+      `);
+      });
+
+    // Handle comment extensions - comp_comment
+    data.extensions
+      .filter((ext) => ext.kind === "space.roomy.comment.0")
+      .forEach((comment) => {
+        statements.push(
+          sql`
+          insert into comp_comment (entity, version, snippet, idx_from, idx_to, updated_at)
+          values (
+            ${id(event.ulid)},
+            ${id(comment.data.version)},
+            ${comment.data.snippet || ""},
+            ${comment.data.from},
+            ${comment.data.to},
+            (unixepoch() * 1000)
+          )`,
+        );
+      });
+
+    // Handle overrideAuthorDid, overrideTimestamp extensions - comp_override_meta
+    const overrideAuthorExt = data.extensions.find(
+      (ext) => ext.kind === "space.roomy.overrideAuthorDid.0",
+    );
+    const overrideTimestampExt = data.extensions.find(
+      (ext) => ext.kind === "space.roomy.overrideTimestamp.0",
+    );
+
+    if (overrideAuthorExt || overrideTimestampExt) {
+      statements.push(sql`
+        insert or replace into comp_override_meta (entity, author, timestamp)
+        values (
+          ${id(event.ulid)},
+          ${overrideAuthorExt ? id(overrideAuthorExt.data as string) : null},
+          ${overrideTimestampExt ? Number(overrideTimestampExt.data) : null}
+        )
+      `);
+    }
+
+    // Handle image extensions - comp_image
+    // Each image becomes a separate child entity with deterministic hash-based ID
+    for (const img of data.extensions.filter(
+      (ext) => ext.kind === "space.roomy.image.0",
+    )) {
+      if (img.data instanceof Uint8Array) continue; // Skip unknown variants
+      const uriWithUlidQuery = img.data.uri + "?message=" + event.ulid;
+      statements.push(
+        ensureEntity(streamId, uriWithUlidQuery, event.ulid),
+        sql`
+          insert or replace into comp_image (entity, mime_type, alt, width, height, blurhash, size)
+          values (
+            ${id(uriWithUlidQuery)},
+            ${img.data.mimeType},
+            ${img.data.alt},
+            ${img.data.width ? Number(img.data.width) : null},
+            ${img.data.height ? Number(img.data.height) : null},
+            ${img.data.blurhash || null},
+            ${img.data.size ? Number(img.data.size) : null}
+          )
+        `,
+      );
+    }
+
+    // Handle video extensions - comp_video
+    // Each video becomes a separate child entity with deterministic hash-based ID
+    for (const vid of data.extensions.filter(
+      (ext) => ext.kind === "space.roomy.video.0",
+    )) {
+      if (vid.data instanceof Uint8Array) continue; // Skip unknown variants
+      const uriWithUlidQuery = vid.data.uri + "?message=" + event.ulid;
+      statements.push(
+        ensureEntity(streamId, uriWithUlidQuery, event.ulid),
+        sql`
+          insert or replace into comp_video (entity, mime_type, alt, width, height, length, blurhash, size)
+          values (
+            ${id(uriWithUlidQuery)},
+            ${vid.data.mimeType},
+            ${vid.data.alt},
+            ${vid.data.width ? Number(vid.data.width) : null},
+            ${vid.data.height ? Number(vid.data.height) : null},
+            ${vid.data.length ? Number(vid.data.length) : null},
+            ${vid.data.blurhash || null},
+            ${vid.data.size ? Number(vid.data.size) : null}
+          )
+        `,
+      );
+    }
+
+    // Handle file extensions - comp_file
+    // Each file becomes a separate child entity with deterministic hash-based ID
+    for (const file of data.extensions.filter(
+      (ext) => ext.kind === "space.roomy.file.0",
+    )) {
+      if (file.data instanceof Uint8Array) continue; // Skip unknown variants
+      const uriWithUlidQuery = file.data.uri + "?message=" + event.ulid;
+      statements.push(
+        ensureEntity(streamId, uriWithUlidQuery, event.ulid),
+        sql`
+          insert or replace into comp_file (entity, mime_type, name, size)
+          values (
+            ${id(uriWithUlidQuery)},
+            ${file.data.mimeType},
+            ${file.data.name || null},
+            ${file.data.size ? Number(file.data.size) : null}
+          )
+        `,
+      );
+    }
+    // Handle link extensions - comp_link
+    data.extensions
+      .filter((ext) => ext.kind === "space.roomy.link.0")
+      .forEach((link) => {
+        if (link.data instanceof Uint8Array) return; // Skip unknown variants
+        const uriWithUlidQuery = link.data.uri + "?message=" + event.ulid;
+        statements.push(
+          ensureEntity(streamId, uriWithUlidQuery, event.ulid),
+          sql`
+          insert into comp_link (entity, show_preview)
+          values (
+            ${id(uriWithUlidQuery)},
+            ${link.data.showPreview ? 1 : 0}
+          )
+        `,
+        );
+      });
+
+    return statements;
+  },
+
   "space.roomy.message.edit.0": async ({ streamId, event, data }) => {
     if (!event.parent) {
       console.warn("Edit event missing parent");
@@ -488,17 +665,41 @@ const materializers: {
   },
 
   // Media
-  "space.roomy.media.create.0": async ({ streamId, event, data }) => [
-    ensureEntity(streamId, event.ulid, event.parent),
-    sql`
-      insert into comp_media (entity, uri, mime_type)
-      values (
-        ${id(event.ulid)},
-        ${data.uri},
-        ${data.mimeType}
-      )
-    `,
-  ],
+  "space.roomy.media.create.0": async ({ streamId, event, data }) => {
+    const mimeType = data.mimeType.toLowerCase();
+
+    const uriWithUlidQuery = data.uri + "?message=" + event.parent;
+    const statements = [ensureEntity(streamId, uriWithUlidQuery, event.parent)];
+
+    if (mimeType.startsWith("image/")) {
+      statements.push(sql`
+        insert into comp_image (entity, mime_type)
+        values (
+          ${id(uriWithUlidQuery)},
+          ${data.mimeType}
+        )
+      `);
+    } else if (mimeType.startsWith("video/")) {
+      statements.push(sql`
+        insert into comp_video (entity, mime_type)
+        values (
+          ${id(uriWithUlidQuery)},
+          ${data.mimeType}
+        )
+      `);
+    } else {
+      // Default to file for everything else
+      statements.push(sql`
+        insert into comp_file (entity, mime_type)
+        values (
+          ${id(uriWithUlidQuery)},
+          ${data.mimeType}
+        )
+      `);
+    }
+
+    return statements;
+  },
 
   "space.roomy.media.delete.0": async ({ event }) => {
     if (!event.parent) {

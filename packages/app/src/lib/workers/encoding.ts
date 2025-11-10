@@ -20,10 +20,17 @@ import {
   _void,
   Struct,
   u64,
+  u32,
+  u16,
+  compact,
+  Vector,
+  bool,
 } from "scale-ts";
 import { createCodec, str, Tuple } from "scale-ts";
 
-/** encoding */
+/** encoding -
+ * old version for compatibility,
+ * but should be removed when Leaf changes hit */
 const kindsEnc = <O extends { [key: string]: Encoder<any> }>(
   inner: O,
 ): Encoder<
@@ -39,7 +46,9 @@ const kindsEnc = <O extends { [key: string]: Encoder<any> }>(
   };
 };
 
-/** decoding */
+/** decoding -
+ * old version for compatibility,
+ * but should be removed when Leaf changes hit */
 const kindsDec = <O extends { [key: string]: Decoder<any> }>(
   inner: O,
 ): Decoder<
@@ -58,7 +67,9 @@ const kindsDec = <O extends { [key: string]: Decoder<any> }>(
   });
 };
 
-/** Kinds codec creator */
+/** Kinds codec creator -
+ * old version for compatibility,
+ * but should be removed when Leaf changes hit */
 export const Kinds = <O extends { [key: string]: Codec<any> }>(
   inner: O,
 ): Codec<
@@ -77,6 +88,126 @@ export const Kinds = <O extends { [key: string]: Codec<any> }>(
 
 Kinds.enc = kindsEnc;
 Kinds.dec = kindsDec;
+
+/** Custom 'Kinds' codec: encoding function
+ * extensible kinds, adds length prefix so data
+ * that compose unknown kinds can be decoded
+ *
+ * NOTE: This encoder was fixed to properly concatenate bytes. Previous versions
+ * used Tuple() which created malformed output. Data encoded with the old version
+ * cannot be decoded and requires a cache reset.
+ */
+const kinds2Enc = <O extends { [key: string]: Encoder<any> }>(
+  inner: O,
+): Encoder<
+  {
+    [K in keyof O]: { kind: K; data: EncoderType<O[K]> };
+  }[keyof O]
+> => {
+  return ({ kind, data }) => {
+    if (typeof kind !== "string") throw "key must be string";
+    const kindEncoder = inner[kind];
+    if (!kindEncoder) throw `Unknown kind: ${kind}`;
+
+    // Encode the data first to get its size
+    const encodedData = kindEncoder(data);
+
+    // Manually concatenate: kind_string + compact_size + data_bytes
+    const kindBytes = str.enc(kind);
+    const sizeBytes = compact.enc(encodedData.length);
+
+    // Concatenate all parts
+    const result = new Uint8Array(
+      kindBytes.length + sizeBytes.length + encodedData.length,
+    );
+    result.set(kindBytes, 0);
+    result.set(sizeBytes, kindBytes.length);
+    result.set(encodedData, kindBytes.length + sizeBytes.length);
+
+    return result;
+  };
+};
+
+/** Custom 'Kinds' codec: decoding function
+ * Unknown kinds can still be decoded as raw bytes,
+ * meaning kinds can safely be extended in the future
+ * with backward compatibility
+ */
+const kinds2Dec = <O extends { [key: string]: Decoder<any> }>(
+  inner: O,
+): Decoder<
+  | {
+      [K in keyof O]: { kind: K; data: DecoderType<O[K]> };
+    }[keyof O]
+  | { kind: string; data: Uint8Array }
+> => {
+  return createDecoder((bytes) => {
+    // Decode the kind string
+    const kind = str.dec(bytes);
+
+    // Decode the data size
+    const dataSize = compact.dec(bytes) as number;
+
+    // Validate dataSize is reasonable
+    if (dataSize < 0 || dataSize > 100_000_000) {
+      throw new Error(
+        `Invalid dataSize ${dataSize} for kind "${kind}". This suggests data corruption or encoding/decoding mismatch.`,
+      );
+    }
+
+    // Check if we have a decoder for this kind
+    const valueDecoder = inner[kind] as O[keyof O] | undefined;
+
+    if (!valueDecoder) {
+      // Unknown kind: read the raw bytes and return them
+      const rawData = Bytes(dataSize).dec(bytes);
+      return {
+        kind,
+        data: rawData,
+      };
+    }
+
+    // Known kind: decode the data normally
+    // Extract the bytes for this variant
+    const rawBytes = Bytes(dataSize).dec(bytes);
+    // Create a completely fresh Uint8Array with its own ArrayBuffer to avoid DataView issues
+    // Using Uint8Array.from ensures we get a new buffer, not a view
+    const variantBytes = Uint8Array.from(rawBytes);
+    const data = valueDecoder(variantBytes);
+
+    return {
+      kind,
+      data,
+    };
+  });
+};
+
+/** 'Kinds' codec creator
+ * Kinds is like an enum, but SCALE enums by default use a numeric index
+ * to indicate the variant. Kinds uses a string identifier instead.
+ *
+ * This version supports unknown kinds by encoding the data size
+ * before the data, allowing future extensions while maintaining
+ * backward compatibility.
+ */
+export const Kinds2 = <O extends { [key: string]: Codec<any> }>(
+  inner: O,
+): Codec<
+  {
+    [K in keyof O]: { kind: K; data: CodecType<O[K]> };
+  }[keyof O]
+> => {
+  const e = Object.fromEntries(
+    Object.entries(inner).map(([k, v]) => [k, v.enc]),
+  );
+  const d = Object.fromEntries(
+    Object.entries(inner).map(([k, v]) => [k, v.dec]),
+  );
+  return createCodec(kinds2Enc(e), kinds2Dec(d)) as any;
+};
+
+Kinds2.enc = kinds2Enc;
+Kinds2.dec = kinds2Dec;
 
 export const Hash = enhanceCodec(Bytes(32), hex.decode, hex.encode);
 
@@ -255,10 +386,62 @@ export const eventVariantCodec = Kinds({
     access: ReadOrWrite,
     reason: Option(str),
   }),
-  /** Create a new chat message. */
+  /** DEPRECATED - replaced by space.roomy.message.create.1
+   * Create a new chat message. */
   "space.roomy.message.create.0": Struct({
     content: Content,
     replyTo: Option(Ulid),
+  }),
+  /** Create a new chat message, v1.
+   * This version adds support for extensible fields,
+   * using backwards compatible Kinds2 codec
+   * Attachments, etc are now encapsulated within the message event,
+   * do not require separate 'media.create' events
+   */
+  "space.roomy.message.create.1": Struct({
+    content: Content,
+    extensions: Vector(
+      Kinds2({
+        "space.roomy.replyTo.0": Ulid,
+        "space.roomy.comment.0": Struct({
+          version: Ulid,
+          snippet: str,
+          from: u32, // document index
+          to: u32, // document index
+        }),
+        "space.roomy.overrideAuthorDid.0": str,
+        "space.roomy.overrideTimestamp.0": u64, // unix
+        "space.roomy.image.0": Struct({
+          uri: str,
+          mimeType: str,
+          alt: Option(str),
+          height: Option(u16), // pixels
+          width: Option(u16), // pixels
+          blurhash: Option(str),
+          size: Option(u32), // bytes
+        }),
+        "space.roomy.video.0": Struct({
+          uri: str,
+          mimeType: str,
+          alt: Option(str),
+          height: Option(u16), // pixels
+          width: Option(u16), // pixels
+          length: Option(u16), // seconds
+          blurhash: Option(str), // thumbnail
+          size: Option(u32), // bytes
+        }),
+        "space.roomy.file.0": Struct({
+          uri: str,
+          mimeType: str,
+          name: Option(str),
+          size: Option(u32), // bytes
+        }),
+        "space.roomy.link.0": Struct({
+          uri: str,
+          showPreview: bool,
+        }),
+      }),
+    ),
   }),
   /** Edit a previously sent message */
   "space.roomy.message.edit.0": Struct({
@@ -320,7 +503,8 @@ export const eventVariantCodec = Kinds({
     reaction: str,
     reactingUser: str,
   }),
-  /** Create new media that can, for example, be attached to messages. */
+  /** DEPRECATED - replaced by space.roomy.message.create.1
+   * Create new media that can, for example, be attached to messages. */
   "space.roomy.media.create.0": Struct({
     /** For now all media is external and we use a URI to load it. */
     uri: str,
