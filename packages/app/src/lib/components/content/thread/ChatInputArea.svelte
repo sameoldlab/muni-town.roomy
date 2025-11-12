@@ -202,14 +202,11 @@
 
     try {
       const ulid = monotonicFactory();
-      const events: EventType[] = [];
 
       const messageId = ulid();
 
-      type MessageExtensions = Extract<
-        EventType["variant"],
-        { kind: "space.roomy.message.create.1" }
-      >["data"]["extensions"];
+      type MessageExtensions =
+        EventType<"space.roomy.message.create.1">["variant"]["data"]["extensions"];
 
       const extensions: MessageExtensions = uploadedFiles.map((data) => ({
         kind: "space.roomy.image.0",
@@ -243,7 +240,7 @@
         });
       }
 
-      const messageEvent = {
+      const messageEvent: EventType<"space.roomy.message.create.1"> = {
         ulid: messageId,
         parent: page.params.object,
         variant: {
@@ -256,13 +253,11 @@
             extensions,
           },
         },
-      } as const;
+      };
 
       console.log("sending message", messageEvent);
 
-      events.push(messageEvent);
-
-      await backend.sendEventBatch(current.space.id, events);
+      await backend.sendEvent(current.space.id, messageEvent);
     } catch (e: any) {
       console.error(e);
       toast.error("Failed to send message.", { position: "bottom-right" });
