@@ -50,6 +50,38 @@ jobs:
         with:
           workspaces: '.packages/app/src-tauri -> target'
 
+        # Windows MSI requires numeric-only pre-release identifiers
+      - name: Patch version for Windows MSI
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          CURRENT_VERSION=$(jq -r .version packages/app/src-tauri/tauri.conf.json)
+          echo "Original version: $CURRENT_VERSION"
+
+          # Convert non-numeric suffixes to numeric (alpha->1, beta->2, rc->3, fallback->1)
+          if [[ "$CURRENT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-(.+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            SUFFIX="${BASH_REMATCH[2]}"
+
+            if [[ "$SUFFIX" =~ ^[0-9]+$ ]] && [ "$SUFFIX" -le 65535 ]; then
+              NEW_VERSION="$CURRENT_VERSION"
+            else
+              case "$SUFFIX" in
+                alpha*) NUMERIC_SUFFIX="1" ;;
+                beta*) NUMERIC_SUFFIX="2" ;;
+                rc*) NUMERIC_SUFFIX="3" ;;
+                *) NUMERIC_SUFFIX="1" ;;
+              esac
+              NEW_VERSION="$BASE-$NUMERIC_SUFFIX"
+            fi
+          else
+            NEW_VERSION="$CURRENT_VERSION"
+          fi
+
+          echo "Patched version for Windows MSI: $NEW_VERSION"
+          jq --arg version "$NEW_VERSION" '.version = $version' packages/app/src-tauri/tauri.conf.json > tmp.json
+          mv tmp.json packages/app/src-tauri/tauri.conf.json
+
       - name: Generate Build Assets
         run: |
           pnpm install
