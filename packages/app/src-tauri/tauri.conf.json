@@ -41,7 +41,10 @@
         }
       ],
       "desktop": {
-        "schemes": ["chat.roomy", "roomy"]
+        "schemes": [
+          "chat.roomy",
+          "roomy"
+        ]
       }
     }
   }

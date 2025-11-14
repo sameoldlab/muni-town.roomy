@@ -1,7 +1,6 @@
 name: 'Build and release tauri'
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - 'v*' # Should match `version` in ./src-tauri/tauri.conf.json
