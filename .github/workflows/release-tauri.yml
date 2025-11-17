@@ -147,6 +147,7 @@ jobs:
           files: |
             ${{ github.workspace }}/packages/app/src-tauri/gen/android/app/build/outputs/apk/universal/release/roomy-chat_*.apk
           append_body: true
+          prerelease: true
           name: ${{ env.APP_VERSION }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
