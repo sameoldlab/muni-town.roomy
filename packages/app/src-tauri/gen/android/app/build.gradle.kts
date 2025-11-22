@@ -2,7 +2,7 @@ import java.util.Properties
 import java.io.FileInputStream
 
 plugins {
-    id("com.android.application")
+    id("com.android.application") version "8.5.2"
     id("org.jetbrains.kotlin.android")
     id("rust")
 }
