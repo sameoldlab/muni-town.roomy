@@ -1,5 +1,5 @@
 import { dev } from "$app/environment";
-import type { HandleClientError } from "@sveltejs/kit";
+import { redirect, type HandleClientError, type ServerInit } from "@sveltejs/kit";
 import posthog from "posthog-js";
 
 if (dev && window.location.hostname == "localhost")
@@ -27,3 +27,7 @@ export const handleError: HandleClientError = async ({
     posthog.captureException(error, { status, event, message });
   }
 };
+
+export const init: ServerInit = async () => {
+  window.location = 'https://roomy.space'
+}
