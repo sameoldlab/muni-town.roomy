@@ -228,9 +228,14 @@ async function main() {
 					await handleRoomDelete(normalizeChannel(channel), repo, roomy);
 				},
 
-				async threadCreate(channel: ChannelProperties) {
-					await handleThreadCreate(normalizeChannel(channel), repo, roomy);
-				},
+			async threadCreate(channel: ChannelProperties) {
+				await handleThreadCreate(
+					normalizeChannel(channel),
+					repo,
+					roomy,
+					appId,
+				);
+			},
 
 				async threadUpdate(channel: ChannelProperties) {
 					await handleRoomUpdate(normalizeChannel(channel), repo, roomy);

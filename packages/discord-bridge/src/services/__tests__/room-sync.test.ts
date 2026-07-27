@@ -250,6 +250,28 @@ describe("handleThreadCreate", () => {
 		await handleThreadCreate(noGuild, repo, roomy);
 		expect(roomy.eventCount(SPACE_A)).toBe(0);
 	});
+
+	// RO11: Thread created by the bridge bot (echo prevention).
+	// When the bridge mirrors a Roomy thread to Discord, the bot creates the
+	// thread and Discord sets owner_id to the bot. The gateway THREAD_CREATE
+	// event for that thread must not be re-created on Roomy, even if the
+	// thread→Roomy mapping hasn't been registered yet (REST/gateway race).
+	test("RO11: skips thread created by the bridge bot (echo prevention)", async () => {
+		const thread = makeThread({ parentId: CHANNEL, ownerId: "999999999999999999" });
+
+		await handleThreadCreate(thread, repo, roomy, "999999999999999999");
+
+		expect(roomy.eventCount(SPACE_A)).toBe(0);
+	});
+
+	// RO12: A thread owned by a different user is still bridged.
+	test("RO12: bridges thread owned by another user", async () => {
+		const thread = makeThread({ parentId: CHANNEL, ownerId: "888888888888888888" });
+
+		await handleThreadCreate(thread, repo, roomy, "999999999999999999");
+
+		expect(roomy.eventCount(SPACE_A)).toBeGreaterThan(0);
+	});
 });
 
 describe("handleRoomUpdate", () => {

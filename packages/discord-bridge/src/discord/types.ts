@@ -40,6 +40,7 @@ export const desiredProperties = createDesiredPropertiesObject({
 		guildId: true,
 		parentId: true,
 		permissionOverwrites: true,
+		ownerId: true,
 	},
 	user: {
 		username: true,

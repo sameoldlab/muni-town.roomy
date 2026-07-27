@@ -122,6 +122,7 @@ export const DiscordChannelData = type({
 	"parentId?": "string",
 	"guildId?": "string",
 	"topic?": "string | null",
+	"ownerId?": "string",
 	"permissionOverwrites?": permissionOverwriteSchema.array(),
 });
 export type DiscordChannelData = typeof DiscordChannelData.infer;

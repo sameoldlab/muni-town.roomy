@@ -111,11 +111,23 @@ export async function handleChannelCreate(
 /**
  * Handle Discord THREAD_CREATE: create a Roomy thread linked to the parent
  * channel's room. Idempotent — skips if the thread already has a mapping.
+ *
+ * Echo prevention: when the bridge creates a Discord thread from a Roomy
+ * thread (Roomy→Discord direction), Discord sets the thread's `owner_id`
+ * to the bot's own user ID and fires a `THREAD_CREATE` gateway event for it.
+ * The REST response that gave us the thread ID and the gateway event are
+ * independent async paths, so the thread→Roomy mapping registered by the
+ * router may not yet be visible when this handler runs — the dedup check
+ * below would miss it and we'd create a *second* Roomy thread for the same
+ * Discord thread. Checking `ownerId === botUserId` is deterministic and
+ * timing-independent, mirroring the `isOurWebhook` approach used for
+ * webhook messages in message-ingestion.
  */
 export async function handleThreadCreate(
 	channel: DiscordChannelData,
 	repo: BridgeRepository,
 	roomy: RoomyGateway,
+	botUserId?: string,
 ): Promise<void> {
 	const threadId = channel.id;
 	const parentId = channel.parentId;
@@ -124,6 +136,15 @@ export async function handleThreadCreate(
 
 	if (!parentId || !guildId) {
 		log.debug(`Skipping thread ${threadId}: no parentId or guildId`);
+		return;
+	}
+
+	// Skip threads created by this bridge (echo prevention). Discord sets a
+	// thread's owner_id to the bot user when the bot starts the thread.
+	if (botUserId && channel.ownerId && channel.ownerId === botUserId) {
+		log.debug(
+			`Skipping thread ${threadId}: created by this bridge (ownerId=${channel.ownerId})`,
+		);
 		return;
 	}
 

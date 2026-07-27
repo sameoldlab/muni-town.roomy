@@ -23,6 +23,17 @@ export async function handleMessageEdit(
 	const guildId = message.guildId;
 	if (!guildId) return;
 
+	// Echo prevention: skip edits of messages sent by this bridge's webhook.
+	// The webhook REST response and the MESSAGE_UPDATE gateway event are
+	// independent async paths, so the mapping registered by the router may
+	// not have completed before the gateway event arrives. Checking against
+	// our stored webhook IDs is deterministic and doesn't depend on timing,
+	// mirroring the same guard in ingestDiscordMessage.
+	if (message.webhookId && repo.isOurWebhook(message.webhookId)) {
+		log.debug(`Skipping edit of own webhook message ${messageId}`);
+		return;
+	}
+
 	const targetSpaces = repo.getTargetSpacesForChannel(guildId, channelId);
 	if (targetSpaces.length === 0) return;
 

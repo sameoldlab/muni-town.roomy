@@ -231,6 +231,22 @@ describe("webhook_tokens", () => {
 		r.deleteWebhookToken("c1");
 		expect(r.getWebhookToken("c1")).toBeUndefined();
 	});
+
+	test("isOurWebhook distinguishes own vs foreign vs unknown", () => {
+		const r = repo();
+		// No webhooks registered yet — nothing is "ours".
+		expect(r.isOurWebhook("wh-id")).toBe(false);
+
+		r.setWebhookToken("c1", "wh-id", "wh-token");
+		// Our webhook ID is recognised.
+		expect(r.isOurWebhook("wh-id")).toBe(true);
+		// A different integration's webhook ID is not ours.
+		expect(r.isOurWebhook("other-wh-id")).toBe(false);
+		// Empty table edge case (after delete) — must not claim everything.
+		r.deleteWebhookToken("c1");
+		expect(r.isOurWebhook("wh-id")).toBe(false);
+		expect(r.isOurWebhook("anything")).toBe(false);
+	});
 });
 
 describe("pending_room_creations", () => {

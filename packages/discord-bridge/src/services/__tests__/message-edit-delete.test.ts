@@ -97,6 +97,45 @@ describe("handleMessageEdit", () => {
 		expect(editMessageEvent(roomy, SPACE_A)).toBeUndefined();
 	});
 
+	// ED06: Edit of a message authored by this bridge's webhook is skipped
+	// (echo prevention). When a Roomy user edits a message, the router edits
+	// the Discord webhook message and Discord fires MESSAGE_UPDATE for it.
+	// Without this guard the bridge would send a redundant editMessage back
+	// to Roomy. The webhook REST response and the gateway event are
+	// independent async paths, so the check is deterministic (isOurWebhook)
+	// rather than relying on mapping timing.
+	test("ED06: skips edit of own webhook message (echo prevention)", async () => {
+		repo.registerMapping(SPACE_A, "message", MSG_ID_STR, ROOMY_MESSAGE_ULID);
+		const webhookId = "555555555555555555";
+		repo.setWebhookToken(CHANNEL, webhookId, "token");
+
+		const msg = makeMessage({
+			id: MSG_ID_STR,
+			content: "Updated",
+			editedTimestamp: Date.now(),
+			webhookId,
+		});
+
+		await handleMessageEdit(msg, repo, roomy);
+		expect(editMessageEvent(roomy, SPACE_A)).toBeUndefined();
+	});
+
+	// ED07: Edit of a message from another integration's webhook is bridged.
+	test("ED07: bridges edit of foreign webhook message", async () => {
+		repo.registerMapping(SPACE_A, "message", MSG_ID_STR, ROOMY_MESSAGE_ULID);
+		const foreignWebhookId = "666666666666666666";
+
+		const msg = makeMessage({
+			id: MSG_ID_STR,
+			content: "Updated",
+			editedTimestamp: Date.now(),
+			webhookId: foreignWebhookId,
+		});
+
+		await handleMessageEdit(msg, repo, roomy);
+		expect(editMessageEvent(roomy, SPACE_A)).toBeDefined();
+	});
+
 	// ED04: Edit to unsynced channel skipped
 	test("ED04: skips edit for channel without Roomy room mapping", async () => {
 		repo.registerMapping(SPACE_A, "message", MSG_ID_STR, ROOMY_MESSAGE_ULID);

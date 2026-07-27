@@ -97,6 +97,7 @@ export function makeChannel(
 		name: hasName ? overrides.name : "general",
 		guildId: hasGuildId ? overrides.guildId : GUILD,
 		parentId: hasParentId ? overrides.parentId : undefined,
+		ownerId: overrides.ownerId,
 		permissionOverwrites: overrides.permissionOverwrites ?? undefined,
 		topic: overrides.topic ?? undefined,
 	};

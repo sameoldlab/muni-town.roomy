@@ -107,12 +107,12 @@ interface NormalizableChannel {
 	name?: string;
 	parentId?: bigint | string | null;
 	guildId?: bigint | string;
+	ownerId?: bigint | string | null;
 	permissionOverwrites?: Array<{
 		id: bigint | string;
 		deny?: string[] | string;
 	}>;
 }
-
 export function normalizeChannel(ch: NormalizableChannel): DiscordChannelData {
 	return {
 		id: ch.id.toString(),
@@ -120,6 +120,7 @@ export function normalizeChannel(ch: NormalizableChannel): DiscordChannelData {
 		name: ch.name,
 		parentId: ch.parentId?.toString(),
 		guildId: ch.guildId?.toString(),
+		ownerId: ch.ownerId?.toString(),
 		permissionOverwrites: ch.permissionOverwrites?.map((o) => ({
 			id: o.id.toString(),
 			deny: typeof o.deny === "string" ? [o.deny] : o.deny,

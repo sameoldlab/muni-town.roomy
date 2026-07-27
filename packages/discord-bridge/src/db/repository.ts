@@ -587,7 +587,8 @@ export class BridgeRepository {
 				"SELECT 1 FROM webhook_tokens WHERE webhook_id = ?",
 			)
 			.get(webhookId);
-		return row !== undefined;
+		// bun:sqlite's .get() returns null (not undefined) on no match.
+		return row != null;
 	}
 
 	// === Profile sync queue (retry queue) ===
