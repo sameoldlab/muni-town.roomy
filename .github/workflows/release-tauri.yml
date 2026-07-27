@@ -102,6 +102,7 @@ jobs:
         if: ${{ matrix.android }}
         run: |
           cd ./packages/app-lite
+          ./scripts/copy-android-assets.sh
           rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
           pnpm tauri android build --apk
           cp ./src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk ./src-tauri/gen/android/app/build/outputs/apk/universal/release/roomy-chat_${{ env.APP_VERSION}}.apk

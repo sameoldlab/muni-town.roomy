@@ -47,3 +47,4 @@ mise.toml
 
 # Worktrees
 .worktrees/
+/packages/app-lite/src-tauri/gen/android
