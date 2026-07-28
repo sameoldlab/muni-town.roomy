@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# run-docs — Spin up a dev server for the docs package.
+#
+# Usage: run-docs [--port <port>]
+#
+# Run from the repo root.
+#
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+PORT="${1:-5300}"
+
+SAFE_NAME="docs"
+DEV_NAME="dev-${SAFE_NAME}"
+
+# --- Clean up any previous container ---
+docker rm -f "$DEV_NAME" 2>/dev/null || true
+
+# --- Start dev server ---
+echo "Starting docs dev server: $DEV_NAME on port $PORT"
+docker run -d \
+  --name "$DEV_NAME" \
+  -v "$REPO_ROOT:/app" \
+  -p "$PORT:$PORT" \
+  -w /app/packages/docs \
+  node:22 \
+  bash -c "npm i -g pnpm && npx vite dev --host 0.0.0.0 --port $PORT"
+echo "✔ Docs dev server started (http://localhost:$PORT)"
+echo "To stop: docker rm -f $DEV_NAME"
