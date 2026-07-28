@@ -2,6 +2,8 @@
   import "../app.css";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import { page } from "$app/stores";
+
+  let { children } = $props();
 </script>
 
 <div class="flex h-screen overflow-hidden">

@@ -6,13 +6,6 @@
  * authorization requirements, and invalidation behavior.
  */
 
-/** Flatten all endpoints for lookup by NSID. */
-export const endpointByNsid: Record<string, Endpoint> = {};
-for (const group of endpoints) {
-  for (const ep of group.items) {
-    endpointByNsid[ep.nsid] = ep;
-  }
-}
 
 export interface EndpointParam {
   name: string;
@@ -863,4 +856,12 @@ export const endpoints: EndpointGroup[] = [
     ],
   },
 ];
+
+/** Flatten all endpoints for lookup by NSID. */
+export const endpointByNsid: Record<string, Endpoint> = {};
+for (const group of endpoints) {
+  for (const ep of group.items) {
+    endpointByNsid[ep.nsid] = ep;
+  }
+}
 
