@@ -23,6 +23,10 @@
       "dependsOn": ["^build-appserver-admin", "build-lib"],
       "outputs": ["./build/**"]
     },
+    "build-docs": {
+      "dependsOn": ["^build-docs"],
+      "outputs": ["./build/**"]
+    },
     "build-lib": {
       "dependsOn": ["^build-lib"],
       "outputs": ["./dist/**"]
