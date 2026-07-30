@@ -237,6 +237,25 @@ export async function createOAuthClient(
       handleResolver: HANDLE_RESOLVER,
       responseMode: "query",
     });
+  } else if ('__TAURI__' in window) {
+    console.log('in tauri')
+    return new BrowserOAuthClient({
+      clientMetadata: {
+      "client_id": "https://roomy.space/oauth-client-native.json",
+      "redirect_uris": ["space.roomy:/", "https://roomy.space/"],
+      "application_type": "native",
+      "client_name": "Roomy Lite",
+      "client_uri": "https://roomy.space",
+      "logo_uri": "https://roomy.space/favicon.png",
+      "scope": "atproto rpc:app.bsky.actor.getProfiles?aud=* rpc:app.bsky.actor.getProfile?aud=* blob:*/* repo:space.roomy.upload.v0 repo:space.roomy.space.handle.dev repo:space.roomy.space.personal.dev repo:space.roomy.user.profile rpc:com.atproto.server.getServiceAuth?aud=did:web:api.roomy.space rpc:space.roomy.space.getSpaces?aud=* rpc:space.roomy.space.getMetadata?aud=* rpc:space.roomy.space.getSpaceSummary?aud=* rpc:space.roomy.space.getThreads?aud=* rpc:space.roomy.space.getRoles?aud=* rpc:space.roomy.space.getMembers?aud=* rpc:space.roomy.space.getInvites?aud=* rpc:space.roomy.room.getMetadata?aud=* rpc:space.roomy.room.getRoomSummary?aud=* rpc:space.roomy.room.getMessages?aud=* rpc:space.roomy.room.getThreads?aud=* rpc:space.roomy.message.getMessage?aud=* rpc:space.roomy.message.getReactions?aud=* rpc:space.roomy.auth.getConnectionTicket?aud=* rpc:space.roomy.getFlags?aud=* rpc:space.roomy.room.updateSeen?aud=* rpc:space.roomy.space.sendEvents?aud=* rpc:space.roomy.space.createSpace?aud=* rpc:space.roomy.space.joinSpace?aud=* rpc:space.roomy.space.leaveSpace?aud=* rpc:space.roomy.space.setHandle?aud=* rpc:space.roomy.space.getCalendarLink?aud=* rpc:space.roomy.space.getCalendarEvents?aud=* rpc:space.roomy.space.getActivityFeed?aud=* rpc:space.roomy.user.getProfile?aud=* rpc:space.roomy.push.getVapidPublicKey?aud=* rpc:space.roomy.push.getPreferences?aud=* rpc:space.roomy.push.registerSubscription?aud=* rpc:space.roomy.push.unregisterSubscription?aud=* rpc:space.roomy.push.setPreferences?aud=*",
+      "grant_types": ["authorization_code", "refresh_token"],
+      "response_types": ["code"],
+      "token_endpoint_auth_method": "none",
+      "dpop_bound_access_tokens": true
+    },
+      handleResolver: HANDLE_RESOLVER,
+      responseMode: "query",
+    });
   }
 
   // Development: loopback client
@@ -316,6 +335,23 @@ export async function initSession(
   opts: InitSessionOptions = {},
 ): Promise<{ session: OAuthSession; agent: Agent; state?: string | null } | null> {
   const client = await createOAuthClient(appserverDid, opts);
+  if ('__TAURI__' in window) {
+    // const { onOpenUrl } = window.__TAURI__.deepLink;
+    // returned state
+    // onOpenUrl((urls: string[]) => {
+    //   if (!urls || urls.length === 0) return;
+    //   console.log({ urls })
+    //   console.log(2)
+
+    //   const url = new URL(urls[0]!);
+    //   const path = new URL(document.URL);
+
+    //   path.search = url.search;
+    //   path.pathname = url.pathname;
+    //   console.log({path})
+    //   window.location.href = path.href;
+    // })
+  }
   const result = await client.init();
   if (result?.session) {
     return {
@@ -343,7 +379,28 @@ export async function login(
   const client = await createOAuthClient(appserverDid, opts);
   // Forward `state` so the app can round-trip a return URL through the PDS.
   // The value comes back unchanged via `initSession()`'s `state` field.
-  await client.signIn(handle, opts.state ? { state: opts.state } : undefined);
+  console.log('pre signin on client:', client)
+  if (!('__TAURI__' in window)) return await client.signIn(handle, opts.state ? { state: opts.state } : undefined);
+
+  const { openUrl } = window.__TAURI__.opener;
+  const { onOpenUrl } = window.__TAURI__.deepLink;
+  const url = await client.authorize(handle, opts.state ? { state: opts.state } : undefined);
+  console.log({ url })
+  openUrl(url)
+  await onOpenUrl((urls: string[]) => {
+    if (!urls || urls.length === 0) return;
+    console.log({ urls })
+
+    const url = new URL(urls[0]!);
+    const path = new URL(document.URL);
+    console.log(1)
+
+    path.search = url.search;
+    path.pathname = url.pathname;
+    console.log({href: path.href})
+    window.location.href = path.href;
+  })
+
 }
 
 /**

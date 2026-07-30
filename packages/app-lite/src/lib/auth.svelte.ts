@@ -12,6 +12,7 @@ import { CONFIG, OAUTH_SCOPE } from "./config";
 import { scheduleAutoReload } from "./error-recovery";
 import { setAppserverOrigin } from "./appserver-origin";
 import { subscribeIfAlreadyPermitted, clearPushSubscription } from "./push.svelte";
+import { page } from "$app/state";
 
 const { ServiceAuthClient, DirectXrpcClient, resolveAppserverHttpOrigin } = transport;
 
@@ -143,12 +144,13 @@ export async function init() {
       void subscribeIfAlreadyPermitted();
       return;
     }
-
+    console.log({CONFIG})
     const result = await initSession(CONFIG.appserverDid, {
       port: CONFIG.port,
       scope: OAUTH_SCOPE,
       usePublicClient: CONFIG.usePublicClient,
     });
+    console.log({result, url: page.url })
     if (result) {
       session = result.session;
       agent = result.agent;
@@ -186,12 +188,14 @@ export async function login(handle: string) {
   // Remember the page the user was on so `init()` can send them back here
   // after the PDS redirects to the fixed OAuth redirect URI (the homepage).
   const returnUrl = currentReturnUrl();
-  await sdkLogin(CONFIG.appserverDid, handle, {
+  console.log({ returnUrl })
+  const res = await sdkLogin(CONFIG.appserverDid, handle, {
     port: CONFIG.port,
     scope: OAUTH_SCOPE,
     usePublicClient: CONFIG.usePublicClient,
     state: returnUrl,
   });
+  console.log({ res })
 }
 
 /**
