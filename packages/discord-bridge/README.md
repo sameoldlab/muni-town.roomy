@@ -156,6 +156,3 @@ bun run dev       # watch mode
 bun run start     # production mode
 ```
 
-## Migration from legacy bridge
-
-This package does not migrate state from the legacy `discord-bridge-legacy` package. New bridges start with an empty SQLite database. Legacy bridges continue running on the legacy package until decommissioned externally — both can coexist on different bot tokens.

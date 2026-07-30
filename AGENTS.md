@@ -24,7 +24,6 @@ roomy/
 │   ├── design/           # @roomy/design — Shared design system, components, and icons
 │   ├── sdk/              # @roomy-space/sdk - Core SDK for Roomy clients
 │   ├── discord-bridge/   # Discord↔Roomy bridge service
-│   ├── discord-bridge-legacy/  # Legacy Discord bridge (archived)
 │   ├── appserver-admin/  # Admin dashboard (SvelteKit, XRPC debug tools)
 │   ├── roomy-cli/        # CLI tool (placeholder)
 │   └── tsconfig/         # Shared TypeScript configuration

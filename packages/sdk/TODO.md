@@ -15,8 +15,6 @@ Post-merge improvements and known issues for `packages/sdk/`.
 
 ## Workspace
 
-- **discord-bridge-legacy broken (M9):** `packages/discord-bridge-legacy` imports deleted SDK symbols (`ConnectedSpace`, `modules`). Archived and not in CI, but workspace member is left broken. Delete or exclude from typecheck.
-
 ## Cleanup
 
 - **No-op change in user.ts (N1):** `src/schema/events/user.ts:72` — byte-identical line change. Revert.

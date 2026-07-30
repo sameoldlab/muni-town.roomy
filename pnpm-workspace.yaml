@@ -6,7 +6,6 @@ packages:
   - packages/design
   - packages/sdk
   - packages/discord-bridge
-  - packages/discord-bridge-legacy
   - packages/cli
   - packages/tsconfig
 

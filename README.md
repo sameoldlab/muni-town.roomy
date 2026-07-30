@@ -31,6 +31,6 @@ This repo is split into 5 main `packages`, in order of importance:
 - `sdk` which wraps the Leaf typescript client and ATProto SDK into a unified Roomy client, holds shared schemas for events and defines how they are materialised.
 - `discord-bridge` a Node.js server process for bidirectional sync between Discord guilds and Roomy spaces
 - `design` some shared UI and branding resources
-- `roomy-cli` an experimental CLI tool for interacting with Roomy, and for use in E2E tests
+- `cli` a CLI tool for interacting with Roomy, and for use in E2E tests
 
-Most of these packages have their own README.md files for further information.
+
