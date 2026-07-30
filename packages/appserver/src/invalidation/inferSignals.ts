@@ -1,5 +1,5 @@
 /**
- * Pure function mapping an applied Leaf event → invalidation signals.
+ * Pure function mapping an applied event → invalidation signals.
  *
  * This is the single source of truth for "what query results changed when
  * event X fires". Both the WS handler and the server-side cache consume

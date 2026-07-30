@@ -1,7 +1,7 @@
 -- Read-state schema (data/roomy-readstate.sqlite).
 --
 -- This database stores appserver-owned state that cannot be reconstructed
--- from the Leaf event log. Unlike the materialisation DB, this data
+-- from the event log. Unlike the materialisation DB, this data
 -- survives schema changes to the materialisation tables.
 --
 -- Bump the version constant in readStateDb.ts whenever this file changes.

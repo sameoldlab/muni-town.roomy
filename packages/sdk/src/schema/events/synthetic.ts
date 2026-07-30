@@ -16,7 +16,7 @@ import { defineEvent } from "./utils";
 /**
  * Synthetic event: space metadata bundle
  *
- * This is the result of the `space_meta` query from the Leaf module.
+ * This is the result of the `space_meta` query from the materializer.
  * It contains all the space metadata that would normally require
  * materializing many individual events (space info, sidebar config,
  * channels, admins, calendar config).

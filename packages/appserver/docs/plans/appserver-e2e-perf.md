@@ -5,7 +5,7 @@
 **A (test-mode auth bypass)** and **B (server factory)** are implemented:
 
 - `src/xrpc/auth.ts` — `testAuthVerifier` reads `X-Test-Did` header, bypasses JWT/PLC. `selectAuthVerifier()` picks it when `APPSERVER_TEST_MODE=true`. `X-Test-Did` is in CORS allowed headers.
-- `src/appserver.ts` — `createAppserver(opts)` factory with `AppserverOptions` (authVerifier, port, ownDid, dbPath, readStateDbPath, backfillMode, quiet, corsOrigin). Returns `AppserverHandle` with `close()`. `backfillMode: "disabled"` skips all Leaf contact. `:memory:` SQLite supported.
+- `src/appserver.ts` — `createAppserver(opts)` factory with `AppserverOptions` (authVerifier, port, ownDid, dbPath, readStateDbPath, backfillMode, quiet, corsOrigin). Returns `AppserverHandle` with `close()`. `backfillMode: "disabled"` skips all remote backend contact. `:memory:` SQLite supported.
 - `src/appserver.test.ts` — 5 smoke tests: health, did.json, backfill status, getConnectionTicket (test auth), getSpaces anonymous, CORS, 404. Each test spins a fresh ephemeral-port appserver with `:memory:` DB and `disabled` backfill.
 - `src/index.ts` refactored to use `createAppserver`, boot path only.
 
@@ -15,7 +15,7 @@ The remaining work: **C** (full HTTP e2e coverage of every endpoint), **D** (per
 
 ## Phase C: HTTP-Level E2E Test Suite
 
-**Goal:** Cover every registered XRPC endpoint through the real HTTP transport (not just router.fetch), exercising auth, validation, and DB state — all without Leaf or network.
+**Goal:** Cover every registered XRPC endpoint through the real HTTP transport (not just router.fetch), exercising auth, validation, and DB state — all without a remote backend or network (local-only mode).
 
 ### C.1 Test fixture: `src/e2e/helpers.ts`
 
@@ -76,7 +76,7 @@ Use Bun's `WebSocket` client (built-in).
 
 Cover paths the unit tests (which call `router.fetch` directly) skip:
 
-- `GET /blob/<did>/<cid>` → proxied or 404 (no Leaf in disabled mode, so expect a graceful error, not a crash).
+- `GET /blob/<did>/<cid>` → proxied or 404 (no remote backend in disabled mode, so expect a graceful error, not a crash).
 - `OPTIONS` preflight on every path → 204 + CORS headers.
 - `GET /health/embed` → 200 with stats.
 - Non-existent path → 404 (not a 500 crash).
@@ -133,7 +133,7 @@ Ensure tests never touch the network, filesystem, or shared state.
 
 ### E.1 Verify disabled-mode isolation
 
-`APPSERVER_BACKFILL_MODE=disabled` already works — audit that no code path touches Leaf in this mode. Check `hydrateUserMembership`, `resolvePersonalStream`, `getOrCreateMaterializer`, admin handlers — these should short-circuit or throw gracefully when backfill is disabled and no Leaf client exists. Add a guard: if `backfillMode === "disabled"`, the service client should be `null` and any handler that calls it should return a clear error (not a crash).
+`APPSERVER_BACKFILL_MODE=disabled` already works — audit that no code path touches a remote backend in this mode. Check `hydrateUserMembership`, `resolvePersonalStream`, `getOrCreateMaterializer`, admin handlers — these should short-circuit or throw gracefully when backfill is disabled and no remote backend client exists. Add a guard: if `backfillMode === "disabled"`, the service client should be `null` and any handler that calls it should return a clear error (not a crash).
 
 ### E.2 DB isolation
 
@@ -168,7 +168,7 @@ bun run --cwd packages/appserver perf/measure.ts               # Per-endpoint pe
 
 All appserver e2e tests use \`APPSERVER_TEST_MODE=true\` + \`testAuthVerifier\`
 (\`X-Test-Did\` header), \`:memory:\` SQLite, and \`backfillMode: "disabled"\` —
-no Leaf, no PLC, no network. The \`createAppserver\` factory spins a clean
+no remote backend, no PLC, no network. The \`createAppserver\` factory spins a clean
 instance per test on an ephemeral port.
 ```
 
@@ -194,6 +194,6 @@ instance per test on an ephemeral port.
 - [ ] Every registered XRPC NSID has at least one HTTP-level smoke test passing.
 - [ ] WebSocket sync subscription tested end-to-end (ticket → connect → frame).
 - [ ] Perf harness runs, outputs per-endpoint p50/p95/p99, auto-discovers all endpoints.
-- [ ] Full e2e suite runs in <5s with no network access (offline, no Leaf, no PLC).
+- [ ] Full e2e suite runs in <5s with no network access (offline, no remote backend, no PLC).
 - [ ] No leaked processes/handles after suite exit.
 - [ ] `AGENTS.md` documents how to run e2e + perf.

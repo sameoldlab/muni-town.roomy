@@ -5,7 +5,7 @@
  * mirrors the frontend worker schema so the SDK's pure materializer functions
  * can be reused unchanged.
  *
- * Materialisation is fully deterministic from the Leaf event log, so on a
+ * Materialisation is fully deterministic from the local event log, so on a
  * schema-version mismatch the file is automatically deleted and re-created.
  *
  * The actual SQLite operations run in a Bun.Worker thread. This module
@@ -20,7 +20,7 @@ import { READSTATE_SCHEMA_VERSION } from "./readStateDb.ts";
 
 /**
  * Bump whenever schema.sql OR materialiser logic changes — a bump triggers
- * a wipe + full re-materialisation from the Leaf log, which is how a
+ * a wipe + full re-materialisation from the local event log, which is how a
  * materialiser change is rolled out to existing data. Mirrors the frontend's
  * `CONFIG.databaseSchemaVersion`. Strings, not numbers, so we can use
  * suffixes (e.g. `"6-appserver.1"`) once the two diverge.

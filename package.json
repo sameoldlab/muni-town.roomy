@@ -30,7 +30,6 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@muni-town/leaf-client": "0.1.0-alpha.17",
     "date-fns": "^4.1.0"
   }
 }

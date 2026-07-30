@@ -5,7 +5,7 @@
 
 ## Context
 
-Roomy is migrating from a local-first architecture (SQLite WASM materialised in the browser via a three-tier worker system) to a thin-client / appserver model. The appserver acts as an **adapter layer** over the existing Leaf event-stream backend, providing a clean XRPC semantics interface.
+Roomy is migrating from a local-first architecture (SQLite WASM materialised in the browser via a three-tier worker system) to a thin-client / appserver model. The appserver owns its own local SQLite event store and materialises state from it, providing a clean XRPC semantics interface.
 
 **What is transitional:** The Bun/TypeScript appserver implementation is explicitly transitional — it will be replaced by a Rust service with the same XRPC interface.
 
@@ -19,10 +19,10 @@ Browser (SvelteKit)
     ↓ HTTP (via PDS proxy) + single multiplexed WebSocket
 Appserver (Bun + TypeScript, Dockerised)
   SQLite / bun:sqlite (persisted materialised views)
-  Leaf client subscription → materialisation → XRPC handlers
+  Local event store (SQLite) → materialisation → XRPC handlers
   Auth middleware (ATProto inter-service JWT + pre-auth tickets)
-    ↓ Leaf client (existing)
-Leaf Server  ←→  AT Protocol PDS
+    ↓ (events read/written to local SQLite event store)
+AT Protocol PDS
 ```
 
 ### Data flow
@@ -33,7 +33,7 @@ Initial load:
   2. Response populates cache with staleTime: Infinity
 
 Real-time updates:
-  1. Leaf event arrives at appserver
+  1. Event arrives at appserver (read from the local event store)
   2. Appserver materialises to SQLite, determines affected topics
   3a. Message events → #messageDiff CBOR frame → WebSocket → setQueryData() (no HTTP)
   3b. Other events → #invalidate CBOR frame → WebSocket → invalidateQueries() → HTTP re-fetch
@@ -130,7 +130,7 @@ Client subscribes to topics (`space:<id>`, `room:<id>`), server pushes:
 | Removed | Replaced by |
 |---------|-------------|
 | SQLite WASM worker | Appserver SQLite (bun:sqlite) |
-| Peer/shared worker materialisation | Appserver subscribes to Leaf, materialises server-side |
+| Peer/shared worker materialisation | Appserver reads its local event store, materialises server-side |
 | `LiveQuery` / `livequery()` calls | TanStack Query + WS invalidation signals |
 | `src/lib/workers/sqlite/` | n/a |
 | `src/lib/queries/*.svelte.ts` | Thin XRPC client wrappers feeding TanStack Query |
@@ -150,9 +150,9 @@ Client subscribes to topics (`space:<id>`, `room:<id>`), server pushes:
 ## Migration Strategy
 
 1. **Phase 0 (done):** Architecture docs, research, scaffold package, implement auth foundation.
-2. **Phase 1 (now):** Implement appserver — Bun HTTP + WebSocket, Leaf connection, SQLite schema, XRPC routing, one working query end-to-end.
+2. **Phase 1:** Implement appserver — Bun HTTP + WebSocket, local event store, SQLite schema, XRPC routing, one working query end-to-end.
 3. **Phase 2:** Implement all query handlers + WS sync handler. Port client from LiveQuery to TanStack Query + XRPC.
-4. **Phase 3:** Remove SQLite WASM worker and peer worker from client.
+4. **Phase 3 (now):** Remove SQLite WASM worker and peer worker from client.
 5. **Phase 4:** Hand off to Rust appserver (same XRPC interface, drop-in replacement).
 
 ## Related Documents

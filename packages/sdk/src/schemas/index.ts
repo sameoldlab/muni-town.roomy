@@ -7,7 +7,7 @@
  *   - `procedures` — POST-style mutating methods (input + output)
  *   - `frames`    — WS push payloads + client→server messages
  *
- * Records (durable Leaf-stored entities) live under `src/schema/events/`
+ * Records (durable event entities) live under `src/schema/events/`
  * and are a different layer — not re-exported here.
  */
 export * as queries from "./queries/index";

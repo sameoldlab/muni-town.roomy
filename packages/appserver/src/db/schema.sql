@@ -15,7 +15,7 @@ create table if not exists roomy_schema_version (
 
 -- NOTE: the frontend schema includes an `events` table used for stash/unstash
 -- of out-of-order events. The appserver materialises strictly in increasing
--- `idx` order from a single Leaf subscription, so dependencies are always
+-- `idx` order from the local event store, so dependencies are always
 -- already applied — no stash machinery is needed and the table is omitted.
 -- The backfill cursor lives on `comp_space.backfilled_to`.
 

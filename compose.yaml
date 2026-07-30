@@ -2,26 +2,6 @@
 # monitoring stack primarily.
 
 services:
-  leaf-server:
-    image: ghcr.io/muni-town/leaf:sha-7983522
-    platform: linux/amd64 # no arm64 build available
-    # Uncomment if you are also dev-ing the leaf server
-    # scale: 0
-    volumes:
-      - leaf-data:/data
-    ports:
-      - 5530:5530
-    environment:
-      http_proxy:
-      https_proxy:
-      DID: did:web:localhost
-      PLC_DIRECTORY: http://plc-directory:3000
-      ENDPOINT: http://locahost:5530
-      MODULE_ADMINS: did:web:localhost
-      UNSAFE_AUTH_TOKEN: token123
-    networks:
-      - roomy-dev
-
   plc-directory:
     image: ghcr.io/zicklag/did-plc-server:plc-053ddecb6a12ce0e996d300f9395899adf02dd05
     platform: linux/amd64 # no arm64 build available
@@ -130,7 +110,6 @@ services:
       - roomy-dev
 
 volumes:
-  leaf-data:
   plc-db-data:
   pds-data:
 

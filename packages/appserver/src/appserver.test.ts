@@ -103,10 +103,10 @@ describe("createAppserver factory", () => {
 
     const base = `http://localhost:${handle.port}`;
 
-    // Anonymous (no X-Test-Did) → empty spaces list without calling Leaf.
-    // Authenticated callers trigger hydrateUserMembership which needs Leaf,
+    // Anonymous (no X-Test-Did) → empty spaces list without a remote event backend.
+    // Authenticated callers trigger hydrateUserMembership which needs a remote event backend,
     // so we test the anonymous path here; the authenticated path requires a
-    // Leaf backend and is covered by integration tests.
+    // remote event backend and is covered by integration tests.
     const res = await fetch(
       `${base}/xrpc/space.roomy.space.getSpaces?includeLeft=false`,
     );

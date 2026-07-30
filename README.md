@@ -1,6 +1,6 @@
 # Roomy
 
-Roomy is a group messaging app that gives online communities tools for autonomous collaboration — designable, gardenable spaces not just for chat, but for cultivating a web of shared understanding together. Roomy is built with [AT Protocol](https://atproto.com/) and our bespoke event-sourcing sync system, [Leaf](https://github.com/muni-town/leaf). See [this blog post](https://blog.muni.town/brief-history-of-roomy-architectures/) to understand a bit about how this project is developed and where we are now.
+Roomy is a group messaging app that gives online communities tools for autonomous collaboration — designable, gardenable spaces not just for chat, but for cultivating a web of shared understanding together. Roomy is built on [AT Protocol](https://atproto.com/), with an appserver that owns its own local SQLite event store. See [this blog post](https://blog.muni.town/brief-history-of-roomy-architectures/) to understand a bit about how this project is developed and where we are now.
 
 ## Key Features
 
@@ -28,7 +28,7 @@ Roomy is a spiritual sibling of [Commune](https://github.com/commune-sh). The sa
 
 This repo is split into 5 main `packages`, in order of importance: 
 - `app` the Roomy frontend
-- `sdk` which wraps the Leaf typescript client and ATProto SDK into a unified Roomy client, holds shared schemas for events and defines how they are materialised.
+- `sdk` which wraps the ATProto SDK into a unified Roomy client, holds shared schemas for events and defines how they are materialised.
 - `discord-bridge` a Node.js server process for bidirectional sync between Discord guilds and Roomy spaces
 - `design` some shared UI and branding resources
 - `cli` a CLI tool for interacting with Roomy, and for use in E2E tests

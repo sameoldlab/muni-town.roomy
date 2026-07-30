@@ -1,8 +1,8 @@
 /**
  * XRPC: space.roomy.space.setHandle (procedure).
  *
- * Sets or removes a Leaf-level handle for a space (DNS-based approach).
- * Updates the DID document with a `leaf://` alias, or removes it when
+ * Sets or removes a space handle for a space (DNS-based approach).
+ * Updates the DID document with a handle alias (historically leaf://), or removes it when
  * handle is null.
  *
  * Requires admin access on the space.
@@ -60,9 +60,7 @@ export const setHandleHandler: ProcedureHandler<SetHandleBody, void> = async (
     );
   }
 
-  // ── Leaf removed: setHandle was a Leaf operation ──────────────────────
-  // The handle is persisted in the local DB below. The Leaf-level handle
-  // registration is no longer performed.
+  // setHandle was formerly a Leaf operation; the handle is now persisted in the local DB below.
 
   // ── Persist handle in local DB for fast query access ────────────
   if (handle !== null) {

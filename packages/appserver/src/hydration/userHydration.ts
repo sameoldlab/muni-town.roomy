@@ -33,7 +33,7 @@ export interface UserHydrationResult {
   personalStreamDid: StreamDid | null;
   /** Space DIDs the user has personal.joinSpace'd and not personal.leaveSpace'd. */
   intendedSpaceDids: StreamDid[];
-  /** Spaces that failed to materialise (network, leaf unreachable, etc.). Logged, not thrown. */
+  /** Spaces that failed to materialise (network, DB unreachable, etc.). Logged, not thrown. */
   hydrationFailures: HydrationFailure[];
 }
 

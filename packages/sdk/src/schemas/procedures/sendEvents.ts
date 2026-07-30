@@ -3,8 +3,8 @@
  * Source of truth: packages/appserver/docs/plans/sendEvents-procedure.md
  *
  * Sends a batch of Roomy events to a space stream through the appserver.
- * The appserver validates authorization per-event, then proxies the batch
- * to Leaf with `userOverride` set to the caller's DID.
+ * The appserver validates authorization per-event, then writes the batch
+ * to the local event store with `userOverride` set to the caller's DID.
  */
 import { type } from "arktype";
 

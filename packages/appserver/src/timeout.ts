@@ -3,7 +3,7 @@
  * promise, or rejects with a timeout error after `ms`. The underlying promise
  * is NOT cancelled (Promises aren't cancellable) — it keeps running and may
  * eventually settle, but the caller is unblocked either way. Use this to bound
- * operations that have no built-in timeout (Leaf socket.io RPCs, drains, etc.)
+ * operations that have no built-in timeout (network RPCs, drains, etc.)
  * so a dead peer can't hang a caller indefinitely.
  */
 export function withTimeout<T>(

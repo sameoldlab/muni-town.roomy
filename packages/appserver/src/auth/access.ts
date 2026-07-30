@@ -56,7 +56,7 @@ export interface RoomAccess {
  *
  * The memo is keyed by `(did, spaceId)` for space-scoped booleans and by
  * `(did, roomId)` for full room decisions. It is intentionally per-request
- * (not process-global): access state can change between requests via Leaf
+ * (not process-global): access state can change between requests via
  * events, and a stale cache would be a security bug. Callers create one
  * with `createAccessMemo()` at the top of a handler and pass it through to
  * every access call in that request.

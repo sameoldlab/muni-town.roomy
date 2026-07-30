@@ -1,7 +1,7 @@
 /**
  * Types for the invalidation system.
  *
- * An InvalidationSignal is emitted whenever a Leaf event changes data that
+ * An InvalidationSignal is emitted whenever an event changes data that
  * one or more XRPC query endpoints depend on. Signals are consumed by:
  *
  *   1. The WS sync handler → #invalidate / #messageDiff frames to clients
@@ -145,7 +145,7 @@ export interface InvalidationRouter {
   ): void | Promise<void>;
 
   /**
-   * Emit invalidation signals directly, outside the Leaf event pipeline.
+   * Emit invalidation signals directly, outside the event pipeline.
    * Used by XRPC procedure handlers that mutate appserver-local state
    * (e.g. `updateSeen` writing to `read_positions`).
    */

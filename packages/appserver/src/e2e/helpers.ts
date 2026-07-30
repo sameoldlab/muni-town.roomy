@@ -167,7 +167,7 @@ export function seedSpace(
 
 /**
  * Seed a personal-stream cache row so hydrateUserMembership can resolve
- * the user's personal stream without Leaf.
+ * the user's personal stream without a remote event backend.
  */
 export function seedPersonalStream(
   db: Database,

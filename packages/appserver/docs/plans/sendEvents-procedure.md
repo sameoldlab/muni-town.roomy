@@ -6,7 +6,7 @@
 
 ## Overview
 
-Add a new XRPC procedure `space.roomy.space.sendEvents` that lets authenticated clients send batches of Roomy events to a space stream through the appserver, rather than connecting to Leaf directly. The appserver validates authorization per-event, then proxies the batch to Leaf with a `userOverride` set to the caller's DID.
+Add a new XRPC procedure `space.roomy.space.sendEvents` that lets authenticated clients send batches of Roomy events to a space stream through the appserver, which writes them to its own local event store. The appserver validates authorization per-event, then writes the batch to the local event store with a `userOverride` set to the caller's DID.
 
 This is the first write proxy in the appserver and the foundation for the thin-client migration — eventually all client writes will flow through this endpoint.
 
@@ -14,9 +14,9 @@ This is the first write proxy in the appserver and the foundation for the thin-c
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Authorization | Per-event | Structured 403 errors per event type; appserver is the gateway, not Leaf |
+| Authorization | Per-event | Structured 403 errors per event type; appserver is the gateway to the event store |
 | Batch semantics | Atomic (validate all → send all) | Simpler client reasoning; a single bad event rejects the whole batch |
-| Leaf dispatch | `ConnectedSpace.sendEvents` via `serviceClient.ts` | Reuses existing Leaf connection pool and CBOR encoding; extended to pass `userOverride` |
+| Event dispatch | `ConnectedSpace.sendEvents` via `serviceClient.ts` | Writes to the local event store with CBOR encoding; extended to pass `userOverride` |
 | ULID generation | Client-generated | Client needs IDs for optimistic cache updates; ULIDs prevent collisions |
 | Event validation | SDK `Event` arktype schema | Early 400 on malformed events; reuses the canonical schema |
 
@@ -50,7 +50,7 @@ The `events` array is validated against the SDK's `Event` arktype schema (`parse
 | 401 | `AuthRequired` | Missing or invalid Bearer token |
 | 403 | `Forbidden` | Caller lacks permission for one or more events (detailed message) |
 | 404 | `NotFound` | Space or room referenced in an event does not exist |
-| 500 | `InternalServerError` | Leaf dispatch failed after validation passed |
+| 500 | `InternalServerError` | Event-store write failed after validation passed |
 
 Validation errors include a `message` identifying which event failed and why, so the client can fix and retry the whole batch.
 
@@ -89,7 +89,7 @@ The following `$type` values are rejected with 400 if present in a batch — the
 
 ## Event Allow List
 
-The handler rejects events whose `$type` is not in the explicit allow list. This is a security measure — even if someone constructs a valid-looking event with an unknown type, it won't reach Leaf.
+The handler rejects events whose `$type` is not in the explicit allow list. This is a security measure — even if someone constructs a valid-looking event with an unknown type, it won't reach the event store.
 
 The allow list is derived from the SDK's `eventRegistry` keys, minus the rejected types above. This can be a `Set<string>` built at module load time.
 
@@ -111,7 +111,7 @@ The allow list is derived from the SDK's `eventRegistry` keys, minus the rejecte
 9. Return 200
 ```
 
-Steps 1–7 are synchronous DB reads (fast, no I/O beyond SQLite). Step 8 is the only async network call. The batch is atomic: if validation passes but Leaf rejects, we return 500.
+Steps 1–7 are synchronous DB reads (fast, no I/O beyond SQLite). Step 8 is the only async call. The batch is atomic: if validation passes but the write to the event store fails, we return 500.
 
 ## Implementation Plan
 
@@ -140,7 +140,7 @@ async sendStateEvent(event: Event, userOverride?: string): Promise<void> {
 }
 ```
 
-This is a backwards-compatible change — existing callers that omit the parameter continue to work (Leaf will use the connection's own DID, as before).
+This is a backwards-compatible change — existing callers that omit the parameter continue to work (the event store will use the connection's own DID, as before).
 
 ### 2. SDK: Add procedure schema + auto-generate lexicon
 
@@ -365,10 +365,10 @@ This produces `packages/sdk/src/schemas/lexicons/space.roomy.space.sendEvents.js
 
 ## Data Flow After Write
 
-Once the appserver sends events to Leaf with `userOverride`, the existing pipelines handle the rest:
+Once the appserver writes events to its local event store with `userOverride`, the existing materialisation pipeline handles the rest:
 
-1. **Leaf** stores the events and broadcasts to subscribers
-2. **SpaceMaterializer** (already subscribed to the same Leaf stream) receives the events via its subscription callback
+1. **Local event store** stores the events and broadcasts to subscribers
+2. **SpaceMaterializer** (reading from the local event store) receives the events
 3. **`applyBatch`** materializes the events into SQLite (author edges, content, reactions, etc.)
 4. **`inferSignals`** generates invalidation signals based on event `$type`
 5. **InvalidationRouter** pushes `#messageDiff` and `#invalidate` frames to subscribed WS clients
@@ -406,7 +406,7 @@ function checkMessageAuthorOrAdmin(
 }
 ```
 
-This is a defense-in-depth measure — the Leaf module's authorizer may or may not enforce this, but the appserver should.
+This is a defense-in-depth measure — the event store's authorizer may or may not enforce this, but the appserver should.
 
 ## `joinSpace` Special Handling
 
@@ -415,19 +415,19 @@ This is a defense-in-depth measure — the Leaf module's authorizer may or may n
 - If the space has `allow_public_join = 1` (default), any authenticated user can join
 - If `allow_public_join = 0`, the user must present a valid invite token
 
-For the initial implementation, we can defer invite validation and just check that the caller is not banned. The space's authorizer in the Leaf module already rejects duplicate joins. We can tighten this in a follow-up when we implement invite redemption as a separate concern.
+For the initial implementation, we can defer invite validation and just check that the caller is not banned. The space's authorizer in the event store already rejects duplicate joins. We can tighten this in a follow-up when we implement invite redemption as a separate concern.
 
 ## Security Considerations
 
-1. **No privilege escalation via `userOverride`:** The `userOverride` parameter is set by the appserver to the JWT-authenticated caller's DID — the client never controls it. The Leaf server enforces that only `unsafe_auth_token` connections may use it.
+1. **No privilege escalation via `userOverride`:** The `userOverride` parameter is set by the appserver to the JWT-authenticated caller's DID — the client never controls it. The event store enforces that only authorised (service-token) connections may use it.
 
-2. **Event injection:** The allow list prevents unknown event types from reaching Leaf. Even if a client constructs a novel `$type`, it's rejected at validation.
+2. **Event injection:** The allow list prevents unknown event types from reaching the event store. Even if a client constructs a novel `$type`, it's rejected at validation.
 
 3. **Batch size limit (50):** Prevents resource exhaustion from oversized batches. Individual event payloads are bounded by the HTTP body size limit (Bun default: ~128MB, but we can add a tighter limit).
 
 4. **Rate limiting:** Not in scope for this initial implementation, but the endpoint is a natural place for per-DID rate limiting in the future.
 
-5. **Idempotency:** Events are idempotent by design — duplicate ULIDs are ignored by Leaf. If the client retries after a network error, the worst case is a no-op on Leaf's side.
+5. **Idempotency:** Events are idempotent by design — duplicate ULIDs are ignored by the event store. If the client retries after a network error, the worst case is a no-op.
 
 ## Testing Strategy
 
@@ -472,7 +472,7 @@ For the initial implementation, we can defer invite validation and just check th
 
 ### Not Changed
 
-- `src/materialization/*` — events from Leaf flow through existing pipeline
+- `src/materialization/*` — events from the local event store flow through existing pipeline
 - `src/invalidation/*` — signals inferred from materialized events, unchanged
 - `src/sync/*` — WS subscription routing, unchanged
 - `src/auth/access.ts` — existing functions reused as-is

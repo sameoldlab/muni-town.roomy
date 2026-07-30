@@ -18,7 +18,7 @@ Build a custom XRPC routing layer using Bun's native HTTP + WebSocket server (`B
 
 **CBOR library:** Use `@atcute/cbor` (already used by `@roomy-space/sdk`). Do **not** add `cbor-x`.
 
-**Key change from original plan:** Instead of per-procedure `AsyncIterable<Frame>` subscriptions, there is a single multiplexed `space.roomy.sync.subscribe` handler that manages topic subscriptions and routes frames based on Leaf events.
+**Key change from original plan:** Instead of per-procedure `AsyncIterable<Frame>` subscriptions, there is a single multiplexed `space.roomy.sync.subscribe` handler that manages topic subscriptions and routes frames based on events from the local event store.
 
 ---
 
@@ -36,7 +36,7 @@ packages/appserver/src/
     errors.ts                           ← XrpcError class + toErrorResponse()
   sync/
     handler.ts                          ← SyncHandler: manages per-connection topic subscriptions
-    topics.ts                           ← Topic matching: Leaf event → affected topics → frames
+    topics.ts                           ← Topic matching: event → affected topics → frames
   handlers/
     space.getSpaces.ts
     space.getMetadata.ts                ← includes sidebar tree
@@ -337,7 +337,9 @@ Key changes from original:
 
 ## Sync Handler (`sync/handler.ts`)
 
-The sync handler manages per-connection topic subscriptions and routes Leaf events to the appropriate WebSocket frames.
+The sync handler manages per-connection topic subscriptions and routes events from the local event store to the appropriate WebSocket frames.
+
+> **Historical note:** The code below references a `LeafEventSource` / `createLeafEventSource` event source and a `leafEventToDiffOp` helper. These were sketched against the former Leaf backend and were **never implemented** — the appserver now reads events from its own local SQLite event store. The snippet is retained as a historical design sketch; the live implementation uses a local event source of the same shape.
 
 ```typescript
 import type { SyncSocket, ClientMessage } from "../xrpc/types.ts";
@@ -398,7 +400,7 @@ export function createSyncHandler(
 
 ## Topic Matching (`sync/topics.ts`)
 
-Maps Leaf events to affected topics and generates the appropriate frames.
+Maps events from the local event store to affected topics and generates the appropriate frames. (As in the sync handler above, the `LeafEvent`/`leafEventToDiffOp` names in the snippet are historical — never implemented — sketches; the live implementation uses a local event source.)
 
 ```typescript
 import type { Frame } from "../xrpc/types.ts";
@@ -733,7 +735,7 @@ export const getMessages: QueryHandler<Params> = async (params, auth) => {
 5. Router creates `SyncSocket` wrapper and calls `syncHandler(socket, auth)`
 6. Sync handler registers `onMessage`/`onClose` callbacks
 7. Client sends JSON sub/unsub/cursor messages → `websocket.message` → `onMessage` callback
-8. Leaf events arrive → sync handler generates frames → `socket.send()` → CBOR binary to client
+8. Events arrive from the local event store → sync handler generates frames → `socket.send()` → CBOR binary to client
 9. Client disconnects → `websocket.close` → `abort.abort()` + `onClose()` cleanup
 
 ---
@@ -745,9 +747,9 @@ export const getMessages: QueryHandler<Params> = async (params, auth) => {
 | Bidirectional WS not standard ATProto | Client messages are JSON text (not CBOR) — simple to parse. Server frames are CBOR (ATProto standard). This is an appserver-internal protocol, not a public ATProto subscription. |
 | Memory: per-connection subscription state | Bounded by `(active connections) × (avg topics per connection)`. Typical session: 1 space + 1 room = 2 topics. |
 | Backpressure on `socket.send()` | SyncSocket.send() checks `isOpen` before sending. For high-throughput rooms, consider batching diffs per tick. |
-| Leaf event fan-out to many connections | Topic routing table enables O(subscribers) delivery per event. No global broadcast. |
+| Event fan-out to many connections | Topic routing table enables O(subscribers) delivery per event. No global broadcast. |
 | Cursor replay on reconnect | Server replays missed `#messageDiff` from SQLite event log by seq number. For non-message data, sends broad `#invalidate` signals. |
-| Multiple Leaf events in same tick | Sync handler can batch frames per tick to reduce WS message count. |
+| Multiple events in same tick | Sync handler can batch frames per tick to reduce WS message count. |
 | Auth ticket replay | Tickets are single-use (`consumeTicket` deletes immediately). 60-second TTL limits window. |
 
 ---
@@ -759,7 +761,7 @@ export const getMessages: QueryHandler<Params> = async (params, auth) => {
 3. `xrpc/frame.ts` — unchanged
 4. `xrpc/auth.ts` — unchanged (already implemented)
 5. `xrpc/router.ts` — rewrite for `.sync()` support, bidirectional WS
-6. `sync/topics.ts` — Leaf event → topic → frame mapping
+6. `sync/topics.ts` — event → topic → frame mapping
 7. `sync/handler.ts` — per-connection topic subscription management
 8. `src/index.ts` — wire up all handlers + sync subscription
 9. One query handler end-to-end (`space.roomy.space.getMetadata`) — proves DB + routing + merged sidebar works

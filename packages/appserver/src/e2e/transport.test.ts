@@ -3,7 +3,7 @@
  * directly) skip.
  *
  * Tests:
- * - GET /blob/<did>/<cid> → graceful error (no Leaf in disabled mode)
+ * - GET /blob/<did>/<cid> → graceful error (no remote backend in disabled mode)
  * - OPTIONS preflight → 204 + CORS headers
  * - GET /health/embed → 200 with stats
  * - Non-existent path → 404
@@ -16,7 +16,7 @@ import { describe, expect, test } from "bun:test";
 import { startAppserver } from "./helpers.ts";
 
 describe("Transport-level edge cases", () => {
-  test("GET /blob/<did>/<cid> → graceful error (no Leaf)", async () => {
+  test("GET /blob/<did>/<cid> → graceful error (no remote backend)", async () => {
     const ctx = await startAppserver()
     const res = await ctx.anonFetch(
       `${ctx.baseUrl}/blob/did%3Aplc%3Atest/some-cid-hash`,

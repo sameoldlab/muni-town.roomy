@@ -29,7 +29,7 @@ Today there is exactly one general write path:
 
 - **`space.roomy.space.sendEvents`** — a batch procedure. The caller supplies
   `{ spaceId, events[] }`; the appserver validates + authorizes each event
-  (`src/auth/writeAuth.ts`), then proxies the batch to Leaf with `userOverride`
+  (`src/auth/writeAuth.ts`), then writes the batch to the local event store with `userOverride`
   set to the caller's DID.
 
 Everything else is modelled as an event `$type` inside that batch — including
@@ -80,7 +80,7 @@ already a materialized space.
 **Proposed shape.**
 
 - Input: `{ name, description?, avatar? }` (plus join-policy defaults).
-- Behaviour: provision a new Leaf stream, seed it with the initial event set
+- Behaviour: provision a new event stream in the local event store, seed it with the initial event set
   (space metadata, creator added as admin/member, optionally a default room),
   and register the space so `getSpaces` picks it up.
 - Output: `{ spaceId }` so the client can navigate straight to `/{spaceId}`.

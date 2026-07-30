@@ -4,8 +4,8 @@
  * Returns a user's profile. The `actor` param accepts a DID or handle;
  * handles are resolved to DIDs via the PLC directory.
  *
- * **Read-after-write consistency:** The appserver processes Leaf stream
- * events, not ATProto repo commits, so a `putRecord` to
+ * **Read-after-write consistency:** The appserver processes events from its
+ * local event store, not ATProto repo commits, so a `putRecord` to
  * `space.roomy.user.profile/self` on the PDS does not trigger
  * re-materialisation. To stay fresh, this handler always checks HappyView
  * (which indexes the Jetstream firehose and caches Roomy profile records
@@ -56,7 +56,7 @@ export const getProfileHandler: QueryHandler<
   const db = openDb();
 
   // ── Roomy profile record from HappyView (authoritative) ──────────────
-  // The appserver processes Leaf stream events, not ATProto repo commits,
+  // The appserver processes events from its local event store, not ATProto repo commits,
   // so a `putRecord` to `space.roomy.user.profile/self` on the PDS does not
   // trigger re-materialisation. HappyView subscribes to the Jetstream
   // firehose and indexes Roomy profile records, so it has the freshest
@@ -84,7 +84,7 @@ export const getProfileHandler: QueryHandler<
 
     // Re-read the materialised row to get the handle (Roomy records don't
     // carry one — the handle comes from comp_user, populated by prior
-    // Bluesky/Leaf hydration).
+    // Bluesky/hydration).
     const row = await readProfileRow(db, did);
     return stripNulls({
       did,
@@ -101,7 +101,7 @@ export const getProfileHandler: QueryHandler<
   // ── Materialised row (stale but fast) ─────────────────────────────────
   // No Roomy record in HappyView (or HappyView not configured). Return
   // whatever is materialised — this covers Bluesky-sourced profiles and
-  // bridged users whose profile data comes from Leaf stream events.
+  // bridged users whose profile data comes from event processing.
   const row = await readProfileRow(db, did);
   if (row) {
     return stripNulls({

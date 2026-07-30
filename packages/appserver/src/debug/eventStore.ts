@@ -1,5 +1,5 @@
 /**
- * Debug event store — a separate SQLite database recording every Leaf event
+ * Debug event store — a separate SQLite database recording every local event
  * delivered and every materialization result.
  *
  * Gated behind `APPSERVER_DEBUG_DB_PATH` env var. When set, every event

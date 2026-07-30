@@ -2,7 +2,7 @@
  * E2E smoke tests for every registered XRPC endpoint.
  *
  * Each describe block tests one NSID through the real HTTP transport,
- * exercising auth, validation, and DB state — all without Leaf or network.
+ * exercising auth, validation, and DB state — all without a remote event backend or network.
  *
  * Run: bun test --cwd packages/appserver src/e2e/endpoints.test.ts
  */
@@ -507,7 +507,7 @@ describe("space.roomy.space.createSpace", () => {
     );
     // createStreamDid calls PLC directory which may not be available in test;
     // if it succeeds, expect 200 with spaceId; if it fails, expect a 500
-    // with a PLC-related error (not "no Leaf").
+    // with a PLC-related error (not the old no-backend error).
     if (res.status === 200) {
       const body = await res.json();
       expect(body).toHaveProperty("spaceId");
@@ -516,7 +516,7 @@ describe("space.roomy.space.createSpace", () => {
       expect(res.status).toBe(500);
       const body = await res.json();
       expect(body).toHaveProperty("error");
-      // Must NOT be the old "no Leaf" error
+      // Must NOT be the old no-backend error
       expect(body.error).not.toBe("InternalServerError");
     }
   });
@@ -615,7 +615,7 @@ describe("space.roomy.space.leaveSpace", () => {
 // ─── space.roomy.space.setHandle (procedure) ─────────────────────────────
 
 describe("space.roomy.space.setHandle", () => {
-  test("authenticated → persists handle in local DB (no Leaf needed)", async () => {
+  test("authenticated → persists handle in local DB (no remote backend needed)", async () => {
     const ctx = await setupBasicSpace();
     const { db } = ctx;
     // setHandle requires admin access. Seed an admin edge.
@@ -733,7 +733,7 @@ describe("space.roomy.space.sendEvents", () => {
 });
 
 describe("space.roomy.admin.connectSpace", () => {
-  test("admin → returns space info from local DB (no Leaf needed)", async () => {
+  test("admin → returns space info from local DB (no remote backend needed)", async () => {
     const ctx = await startAppserver()
     const res = await ctx.authedFetch(ADMIN)(
       `${ctx.baseUrl}/xrpc/space.roomy.admin.connectSpace?did=${SPACE}`,

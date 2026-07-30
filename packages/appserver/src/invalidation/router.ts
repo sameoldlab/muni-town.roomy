@@ -130,7 +130,7 @@ export class Router implements IInvalidationRouter {
   }
 
   /**
-   * Emit invalidation signals directly (not from Leaf events).
+   * Emit invalidation signals directly (not from event processing).
    * Used by procedure handlers that mutate appserver-local state.
    */
   emit(signals: readonly InvalidationEvent[]): void {

@@ -2,7 +2,7 @@
  * Schema for `space.roomy.space.createSpace` (procedure).
  * Source of truth: packages/appserver/docs/plans/procedure-backlog.md
  *
- * Provisions a new Leaf stream, seeds it with the initial event set
+ * Provisions a new space, seeds it with the initial event set
  * (space metadata, creator added as admin/member, default room + sidebar),
  * and registers the space so `getSpaces` picks it up.
  */

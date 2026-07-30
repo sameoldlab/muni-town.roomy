@@ -1,5 +1,5 @@
 /**
- * Convert a decoded Leaf stream event into an AppliedEvent for the
+ * Convert a decoded stream event into an AppliedEvent for the
  * invalidation router.
  *
  * Extracts event-specific fields into `details` based on `$type`, pulling

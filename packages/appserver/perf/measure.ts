@@ -541,7 +541,7 @@ async function main() {
   // Seed fixture
   const fixture = seedFixture(db);
 
-  // Pre-warm materializers so handlers don't try to connect to Leaf
+  // Pre-warm materializers so handlers don't try to connect to a remote event backend
   await preWarmMaterializer(fixture.personalStreamDid);
   await preWarmMaterializer(fixture.spaceId);
   fixture.baseUrl = baseUrl;

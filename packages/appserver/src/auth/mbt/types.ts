@@ -9,7 +9,7 @@
 
 import type { DecodedMap, Variant } from "./itf.ts";
 
-// ── Primitives / leaf variants ─────────────────────────────────────────
+// ── Primitives ───────────────────────────────────────────────────────────
 
 export type UserId = string; // DID
 export type RoomId = string; // ULID

@@ -7,7 +7,7 @@
 ## Context
 
 The Roomy appserver is a new Bun/TypeScript XRPC service that sits between the SvelteKit
-frontend and the Leaf event-stream backend. Auth must validate real ATProto identities from
+frontend and the appserver event store. Auth must validate real ATProto identities from
 day one. The browser remains a public OAuth client (unchanged — no BFF/TMB in scope).
 
 ## Auth Mechanism: PDS Proxy + Inter-Service JWTs

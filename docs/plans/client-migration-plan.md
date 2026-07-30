@@ -49,14 +49,14 @@ Browser (app-lite)
     ↓ (also via appserver for writes)
     sendEvents XRPC procedure (batch)
     ↓
-  Leaf Server  ←→  AT Protocol PDS
+  Local event store (SQLite)  ←→  AT Protocol PDS
 ```
 
 ### Data flow
 
 1. **Auth:** `@roomy-space/sdk/browser` → `initSession` / `login` → `Agent` with PDS proxy
 2. **Reads:** `agentQuery(px(), nsid, params)` → PDS proxy → appserver → JSON response → TanStack cache
-3. **Writes:** `agentProcedure(px(), "space.roomy.space.sendEvents", { spaceId, events })` → PDS proxy → appserver → Leaf
+3. **Writes:** `agentProcedure(px(), "space.roomy.space.sendEvents", { spaceId, events })` → PDS proxy → appserver → local event store
 4. **Real-time:** `SyncConnection` → ticket auth → CBOR frames → `#messageDiff` (setQueryData) + `#invalidate` (invalidateQueries)
 5. **Read tracking:** `agentProcedure(px(), "space.roomy.room.updateSeen", { roomId })` on room open and on each `#messageDiff` while viewing
 
@@ -317,7 +317,7 @@ export const CONFIG = {
 
 ### OAuth scopes
 
-`app-lite` uses explicit `rpc:` scopes with `aud=*` for each appserver XRPC method — following the same pattern as the existing `packages/app` (which uses `rpc:town.muni.leaf.authenticate?aud=*` for Leaf auth). We do **not** use `transition:generic`.
+`app-lite` uses explicit `rpc:` scopes with `aud=*` for each appserver XRPC method — following the same pattern the existing `packages/app` formerly used for Leaf auth (`rpc:town.muni.leaf.authenticate?aud=*` — the former pattern, kept here as a historical example). We do **not** use `transition:generic`.
 
 The scope string is built programmatically from the appserver NSIDs:
 

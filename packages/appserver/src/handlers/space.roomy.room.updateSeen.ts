@@ -2,7 +2,7 @@
  * XRPC: space.roomy.room.updateSeen (procedure).
  *
  * Mark messages in a room as read up to a given message entity. The appserver
- * is the source of truth for read positions — this replaces the Leaf state
+ * is the source of truth for read positions — this replaces the former Leaf state
  * event `space.roomy.state.markRead.v0`.
  */
 
@@ -51,8 +51,8 @@ export const updateSeenHandler: ProcedureHandler<UpdateSeenBody, void> = async (
 
   // Warm this user's space materializers in the background. We deliberately do
   // NOT await: recording a read position only needs the on-disk materialisation
-  // (which persists across restarts), so blocking here on a cold Leaf
-  // re-subscribe is what made the first `updateSeen` for a space slow. The reads
+  // (which persists across restarts), so blocking here on a cold
+  // re-materialise is what made the first `updateSeen` for a space slow. The reads
   // below run against whatever is already materialised; a mid-backfill space
   // just yields a slightly stale watermark that self-corrects as live messages
   // arrive.

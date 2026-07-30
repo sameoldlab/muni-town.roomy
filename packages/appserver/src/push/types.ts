@@ -12,7 +12,7 @@ import type { UserDid } from "@roomy-space/sdk";
 
 /** A live createMessage to evaluate for push delivery. */
 export interface PushJob {
-  /** The space (Leaf stream DID) the message was sent in. */
+  /** The space (stream DID) the message was sent in. */
   spaceId: string;
   /** The room the message was sent in. */
   roomId: string;

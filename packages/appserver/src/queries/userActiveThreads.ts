@@ -6,7 +6,7 @@
  * `space.getMetadata`.
  *
  * All data lives in the read-state database (`readstate.user_thread_activity`),
- * which is appserver-owned and cannot be reconstructed from the Leaf event log.
+ * which is appserver-owned and cannot be reconstructed from the event log.
  */
 
 import type { DbLike } from "../db/types.ts";

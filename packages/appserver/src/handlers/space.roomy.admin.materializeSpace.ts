@@ -56,7 +56,7 @@ export const materializeSpaceHandler: QueryHandler<
 
   // Per-room event count diagnostic: compare appserver entity count vs
   // room_events count (which tracks every createMessage/room-event forwarded
-  // to the Leaf module's materializer). A large discrepancy indicates missing
+  // to the materializer). A large discrepancy indicates missing
   // events due to subscription pagination issues.
   const rooms = await db
     .query(
