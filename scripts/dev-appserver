@@ -89,8 +89,7 @@ fi
 
 docker rm -f "$DEV_NAME" 2>/dev/null || true
 
-# Join the local leaf network if it exists; otherwise use the default bridge
-# (for a remote LEAF_URL).
+
 NET_ARGS=()
 if docker network inspect roomy-dev >/dev/null 2>&1; then
   NET_ARGS=(--network roomy-dev)
@@ -105,10 +104,11 @@ docker run -d \
   -v "$VOL_NM:/app/node_modules" \
   -v "$VOL_APPSERVER_NM:/app/packages/appserver/node_modules" \
   -p "$PORT:$PORT" \
+  -w /app \
   -e "CI=true" \
+  -e "PORT=$PORT" \
   -e "REBUILD_SDK=$REBUILD_SDK" \
   "${NET_ARGS[@]}" \
-  -w /app \
   node:22 \
   bash -c '
     set -e
