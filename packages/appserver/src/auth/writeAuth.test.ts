@@ -352,7 +352,7 @@ describe("auth/writeAuth — room manage events", () => {
     expect(result).toBeUndefined();
   });
 
-  test("member cannot create room", async () => {
+  test("member cannot create channel room", async () => {
     const { asyncDb: db } = freshDb();
     await seedSpace(db);
     await seedUser(db, USER);
@@ -366,6 +366,70 @@ describe("auth/writeAuth — room manage events", () => {
     expect(result).toBeDefined();
     expect(result!.status).toBe(403);
     expect(result!.message).toContain("admin");
+  });
+
+  test("member can create thread room", async () => {
+    const { asyncDb: db } = freshDb();
+    await seedSpace(db);
+    await seedUser(db, USER);
+    await addEdge(db, SPACE, USER, "member");
+
+    const result = await checkWriteAuth(db, SPACE, USER, {
+      $type: "space.roomy.room.createRoom.v0",
+      id: newUlid(),
+      kind: "space.roomy.thread",
+    });
+    expect(result).toBeUndefined();
+  });
+
+  test("admin can create thread room", async () => {
+    const { asyncDb: db } = freshDb();
+    await seedSpace(db);
+    await seedUser(db, ADMIN);
+    await addEdge(db, SPACE, ADMIN, "admin");
+
+    const result = await checkWriteAuth(db, SPACE, ADMIN, {
+      $type: "space.roomy.room.createRoom.v0",
+      id: newUlid(),
+      kind: "space.roomy.thread",
+    });
+    expect(result).toBeUndefined();
+  });
+
+  test("non-member cannot create thread room", async () => {
+    const { asyncDb: db } = freshDb();
+    await seedSpace(db);
+    await seedUser(db, USER);
+    // No member edge
+
+    const result = await checkWriteAuth(db, SPACE, USER, {
+      $type: "space.roomy.room.createRoom.v0",
+      id: newUlid(),
+      kind: "space.roomy.thread",
+    });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe(403);
+    expect(result!.message).toContain("not a member");
+  });
+
+  test("banned member cannot create thread room", async () => {
+    const { asyncDb: db } = freshDb();
+    await seedSpace(db);
+    await seedUser(db, USER);
+    await addEdge(db, SPACE, USER, "member");
+    await db.run("insert into comp_bans (entity, user_did) values (?, ?)", [
+      SPACE,
+      USER,
+    ]);
+
+    const result = await checkWriteAuth(db, SPACE, USER, {
+      $type: "space.roomy.room.createRoom.v0",
+      id: newUlid(),
+      kind: "space.roomy.thread",
+    });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe(403);
+    expect(result!.message).toContain("banned");
   });
 });
 

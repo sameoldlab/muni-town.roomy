@@ -117,9 +117,15 @@ const MESSAGE_AUTHOR_TYPES = new Set([
 
 /**
  * Room management events — require space admin.
+ *
+ * `createRoom.v0` is handled specially below (split by `kind`): creating a
+ * thread room is allowed for any space member, with the actual
+ * "write access to the parent channel" enforced by the paired
+ * `space.roomy.link.createRoomLink.v0` event (in ROOM_WRITE_TYPES, gated on
+ * `canWrite` of the target channel). Creating channels/pages, and
+ * updating/deleting/restoring any room, still require space admin.
  */
 const ROOM_MANAGE_TYPES = new Set([
-  "space.roomy.room.createRoom.v0",
   "space.roomy.room.updateRoom.v0",
   "space.roomy.room.deleteRoom.v0",
   "space.roomy.room.restoreRoom.v0",
@@ -329,6 +335,20 @@ export async function checkWriteAuth(
       return denied(400, "InvalidRequest", `Event is missing required 'messageId' field`);
     }
     return await checkMessageAuthorOrAdmin(db, messageId, callerDid, spaceId);
+  }
+
+  // ── Room creation (split by kind) ──
+  // Thread rooms may be created by any space member; the actual "write
+  // access to the parent channel" is enforced by the paired
+  // `space.roomy.link.createRoomLink.v0` event (ROOM_WRITE_TYPES), which is
+  // gated on `canWrite` of the target channel and rejected atomically in the
+  // same batch if the caller lacks write access. Channels/pages still
+  // require space admin.
+  if ($type === "space.roomy.room.createRoom.v0") {
+    if (event.kind === "space.roomy.thread") {
+      return await requireMembershipCheck(db, spaceId, callerDid, access);
+    }
+    return await requireSpaceAdminCheck(db, spaceId, callerDid, access);
   }
 
   // ── Room manage ──
