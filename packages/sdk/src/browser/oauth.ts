@@ -17,6 +17,23 @@ import {
 import { Agent } from "@atproto/api";
 import type { OAuthSession } from "@atproto/oauth-client-browser";
 
+// Tauri JS API is exposed on `window.__TAURI__` when `withGlobalTauri` is
+// enabled. The SDK is app-agnostic (no dependency on @tauri-apps/api), so
+// this declares just the parts needed.
+// Tauri apps gate access on the runtime check `'__TAURI__' in window`.
+declare global {
+  interface Window {
+    __TAURI__?: {
+      opener: {
+        openUrl(url: string | URL): Promise<void>;
+      };
+      deepLink: {
+        onOpenUrl(handler: (urls: string[]) => void): Promise<() => void>;
+      };
+    };
+  }
+}
+
 // ── Config ────────────────────────────────────────────────────────────────
 
 const HANDLE_RESOLVER = "https://bsky.social";
@@ -335,23 +352,29 @@ export async function initSession(
   opts: InitSessionOptions = {},
 ): Promise<{ session: OAuthSession; agent: Agent; state?: string | null } | null> {
   const client = await createOAuthClient(appserverDid, opts);
+
+  /* 
+   * Tauri / native custom-scheme callbacks can't be auto-detected by `client.init()`:
+   * `findRedirectUrl()` compares HTTP origins against the
+   * registered redirect URIs, and a `space.roomy:/…` scheme never matches the
+   * webview origin (`tauri://localhost`). `login()`'s deep-link handler
+   * navigates the webview here with the OAuth params in the query string, so
+   * we process them explicitly.
+   */
   if ('__TAURI__' in window) {
-    // const { onOpenUrl } = window.__TAURI__.deepLink;
-    // returned state
-    // onOpenUrl((urls: string[]) => {
-    //   if (!urls || urls.length === 0) return;
-    //   console.log({ urls })
-    //   console.log(2)
-
-    //   const url = new URL(urls[0]!);
-    //   const path = new URL(document.URL);
-
-    //   path.search = url.search;
-    //   path.pathname = url.pathname;
-    //   console.log({path})
-    //   window.location.href = path.href;
-    // })
+    const params = new URLSearchParams(location.search);
+    if (params.has('state') && (params.has('code') || params.has('error'))) {
+      const cbResult = await client.initCallback(params, client.clientMetadata.redirect_uris[0]);
+      if (cbResult?.session) {
+        return {
+          session: cbResult.session,
+          agent: new Agent(cbResult.session as any),
+          state: cbResult.state,
+        };
+      }
+    }
   }
+
   const result = await client.init();
   if (result?.session) {
     return {
@@ -380,10 +403,14 @@ export async function login(
   // Forward `state` so the app can round-trip a return URL through the PDS.
   // The value comes back unchanged via `initSession()`'s `state` field.
   console.log('pre signin on client:', client)
-  if (!('__TAURI__' in window)) return await client.signIn(handle, opts.state ? { state: opts.state } : undefined);
+  const tauri = window.__TAURI__;
+  if (!tauri) {
+    await client.signIn(handle, opts.state ? { state: opts.state } : undefined);
+    return;
+  }
 
-  const { openUrl } = window.__TAURI__.opener;
-  const { onOpenUrl } = window.__TAURI__.deepLink;
+  const { openUrl } = tauri.opener;
+  const { onOpenUrl } = tauri.deepLink;
   const url = await client.authorize(handle, opts.state ? { state: opts.state } : undefined);
   console.log({ url })
   openUrl(url)
