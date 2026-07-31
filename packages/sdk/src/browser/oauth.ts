@@ -337,6 +337,13 @@ export interface InitSessionOptions {
    * signing in and redirect back to it after the PDS callback.
    */
   state?: string;
+  /**
+   * How long the Tauri login flow may stay pending before `login()`
+   * resolves with `null` (user abandoned auth). Defaults to 10 minutes,
+   * matching the PDS authorization-code / PKCE-state expiry — a callback
+   * that arrives after this can never succeed, so giving up is safe.
+   */
+  loginTimeoutMs?: number;
 }
 
 /**
@@ -380,6 +387,27 @@ async function waitForDeepLink(
       .then((unlistenFn) => {
         unlisten = unlistenFn;
       });
+  });
+}
+
+/**
+ * Resolve with `promise`'s value, or `null` if it hasn't settled within
+ * `timeoutMs`. Keeps `login()`'s abandoned-flow guarantee even when an
+ * intermediate step (e.g. the opener IPC) never settles.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
   });
 }
 
@@ -452,8 +480,27 @@ export async function login(
     return null; // unreachable — the browser has navigated to the PDS
   }
 
+  // Race the whole Tauri flow (opener IPC, deep-link wait, callback) against
+  // a timeout so an abandoned login ALWAYS resolves (`null`), letting the
+  // caller revert its loading state. `waitForDeepLink` alone can't guarantee
+  // this: the opener IPC promise or the deep-link listener could in theory
+  // never settle, and the flow must not hang on them.
+  const timeoutMs = opts.loginTimeoutMs ?? 10 * 60_000;
+  return withTimeout(tauriLogin(client, handle, opts, tauri), timeoutMs);
+}
+
+async function tauriLogin(
+  client: BrowserOAuthClient,
+  handle: string,
+  opts: InitSessionOptions,
+  tauri: NonNullable<Window["__TAURI__"]>,
+): Promise<LoginResult | null> {
   const url = await client.authorize(handle, opts.state ? { state: opts.state } : undefined);
-  await tauri.opener.openUrl(url);
+
+  // Fire-and-forget: `openUrl`'s IPC promise may never settle on some
+  // platforms, and we only need the system browser to have launched to start
+  // waiting for the deep link.
+  void tauri.opener.openUrl(url).catch(() => {});
 
   const deepUrl = await waitForDeepLink(tauri.deepLink);
   if (!deepUrl) return null;
