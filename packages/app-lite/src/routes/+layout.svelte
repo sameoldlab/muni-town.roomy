@@ -24,7 +24,6 @@
 
   // Debug: log all public env vars
   import { env as dynamicEnv } from "$env/dynamic/public";
-  import { page } from "$app/state";
 
   console.log("[app-lite env debug] import.meta.env (static):", {
     VITE_APPSERVER_DID: import.meta.env.VITE_APPSERVER_DID,

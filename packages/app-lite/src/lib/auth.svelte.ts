@@ -1,4 +1,5 @@
 import { Agent, AtpAgent } from "@atproto/api";
+import { BrowserOAuthClient } from "@atproto/oauth-client-browser";
 import {
   initSession,
   login as sdkLogin,
@@ -144,31 +145,71 @@ export async function init() {
       void subscribeIfAlreadyPermitted();
       return;
     }
-    console.log({CONFIG})
-    const result = await initSession(CONFIG.appserverDid, {
-      port: CONFIG.port,
-      scope: OAUTH_SCOPE,
-      usePublicClient: CONFIG.usePublicClient,
-    });
-    console.log({result, url: page.url })
-    if (result) {
-      session = result.session;
-      agent = result.agent;
-      await setupDirectXrpc(result.agent);
-      authenticated = true;
+    console.log({ CONFIG })
+    if ('__TAURI__' in window) {
+      // OAuth callback fallback for Tauri / native environments where the
+      // current origin doesn't match any registered redirect URI:
+      //   BrowserOAuthClient.init() → readCallbackParams() finds params
+      //   → findRedirectUrl() mismatches → falls to initRestore() → null.
+      const params = new URLSearchParams(location.search);
+      if (params.has('state') && (params.has('code') || params.has('error'))) {
+        const nativeClient = new BrowserOAuthClient({
+          clientMetadata: {
+            "client_id": "https://roomy.space/oauth-client-native.json",
+            "redirect_uris": ["space.roomy:/", "https://roomy.space/"],
+            "application_type": "native",
+            "client_name": "Roomy Lite",
+            "client_uri": "https://roomy.space",
+            "logo_uri": "https://roomy.space/favicon.png",
+            "scope": "atproto rpc:app.bsky.actor.getProfiles?aud=* rpc:app.bsky.actor.getProfile?aud=* blob:*/* repo:space.roomy.upload.v0 repo:space.roomy.space.handle.dev repo:space.roomy.space.personal.dev repo:space.roomy.user.profile rpc:com.atproto.server.getServiceAuth?aud=did:web:api.roomy.space rpc:space.roomy.space.getSpaces?aud=* rpc:space.roomy.space.getMetadata?aud=* rpc:space.roomy.space.getSpaceSummary?aud=* rpc:space.roomy.space.getThreads?aud=* rpc:space.roomy.space.getRoles?aud=* rpc:space.roomy.space.getMembers?aud=* rpc:space.roomy.space.getInvites?aud=* rpc:space.roomy.room.getMetadata?aud=* rpc:space.roomy.room.getRoomSummary?aud=* rpc:space.roomy.room.getMessages?aud=* rpc:space.roomy.room.getThreads?aud=* rpc:space.roomy.message.getMessage?aud=* rpc:space.roomy.message.getReactions?aud=* rpc:space.roomy.auth.getConnectionTicket?aud=* rpc:space.roomy.getFlags?aud=* rpc:space.roomy.room.updateSeen?aud=* rpc:space.roomy.space.sendEvents?aud=* rpc:space.roomy.space.createSpace?aud=* rpc:space.roomy.space.joinSpace?aud=* rpc:space.roomy.space.leaveSpace?aud=* rpc:space.roomy.space.setHandle?aud=* rpc:space.roomy.space.getCalendarLink?aud=* rpc:space.roomy.space.getCalendarEvents?aud=* rpc:space.roomy.space.getActivityFeed?aud=* rpc:space.roomy.user.getProfile?aud=* rpc:space.roomy.push.getVapidPublicKey?aud=* rpc:space.roomy.push.getPreferences?aud=* rpc:space.roomy.push.registerSubscription?aud=* rpc:space.roomy.push.unregisterSubscription?aud=* rpc:space.roomy.push.setPreferences?aud=*",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            "dpop_bound_access_tokens": true
+          },
+          responseMode: 'query',
+          handleResolver: 'https://bsky.social',
+        });
+        const cbResult = await nativeClient.initCallback(params, 'space.roomy:/');
+        session = cbResult.session;
+        agent = new Agent(cbResult.session);
+        await setupDirectXrpc(agent);
+        authenticated = true;
 
-      // After an OAuth callback the browser lands on the fixed redirect URI
-      // (the homepage). If we round-tripped the original URL through the
-      // `state` parameter in `login()`, navigate back to it now. On a plain
-      // session restore (reload) `result.state` is undefined, so we stay put.
-      const returnUrl = safeReturnUrl(result.state);
-      if (returnUrl && returnUrl !== currentReturnUrl()) {
-        goto(returnUrl, { replaceState: true });
+        const returnUrl = safeReturnUrl(cbResult.state);
+        if (returnUrl && returnUrl !== currentReturnUrl()) {
+          goto(returnUrl, { replaceState: true });
+        }
+
+        void subscribeIfAlreadyPermitted();
       }
-      // Re-register this device's push subscription in case the browser
-      // rotated the endpoint (Chrome/FCM does this periodically). No-op if
-      // push is unsupported/unconfigured or permission was never granted.
-      void subscribeIfAlreadyPermitted();
+    } else {
+      const result = await initSession(CONFIG.appserverDid, {
+        port: CONFIG.port,
+        scope: OAUTH_SCOPE,
+        usePublicClient: CONFIG.usePublicClient,
+      });
+      console.log({ result, url: page.url })
+      if (result) {
+        session = result.session;
+        agent = result.agent;
+        await setupDirectXrpc(result.agent);
+        authenticated = true;
+
+        // After an OAuth callback the browser lands on the fixed redirect URI
+        // (the homepage). If we round-tripped the original URL through the
+        // `state` parameter in `login()`, navigate back to it now. On a plain
+        // session restore (reload) `result.state` is undefined, so we stay put.
+        const returnUrl = safeReturnUrl(result.state);
+        if (returnUrl && returnUrl !== currentReturnUrl()) {
+          goto(returnUrl, { replaceState: true });
+        }
+        // Re-register this device's push subscription in case the browser
+        // rotated the endpoint (Chrome/FCM does this periodically). No-op if
+        // push is unsupported/unconfigured or permission was never granted.
+        void subscribeIfAlreadyPermitted();
+
+      }
     }
   } catch (err) {
     initError = String(err);
