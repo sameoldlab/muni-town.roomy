@@ -188,14 +188,26 @@ export async function login(handle: string) {
   // Remember the page the user was on so `init()` can send them back here
   // after the PDS redirects to the fixed OAuth redirect URI (the homepage).
   const returnUrl = currentReturnUrl();
-  console.log({ returnUrl })
-  const res = await sdkLogin(CONFIG.appserverDid, handle, {
+  const result = await sdkLogin(CONFIG.appserverDid, handle, {
     port: CONFIG.port,
     scope: OAUTH_SCOPE,
     usePublicClient: CONFIG.usePublicClient,
     state: returnUrl,
   });
-  console.log({ res })
+  // Tauri: `sdkLogin` blocks until the deep-link redirect arrives and
+  // processes it in place — no page reload, so no white-flash/spinner.
+  // `result` is `null` when the user rejected/abandoned auth, in which case
+  // the login modal simply stays as-is.
+  if (result?.session) {
+    session = result.session;
+    agent = result.agent;
+    await setupDirectXrpc(result.agent);
+    authenticated = true;
+    const target = safeReturnUrl(result.state) ?? returnUrl;
+    if (target && target !== currentReturnUrl()) {
+      goto(target, { replaceState: true });
+    }
+  }
 }
 
 /**

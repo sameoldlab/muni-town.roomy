@@ -255,7 +255,6 @@ export async function createOAuthClient(
       responseMode: "query",
     });
   } else if ('__TAURI__' in window) {
-    console.log('in tauri')
     return new BrowserOAuthClient({
       clientMetadata: {
       "client_id": "https://roomy.space/oauth-client-native.json",
@@ -347,10 +346,47 @@ export interface InitSessionOptions {
  * is the OAuth `state` value round-tripped through the PDS (present only
  * when this call processed an OAuth callback, not a plain session restore).
  */
+export interface LoginResult {
+  session: OAuthSession;
+  agent: Agent;
+  state?: string | null;
+}
+
+/**
+ * Wait for the next deep-link event targeting this app. Resolves with the
+ * first URL (e.g. `space.roomy:/?state=…&code=…`) or `null` on timeout.
+ * The listener is removed on the first event (or after the timeout), so a
+ * callback that arrives after `login()` gave up is silently dropped — which
+ * is fine: the PDS authorization code and the client's PKCE state both
+ * expire after ~10 minutes, so a late callback could never succeed anyway.
+ */
+async function waitForDeepLink(
+  deepLink: NonNullable<Window["__TAURI__"]>["deepLink"],
+  timeoutMs = 10 * 60_000,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let unlisten: (() => void) | undefined;
+    const done = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unlisten?.();
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    deepLink
+      .onOpenUrl((urls) => done(urls[0] ?? null))
+      .then((unlistenFn) => {
+        unlisten = unlistenFn;
+      });
+  });
+}
+
 export async function initSession(
   appserverDid: string,
   opts: InitSessionOptions = {},
-): Promise<{ session: OAuthSession; agent: Agent; state?: string | null } | null> {
+): Promise<LoginResult | null> {
   const client = await createOAuthClient(appserverDid, opts);
 
   /* 
@@ -390,44 +426,55 @@ export async function initSession(
 }
 
 /**
- * Initiate an OAuth sign-in flow. This will redirect the browser to the
- * PDS authorization page; the promise does **not** resolve in the current
- * page context (the browser navigates away).
+ * Initiate an OAuth sign-in flow.
+ *
+ * Web: redirects the browser to the PDS authorization page; the promise does
+ * **not** resolve in the current page context (the browser navigates away)
+ * and the returned `null` is never reached.
+ *
+ * Tauri: opens the PDS in the system browser, then **blocks** until the
+ * deep-link redirect (`space.roomy:/?state=…&code=…`) arrives and processes
+ * the callback in place. Returns `{ session, agent, state }` on success, or
+ * `null` if the user rejected the request, abandoned the flow (10-minute
+ * timeout), or the callback state was invalid.
  */
 export async function login(
   appserverDid: string,
   handle: string,
   opts: InitSessionOptions = {},
-): Promise<void> {
+): Promise<LoginResult | null> {
   const client = await createOAuthClient(appserverDid, opts);
   // Forward `state` so the app can round-trip a return URL through the PDS.
-  // The value comes back unchanged via `initSession()`'s `state` field.
-  console.log('pre signin on client:', client)
+  // The value comes back unchanged via the `state` field of the result.
   const tauri = window.__TAURI__;
   if (!tauri) {
     await client.signIn(handle, opts.state ? { state: opts.state } : undefined);
-    return;
+    return null; // unreachable — the browser has navigated to the PDS
   }
 
-  const { openUrl } = tauri.opener;
-  const { onOpenUrl } = tauri.deepLink;
   const url = await client.authorize(handle, opts.state ? { state: opts.state } : undefined);
-  console.log({ url })
-  openUrl(url)
-  await onOpenUrl((urls: string[]) => {
-    if (!urls || urls.length === 0) return;
-    console.log({ urls })
+  await tauri.opener.openUrl(url);
 
-    const url = new URL(urls[0]!);
-    const path = new URL(document.URL);
-    console.log(1)
+  const deepUrl = await waitForDeepLink(tauri.deepLink);
+  if (!deepUrl) return null;
 
-    path.search = url.search;
-    path.pathname = url.pathname;
-    console.log({href: path.href})
-    window.location.href = path.href;
-  })
+  const params = new URLSearchParams(new URL(deepUrl).search);
+  if (!params.has("state")) return null;
 
+  try {
+    const cbResult = await client.initCallback(params, client.clientMetadata.redirect_uris[0]);
+    if (!cbResult?.session) return null;
+    return {
+      session: cbResult.session,
+      agent: new Agent(cbResult.session as any),
+      state: cbResult.state,
+    };
+  } catch (err) {
+    // OAuthCallbackError — user rejected (error=access_denied) or invalid
+    // state (PKCE state expired while the user was away).
+    console.error("OAuth callback failed:", err);
+    return null;
+  }
 }
 
 /**
