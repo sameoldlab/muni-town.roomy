@@ -47,4 +47,6 @@ mise.toml
 
 # Worktrees
 .worktrees/
+# Per-repo omp agent system-prompt config (local, not shared)
+.omp/
 /packages/app-lite/src-tauri/gen/android

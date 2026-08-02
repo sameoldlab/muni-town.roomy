@@ -34,16 +34,19 @@ DEV_NAME="dev-${SAFE_NAME//\//-}"
 # --- Clean up any previous container ---
 docker rm -f "$DEV_NAME" 2>/dev/null || true
 
+# --- Ensure the roomy-dev network exists (so agents can reach this by name) ---
+docker network inspect roomy-dev >/dev/null 2>&1 || docker network create roomy-dev >/dev/null
+
 # --- Start dev server ---
-echo "Starting dev server: $DEV_NAME on port $PORT"
+echo "Starting dev server: $DEV_NAME on port $PORT (roomy-dev)"
 docker run -d \
   --name "$DEV_NAME" \
   -v "$WORKTREE_PATH:/app" \
   -p "$PORT:$PORT" \
-  -e "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=dev-$SAFE_NAME" \
   -e "VITE_PORT=$PORT" \
-  --network host \
+  --network roomy-dev \
   node:22 \
   bash -c "cd /app/packages/app-lite && npm i -g pnpm && npx vite dev --host 0.0.0.0 --port $PORT"
 echo "✔ Dev server started (http://localhost:$PORT)"
+echo "  Agent (roomy-dev) → http://$DEV_NAME:$PORT"
 echo "To stop: docker rm -f $DEV_NAME"

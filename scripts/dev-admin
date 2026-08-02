@@ -40,9 +40,9 @@ docker run -d \
   --name "$DEV_NAME" \
   -v "$WORKTREE_PATH:/app" \
   -p "$PORT:$PORT" \
-  -e "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=dev-admin-$SAFE_NAME" \
+  -e "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=host.docker.internal" \
   -e "VITE_PORT=$PORT" \
-  --network host \
+  --network bridge \
   node:22 \
   bash -c "cd /app/packages/appserver-admin && npm i -g pnpm && npx vite dev --host 0.0.0.0 --port $PORT"
 echo "✔ Dev server started (http://localhost:$PORT)"
