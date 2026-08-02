@@ -84,8 +84,11 @@ import { READSTATE_SCHEMA_VERSION } from "./readStateDb.ts";
  * so `getSpaces` returned nothing for users whose membership was rebuilt
  * from the event log. Rebuild the SDK, then wipe again so edges are written
  * with `head = userDid`.
+ * 
+ * `.10-appserver.10`: forcing rematerialisation on prod due to aborted 
+ * materialisation error.
  */
-export const SCHEMA_VERSION = "10-appserver.9";
+export const SCHEMA_VERSION = "10-appserver.10";
 
 const DEFAULT_DB_PATH = process.env.APPSERVER_DB_PATH ?? "data/roomy.sqlite";
 
@@ -114,13 +117,18 @@ export function openDb(opts: OpenDbOptions = {}): AsyncDatabase {
 
   // Init is fire-and-forget; the returned proxy queues requests until init
   // completes. The caller should await the result if they need to know when
-  // the DB is ready.
-  db.init({
+  // the DB is ready. The rejection is handled here: a failed init surfaces
+  // as an error on the first queued request (the worker replies to queued
+  // requests with the init error), so the un-awaited init promise must not
+  // become an unhandled rejection when the DB is closed mid-init.
+  void db.init({
     mainDbPath: path,
     readStateDbPath: process.env.READSTATE_DB_PATH ?? "data/roomy-readstate.sqlite",
     eventsDbPath: process.env.EVENTS_DB_PATH ?? "data/roomy-events.sqlite",
     schemaVersion: SCHEMA_VERSION,
     readStateSchemaVersion: READSTATE_SCHEMA_VERSION,
+  }).catch(() => {
+    // Error already propagates via the first queued request's response.
   });
 
   if (!opts.isolated) dbInstance = db;

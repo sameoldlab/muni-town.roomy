@@ -312,7 +312,9 @@ All XRPC queries, procedures, and the WebSocket sync connection go to the local 
 
 Both `svelte-check` (app-lite) and `tsc --noEmit` (appserver) report pre-existing errors on `main` that are **not** introduced by your changes. When verifying, diff the error count against a clean checkout rather than treating any error as new. Current baseline: app-lite has 3 errors (SDK `RateLimitRetryOptions` export, tiptap `LinkOptions`, `Storage.markdown`); appserver has 36 errors (test files with brand types).
 
-The appserver has 25 test files (~240 tests) runnable via `bun test`. Tests use mocked DBs — they exercise materialization, auth, invalidation, and XRPC handler logic at the unit level. There are no integration tests that boot the HTTP server and exercise XRPC endpoints end-to-end yet.
+The appserver has 39 test files (451 tests: 450 pass, 1 skip) runnable via `bun test`. Tests use mocked DBs — they exercise materialization, auth, invalidation, and XRPC handler logic at the unit level. There are no integration tests that boot the HTTP server and exercise XRPC endpoints end-to-end yet.
+
+**`openDb()` init is fire-and-forget** (`src/db/db.ts`): the worker queues requests until init completes, and the un-awaited init promise has a `.catch()` attached — a failed init surfaces as an error on the first queued request's response, not as an unhandled rejection. A test run must report `0 errors` (not just `0 fail`); a `# Unhandled error between tests` block in the output is a regression.
 
 ### Deployment Targets
 
