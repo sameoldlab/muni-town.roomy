@@ -191,6 +191,24 @@ export const UpdateSpaceInfo = defineEvent(
 
     return [
       ensureEntity(streamId, event.id),
+      // Ensure the space's own entity row exists so the comp_space FK
+      // resolves during re-materialization from the events DB (after a
+      // schema-version wipe, the entities row that createStream wrote is
+      // gone and only the event log survives). addAdmin also does this,
+      // but updateSpaceInfo may be replayed first (or alone) for spaces
+      // whose addAdmin event isn't in the log.
+      ensureEntity(streamId, streamId),
+      // Always ensure a comp_space row exists for this space. Without this,
+      // a space created with only a name (no allowPublicJoin /
+      // allowMemberInvites) never gets a comp_space row from its own stream
+      // — it only gets one incidentally when a member's PersonalJoinSpace
+      // event materializes. If that personal-join doesn't land (or on
+      // re-materialization of just the space stream), getMetadata 404s.
+      sql`
+        insert into comp_space (entity)
+        values (${streamId})
+        on conflict do nothing
+      `,
       setInfoUpdates.length > 0
         ? {
             sql: `insert into comp_info (entity, ${setInfoUpdates.map((x) => x.key).join(", ")})

@@ -61,8 +61,18 @@ import { READSTATE_SCHEMA_VERSION } from "./readStateDb.ts";
  * events (bridged users) and prior fetches. Wipe re-materialises with
  * the fixed insert strategy (Bluesky fallback uses `on conflict do
  * nothing`, never writes handle as name).
+ *
+ * `.10-appserver.7`: SDK `UpdateSpaceInfo` materialiser now always ensures
+ * a `comp_space` row (and the space's own `entities` row) exists, even when
+ * the event carries only name/description (no space-level fields). Without
+ * this, spaces created via `createDefaultSpaceEvents` (the default path)
+ * never got a `comp_space` row from their own stream — they only got one
+ * incidentally when a member's `PersonalJoinSpace` materialised. After a
+ * schema-version wipe, re-materialization from the event log failed to
+ * recreate `comp_space` (FK constraint), so `getMetadata` returned 404 and
+ * the frontend couldn't navigate to any space. Wipe re-derives the rows.
  */
-export const SCHEMA_VERSION = "10-appserver.6";
+export const SCHEMA_VERSION = "10-appserver.7";
 
 const DEFAULT_DB_PATH = process.env.APPSERVER_DB_PATH ?? "data/roomy.sqlite";
 

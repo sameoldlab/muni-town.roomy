@@ -148,17 +148,17 @@ describe("reMaterializeFromLocalEvents", () => {
     const compSpace1 = await db
       .query("select count(*) as cnt from comp_space")
       .get<{ cnt: number }>();
-    // comp_space row is only created when updateSpaceInfo sets space-level
-    // fields (allowPublicJoin, allowMemberInvites). Default space events
-    // only set name/description, so no comp_space row is inserted.
-    expect(compSpace1!.cnt).toBe(0);
+    // updateSpaceInfo always ensures a comp_space row exists (even with
+    // only name/description set) so getMetadata doesn't 404 on spaces
+    // whose only materialization comes from their own stream events.
+    expect(compSpace1!.cnt).toBe(1);
 
     // Verify key columns are populated
     const spaceRow1 = await db
       .query("select entity, handle, sidebar_config from comp_space where entity = ?")
       .get<{ entity: string; handle: string | null; sidebar_config: string }>(streamDid);
-    // No comp_space row was created, so this should be null
-    expect(spaceRow1).toBeNull();
+    expect(spaceRow1).not.toBeNull();
+    expect(spaceRow1!.entity).toBe(streamDid);
     const infoRow1 = await db
       .query("select entity, name from comp_info where entity = ?")
       .get<{ entity: string; name: string | null }>(streamDid);
@@ -192,8 +192,8 @@ describe("reMaterializeFromLocalEvents", () => {
     const spaceRow2 = await db
       .query("select entity, handle, sidebar_config from comp_space where entity = ?")
       .get<{ entity: string; handle: string | null; sidebar_config: string }>(streamDid);
-    // Still no comp_space row
-    expect(spaceRow2).toBeNull();
+    expect(spaceRow2).not.toBeNull();
+    expect(spaceRow2!.entity).toBe(streamDid);
 
 
     const infoRow2 = await db
@@ -240,18 +240,17 @@ describe("reMaterializeFromLocalEvents", () => {
       .get<{ cnt: number }>(stream2);
     expect(stream2Entities!.cnt).toBeGreaterThan(0);
 
-    // comp_space row is only created when updateSpaceInfo sets space-level
-    // fields (allowPublicJoin, allowMemberInvites). Default space events
-    // only set name/description, so no comp_space row is inserted.
+    // updateSpaceInfo always ensures a comp_space row exists for each
+    // space (see idempotent re-apply test), so both streams get one.
     const stream1Space = await db
       .query("select count(*) as cnt from comp_space where entity = ?")
       .get<{ cnt: number }>(stream1);
-    expect(stream1Space!.cnt).toBe(0);
+    expect(stream1Space!.cnt).toBe(1);
 
     const stream2Space = await db
       .query("select count(*) as cnt from comp_space where entity = ?")
       .get<{ cnt: number }>(stream2);
-    expect(stream2Space!.cnt).toBe(0);
+    expect(stream2Space!.cnt).toBe(1);
 
     // Each stream's comp_info should have the correct name
     const info1 = await db
