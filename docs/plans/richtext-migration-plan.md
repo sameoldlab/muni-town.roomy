@@ -24,13 +24,16 @@ The target shape (from the research doc):
           {"$type":"space.roomy.richtext.facet#didMention","did":"did:plc:alice"}
         ]},
         { "index": {"byteStart":17,"byteEnd":46}, "features": [
-          {"$type":"space.roomy.richtext.facet#link","uri":"https://roomy.space/did:plc:..."},
-          {"$type":"app.bsky.richtext.facet#link","uri":"https://roomy.space/did:plc:..."}
+          {"$type":"space.roomy.richtext.facet#link","uri":"https://roomy.space/did:plc:..."}
         ]}
       ] }
   ]
 }
 ```
+
+> The shape above is the **PDS record** (`space.roomy.richtext.document`). How it is carried in `space.roomy.message.createMessage.v0`'s `body` (the DRISL event) and in the appserver's `comp_content.data` blob is decided separately in §3.1 — the record itself is a typed lexicon object with no mimeType/bytes envelope.
+
+> Facet indices are **UTF-8 byte offsets** (`byteStart` inclusive, `byteEnd` exclusive) — matching `app.bsky.richtext.facet#byteSlice` exactly (Leaflet's `#byteSlice` is identical). Note Frazee's "Why RichText facets" post illustrates with `index: { start, end }` on ASCII text, which never distinguishes bytes from codepoints; the shipped lexicon he authored is explicit: "Indices are zero-indexed, counting bytes of the UTF-8 encoded text." `maxGraphemes` (a length limit, not an index) is the only grapheme-based constraint in the model. JS callers must convert UTF-16 string offsets to byte offsets (§7 risk table).
 
 ---
 
@@ -103,13 +106,19 @@ This is the complete, verified inventory of every code path that touches message
 
 These are the cross-cutting decisions that affect every slice. They must be decided first because every phase depends on them.
 
-### 3.1 Wire encoding: JSON string vs CBOR bytes
+### 3.1 Wire encoding (DECIDED): JSON over the wire, typed record on PDS
 
-The current `Content.data` is a `Bytes` blob (CBOR-encoded). The new structured body could be:
-- **(a)** A JSON string encoded as UTF-8 bytes with `mimeType: "application/vnd.roomy.richtext+json"` — simplest, human-debuggable, matches Leaflet/OXA (which store text+facets as JSON in CBOR maps).
-- **(b)** A CBOR map with `mimeType: "application/vnd.roomy.richtext+cbor"` — more compact, native to ATProto's data model, but harder to inspect.
+Three distinct layers of encoding get conflated under "CBOR". **Decision: JSON everywhere the payload crosses a boundary we control; DAG-CBOR only at the ATProto repo layer, where it is automatic.**
 
-**Recommendation:** JSON string (option a) inside the existing `Bytes` envelope, mirroring how Leaflet stores its blocks. The `Content` envelope stays `{ mimeType, data }`; only the decoded payload changes shape. This minimizes structural change and keeps debuggability.
+**Layer 1 — the ATProto record: typed lexicon, DAG-CBOR, automatic.** The target shape in §1 is a typed lexicon record: `space.roomy.richtext.document` with `blocks` and `facets` as first-class, open-union lexicon fields. There is no mimeType/bytes envelope in the record. This is exactly what Leaflet does: `pub.leaflet.document` → `linearDocument.blocks[]` → `#text` blocks carry `plaintext: string` + `facets: array` as typed lexicon fields; the record is then DAG-CBOR-encoded by the SDK as ATProto's repo format (CBOR text-strings and arrays — not a JSON blob inside a `bytes` field). So when we write these records to user PDSes via `putRecord`, "encode to CBOR" happens automatically at the repo layer — mandatory, not a choice, and it does not make the payload opaque.
+
+**Layer 2 — the DRISL event body (where the `Content` envelope actually lives).** Today `space.roomy.message.createMessage.v0` carries `body: Content { mimeType, data: bytes }`. The `Content` envelope is an event-store framing artifact, not a PDS representation. **Decided: keep the envelope and serialize the document as JSON UTF-8 bytes with `mimeType: "application/vnd.roomy.richtext+json"`.** This matches the existing wire reality — events already travel as JSON over XRPC (`sendEvents` → `space.roomy.space.sendEvents`, `Content-Type: application/json`, with `data` base64 inside) — and the appserver is the only reader of the event store, so debuggability wins. CBOR in the envelope was rejected: it buys nothing (the event store is internal and the appserver materializes to SQLite anyway) and costs inspectability.
+
+> **Rejected alternative (Layer 2b):** making the event body the typed document itself (`body: RichTextDocument`, `$type` discriminates, no mimeType) is the most typed-lexicon-consistent shape, but it is a structural change to the event schema, materializers, and every producer. Revisit if the mimeType discriminator ever becomes a liability.
+
+**Layer 3 — the appserver SQLite blob (`comp_content.data`).** Opaque blob, mimeType-discriminated (§3.2). JSON bytes. Unaffected by the record question.
+
+**Record-write note:** a JSON string inside a CBOR byte-string is opaque to the PDS and valid on-protocol. The `space.roomy.richtext.document` record has **no `bytes` fields**, so the SDK's `{ $bytes: base64 }` JSON form (`packages/sdk/src/schema/primitives.ts:42-50`) never appears in it — that caveat only matters if a future record embeds raw bytes (e.g. attachments), where the `BytesWrapper` instance (not its JSON form) must be passed to the encoder.
 
 ### 3.2 The `comp_content.data` blob in the appserver DB
 
@@ -137,10 +146,20 @@ The team wants blocks and facets to be open unions. In ATProto lexicons, a union
 
 ### 3.5 Cross-namespace compatibility facets
 
-Per the research doc: emit `app.bsky.richtext.facet#link` alongside `space.roomy.richtext.facet#link` so Bluesky-ecosystem readers render links without understanding Roomy. Do the same for mentions where a DID is involved (`app.bsky.richtext.facet#mention`).
+Per the research doc: emit `app.bsky.richtext.facet#link` alongside `space.roomy.richtext.facet#link` so Bluesky-ecosystem readers render links without understanding Roomy, and `app.bsky.richtext.facet#mention` alongside `#didMention`.
 
-**Recommendation:** Adopt this from day one. It costs one extra feature object per link/mention and buys interop.
+**Decision: do NOT adopt the cross-namespace twins.** Roomy's facet features are a single unified semantic model: one `$type` per kind of annotation (`#link`, `#didMention`, `#roomRef`, typography), no namespace echoes. If the community converges on a shared standard later, Roomy adopts it via the same migration machinery as the markdown→blocks backfill (re-encode records, coexistence branch during the transition). Emitting a foreign lexicon's features on day one was rejected for three reasons:
 
+- **Messy dedup.** Twins are semantic duplicates on the same `byteSlice`; every consumer (renderers, embed extraction, mentions extraction, push plaintext) must key on `(byteSlice, semantic-kind)` and skip the echo — an extra rule with real failure modes (duplicate embed rows, double-notified mentions).
+- **Asymmetric risk.** Bluesky's feature union is *closed* and controlled by another team; our twins would be the only place Roomy depends on a foreign union's members, and we'd be betting the interop value on a namespace we don't own.
+- **Open-union philosophy.** An open union declares "unknown members are tolerated"; echoing known members of a closed foreign union contradicts that posture and makes the Roomy lexicon's own member set harder to read.
+
+**Tradeoffs accepted:**
+
+- **In-place third-party rendering** (public space / shared view read by a facet-aware ATProto renderer): third-party renderers will render Roomy's `#link`/`#didMention` *structure* (byte-indexed, same shape as `app.bsky.richtext.facet`) only if they implement Roomy's lexicon. Bluesky-native renderers show the plain `text` with no links/mentions until a standard converges. Accepted — it is a rendering nicety, not data loss (the `uri`/`did` values are in the record either way).
+- **Explicit share/crosspost (Roomy → `app.bsky.feed.post`)**: the exporter must map features to Bluesky's closed union at export time (drop typography/`#roomRef`, `#didMention`→`#mention`, `#link`→`#link`) and rebase indices to post-global offsets — work that was never actually saved by the twins (§3.5 analysis above). No change to the Roomy record itself.
+
+**Convergence path:** when a community standard emerges (e.g. an agreed shared facet namespace or a `document` record shape), Roomy adds the standard's features *in addition to* its own in a new generation, keeps the unified model for its own consumers, and migrates old records via backfill. The backfill script (`Phase 6`) is the same machinery — coexistence branch, mimeType discriminator, row-level idempotent conversion.
 ---
 
 ## 4. Phased plan
@@ -314,7 +333,7 @@ Each phase has a clear dependency: Foundation must land first (everyone consumes
 | **Mentions regression.** Push notifications, invalidation, and the app-lite send path all currently read the sidecar extension. If any consumer is missed, mentions silently stop working. | The `toAppliedEvent.ts` change is the single appserver consumer of mentions for push. Audit all `grep` hits for `extension.mentions` across the monorepo before removing the sidecar. Keep the sidecar during the transition window; have `toAppliedEvent` read facets first, fall back to sidecar. |
 | **Embed enrichment regression.** `detectAndStoreLinks` currently regex-scans decoded text. If the facet-based extraction misses URLs that the regex caught (e.g. bare URLs without a `#link` facet), embeds stop appearing. | The `proseMirrorDocToBlocks` converter must emit `#link` facets for *all* URLs, including auto-linked bare URLs (TipTap's `RichTextLink` has `autolink: true`). For backfilled markdown, `markdownToBlocks` must run the same autolink detection. Add a test: feed messages with bare URLs, wrapped URLs, and markdown `[text](url)` — assert all produce `#link` facets. |
 | **Discord round-trip fidelity.** Discord→Roomy→Discord must not lose content. Discord's markdown differs from Roomy's. | The `blocksToDiscordMarkdown` converter maps block types to Discord's markdown subset. Unknown blocks fall back to their `text`. Test the full round-trip with a representative Discord message set. |
-| **`comp_content.data` size growth.** JSON blocks+facets are larger than raw markdown for simple messages (overhead of block/facet structure). | Measure: for typical chat messages (1–3 paragraphs, 1–2 links), the JSON is ~1.5–2× the markdown. Acceptable for chat; monitor. If it matters, switch to CBOR encoding (decision 3.1b) later. |
+| **`comp_content.data` size growth.** JSON blocks+facets are larger than raw markdown for simple messages (overhead of block/facet structure). | Measure: for typical chat messages (1–3 paragraphs, 1–2 links), the JSON is ~1.5–2× the markdown. Acceptable for chat; monitor. If it matters, revisit encoding — but note CBOR inside the envelope is off the table by decision (§3.1): the fallback would be restructuring (e.g. a more compact block schema), not a new wire format. |
 | **Legacy markdown render path bit-rot.** The `marked` + DOMPurify path stays for months during coexistence. | Keep it behind the mimeType branch; don't let it bit-rot by running legacy messages through it in tests until backfill is done. |
 
 ---
@@ -338,7 +357,7 @@ Estimated timeline (assuming a team of 2–3): **~2 weeks** to coexistence (phas
 
 3. **Backfill timing.** Run backfill immediately after coexistence, or wait for a burn-in period? **Recommendation:** wait 1–2 weeks of coexistence in production, then backfill, then remove the legacy path.
 
-4. **CBOR vs JSON for the wire encoding.** JSON is recommended for v1 (debuggability). Revisit if storage/size becomes a concern. Should the mimeType be `application/vnd.roomy.richtext+json` or registered more formally?
+4. **MimeType registration.** **Decision: JSON wire encoding (§3.1) — settled.** Remaining question: register `application/vnd.roomy.richtext+json` more formally, or keep it as a private-use string?
 
 ---
 
