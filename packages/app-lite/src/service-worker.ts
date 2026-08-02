@@ -32,22 +32,37 @@ let cachedVapidKey: string | null = null;
 // (VAPID key message handling is merged into the main message listener below.)
 
 self.addEventListener("install", (event) => {
+  // Take over immediately so the new SW activates without waiting for all
+  // existing tabs to close.
+  self.skipWaiting();
+
+  // In dev, skip caching — the SW self-unregisters on activate anyway.
+  if (build.length === 0) return;
+
   // Create a new cache and add all files to it
-  async function addFilesToCache() {
+  event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     await cache.addAll(ASSETS);
-  }
-
-  // Take over immediately so the new SW (with push support) activates
-  // without waiting for all existing tabs to close. Without this, a user
-  // who keeps a tab open never gets the push-capable SW.
-  self.skipWaiting();
-  event.waitUntil(addFilesToCache());
+  })());
 });
 
 self.addEventListener("activate", (event) => {
-  // Remove previous cached data from disk
-  async function deleteOldCaches() {
+  async function activate() {
+    // In dev mode, unregister the SW entirely and wipe all caches. This
+    // ensures the old (prod-caching) SW that may have been registered
+    // previously is fully cleared — otherwise it keeps intercepting
+    // Vite's module requests with its network-first fetch handler,
+    // turning transient errors into permanent 404s. The browser will
+    // re-register the SW on the next page load (SvelteKit's auto-
+    // registration), but the new SW will also self-unregister in dev.
+    if (build.length === 0) {
+      for (const key of await caches.keys()) await caches.delete(key);
+      await self.registration.unregister();
+      await self.clients.claim();
+      return;
+    }
+
+    // Remove previous cached data from disk
     for (const key of await caches.keys()) {
       if (key !== CACHE) await caches.delete(key);
     }
@@ -56,7 +71,7 @@ self.addEventListener("activate", (event) => {
     await self.clients.claim();
   }
 
-  event.waitUntil(deleteOldCaches());
+  event.waitUntil(activate());
 });
 
 // Allow the page to trigger an immediate update by posting
@@ -80,6 +95,16 @@ self.addEventListener("fetch", (event: FetchEvent) => {
   // fetch it from the network to detect updates. Caching/serving it here
   // would freeze the SW at its current version forever.
   if (url.pathname === SW_PATH) return;
+
+  // In dev mode the `build` manifest is empty (SvelteKit only populates it at
+  // build time). Skip all fetch interception so Vite's dev server owns module
+  // serving, HMR, and dynamic imports. Without this the SW's network-first
+  // handler intercepts Vite's module requests (e.g.
+  // /.svelte-kit/generated/client/nodes/2.js?t=…), and any transient dev
+  // server error cascades into a permanent 404 (the SW returns
+  // `new Response(undefined, { status: 404 })` on cache miss), breaking
+  // client-side navigation to any route that loads a new node bundle.
+  if (build.length === 0) return;
 
   async function respond() {
     const cache = await caches.open(CACHE);
