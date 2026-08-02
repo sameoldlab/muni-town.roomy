@@ -5,22 +5,26 @@
 
 ## Problem
 
-The appserver uses a single SQLite database (`data/roomy.sqlite`) accessed through a single `Bun.Worker` thread. Every query, materialization batch, auth check, and embed sweep serializes through one `postMessage` queue. The perf review (`docs/.llm.perf-review.md`) documents the impact:
+The appserver runs **one `Bun.Worker` thread** that owns all SQLite I/O process-wide. That single worker currently manages **three ATTACHed databases** — materialised views (`data/roomy.sqlite`), read-state (`data/roomy-readstate.sqlite`), and the append-only event log (`data/roomy-events.sqlite`) — accessed through one `AsyncDatabase` proxy over one `postMessage` queue. Every query, materialization batch, auth check, and embed sweep serializes through that queue. The perf review (`docs/.llm.perf-review.md`) documents the impact:
 
 - 15–25 worker round-trips per materialized event
 - 1.5–2.5M round-trips for a 100k-event space backfill
 - All spaces' materialization queues on the same worker
 - All HTTP read queries serialize behind writes
 
-The root cause: **one DB file, one worker thread**. Most queries are scoped to a single space and are independent. Only a small minority join across spaces.
+The root cause: **one materialised-DB file, one worker thread**. (The event-log DB is append-only and read only by `reMaterializeFromLocalEvents` on boot plus the materializer's event reads — it is not on the read hot path and is out of scope for the split.) Most *read* queries are scoped to a single space and are independent. Only a small minority join across spaces.
+
+> **Context update since this doc was written.** Leaf is no longer part of the Roomy stack — the appserver owns its own event store (`data/roomy-events.sqlite`) and re-materializes from it on boot (`reMaterializeFromLocalEvents`). All "re-materialize from Leaf" references below are updated to "re-play from the local event store". The event-log DB itself is not split; it stays as one file.
 
 ## Proposal
 
-Split the monolithic DB into:
+Split the materialised-views DB into:
 
 1. **Per-space DBs** (`data/spaces/<spaceDid>.sqlite`) — the majority of materialized data, independently queryable
-2. **Global DB** (`data/global.sqlite`) — cross-space data (personal stream resolution, membership edges)
-3. **Read-state DB** (`data/roomy-readstate.sqlite`) — user-scoped state (read positions, thread activity) — already separate, stays as-is
+2. **Global DB** (`data/global.sqlite`) — cross-space data (membership edges)
+3. **Read-state DB** (`data/roomy-readstate.sqlite`) — user-scoped state (read positions, thread activity) — already a separate file, stays as-is
+
+> The **event-log DB** (`data/roomy-events.sqlite`) is a fourth database that is **not split** by this plan. It is the append-only source of truth and is shared across spaces; re-materialization reads it sequentially per stream on boot. It is owned by the same single worker today and stays there — per-space query workers only handle materialised views.
 
 A **worker pool** (N = 4–8, matching CPU cores) handles per-space DB requests. Hash-based routing ensures the same space always hits the same worker, enabling handle caching and prepared-statement reuse.
 
@@ -32,7 +36,7 @@ A **worker pool** (N = 4–8, matching CPU cores) handles per-space DB requests.
 |---|---|
 | `entities` | All space entities (rooms, messages, users, roles) |
 | `edges` | Member/admin/ban edges, role-room links, room links |
-| `comp_space` | Space config, backfill cursor |
+| `comp_space` | Space config |
 | `comp_room` | Room metadata (label, default_access, deleted) |
 | `comp_content` | Message content |
 | `comp_info` | Names, avatars, descriptions |
@@ -48,14 +52,20 @@ A **worker pool** (N = 4–8, matching CPU cores) handles per-space DB requests.
 | `roles` / `member_roles` / `role_rooms` | Role-based access control |
 | `activity_item` | Activity feed |
 | `comp_invite` | Invite tokens |
+| `materialization_cursor` | Per-stream materialization cursor (re-play progress) — currently in the materialised DB, moves per-space so each space DB tracks its own re-materialization progress |
 
 ### Global DB (stays)
 
 | Table | Purpose |
 |---|---|
-| `comp_user_personal_stream` | User DID → personal stream DID |
-| `edges` (joinedSpace/leftSpace labels only) | Personal stream → space membership |
-| `schema_version` | Migration tracking |
+| `edges` (joinedSpace/leftSpace labels only) | User DID → space membership (`head = userDid`, `tail = spaceDid`) |
+| `schema_version` | Migration tracking for the global schema |
+
+> Note: `comp_space.backfilled_to` — the eager-backfill cursor — moves to the per-space DB's `materialization_cursor` (above). The global DB has no per-space cursor.
+>
+> **Personal stream removal (2026-08):** The `comp_user_personal_stream` table and the `resolvePersonalStreamDid` resolver have been removed. `joinedSpace`/`leftSpace` edges now use `userDid` as `head` directly — no personal-stream DID indirection. The global DB is smaller than originally planned.
+>
+> **`leftSpace` durability (in scope for this plan):** Today `leftSpace` edges are written *only* by the `leaveSpace` handler directly (`recordLeftSpaceEdge`) — no event creates them. The `PersonalLeaveSpace` materialiser merely deletes the `joinedSpace` edge; the space-side `LeaveSpace` materialiser deletes the `member` edge. The global DB is derived/regenerable (see §1h/§1i), so any rebuild from the event log silently drops left-space history: `getSpaces?includeLeft=true` stops showing previously-left spaces until the user rejoins. **Making `leftSpace` durable across rebuilds is a prerequisite of this plan** — see the new §"Prerequisite: Event-Back the leftSpace Edge" below, because the split's recovery paths all depend on rebuild-from-event-log being lossless.
 
 ### Read-state DB (stays separate)
 
@@ -64,37 +74,46 @@ A **worker pool** (N = 4–8, matching CPU cores) handles per-space DB requests.
 | `read_positions` | Per-user, per-room read position + unread count |
 | `user_thread_activity` | Per-user, per-thread last activity timestamp |
 
+> Today the read-state DB is a **separate file** (`data/roomy-readstate.sqlite`) but is **not** a separate worker — it is opened and `ATTACH`ed into the same single worker as the materialised DB (`worker.ts` `handleInit`). This plan keeps the read-state DB as its own file; whether it also gets a dedicated worker is a separate decision. The split target diagram below shows it on a dedicated worker for clarity of the proposed topology.
+
 ## Cross-Space Queries (the minority)
 
 These queries touch data across spaces and need special handling:
 
-1. **`getSpaces`** — reads `edges` for `joinedSpace` from personal stream (global DB), then fans out to per-space DBs for name/avatar/unread count
+1. **`getSpaces`** — reads `edges` for `joinedSpace` from the global DB (`head = userDid`), then fans out to per-space DBs for name/avatar/unread count
 2. **`getActivityFeed` (no space filter)** — reads `activity_item` across all joined spaces. Fan-out to per-space DBs, merge in JS
 3. **`getSpaceUnreadCount`** — joins `read_positions` (read-state DB) with `entities.stream_id`. With per-space DBs, `stream_id` moves to per-space DBs. Solution: store `stream_id` in `read_positions` directly, or query per-space DB for entity existence
-4. **`userHydration`** — reads `comp_user_personal_stream` (global) and `edges` for `joinedSpace` (global). Pure global-DB work
+4. **`userHydration`** — reads `edges` for `joinedSpace` from the global DB (`head = userDid`). Pure global-DB work
 5. **Embed sweeper** — reads `comp_embed_link` / `comp_embed_link_data` across all spaces. Solution: maintain a global `pending_links` index table, dual-written during materialization
 6. **`inferSignals` → `handleCreateMessage`** — calls `selectMessages` which reads per-space data. Already per-space; just needs the right DB handle
 
 ## Architecture
 
-```
 ┌──────────────────────────────────────────────────────────┐
 │                      Main Thread                          │
 │                                                           │
 │  HTTP handlers → openDb(spaceDid) → pool-backed handle    │
 │  WS sync handler → routes signals by space                │
 │  Embed sweeper → reads global pending-links index         │
+│  reMaterializeFromLocalEvents → reads event-log DB        │
 │                                                           │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │  Global DB worker (1)                               │  │
 │  │    data/global.sqlite                               │  │
-│  │    comp_user_personal_stream, edges (joinedSpace)   │  │
+│  │    edges (joinedSpace/leftSpace, head = userDid)   │  │
 │  └─────────────────────────────────────────────────────┘  │
 │                                                           │
 │  ┌─────────────────────────────────────────────────────┐  │
-│  │  Read-state DB worker (1)                           │  │
+│  │  Read-state DB (1 worker, or ATTACHed as today)     │  │
 │  │    data/roomy-readstate.sqlite                      │  │
 │  │    read_positions, user_thread_activity              │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  Event-log DB (not split — stays single)            │  │
+│  │    data/roomy-events.sqlite                         │  │
+│  │    stream_events, stream_state, dids, did_keys,     │  │
+│  │    did_owners (append-only source of truth)         │  │
 │  └─────────────────────────────────────────────────────┘  │
 │                                                           │
 │  ┌─────────────────────────────────────────────────────┐  │
@@ -124,9 +143,27 @@ These queries touch data across spaces and need special handling:
 
 ---
 
+## Prerequisite: Event-Back the `leftSpace` Edge
+
+**Why:** Every recovery path in this plan — §1h's alternative rebuild from the event log, §1i's "global DB can be regenerated", and the corruption-recovery row in the risks table — assumes the global DB is fully reconstructible by replaying `data/roomy-events.sqlite`. Today that is false for `leftSpace` edges: they are written only by the `leaveSpace` handler (`recordLeftSpaceEdge`), no event materialises them, so a rebuild drops left-space history (`getSpaces?includeLeft=true` loses previously-left spaces until rejoin). This must be fixed before Phase 1's dual-write starts, or the global DB becomes the one piece of state that cannot be regenerated.
+
+**Change (SDK materialisers, mirrors what the `joinedSpace` edge already does):**
+
+1. **`PersonalLeaveSpace`** (in `space.roomy.space.personal.leaveSpace.v0` events) additionally writes a `leftSpace` edge (`head = user`, `tail = spaceDid`) alongside its existing deletion of the `joinedSpace` edge. `leftSpace` edges thus become event-backed and replayable, exactly like `joinedSpace`.
+2. **`PersonalJoinSpace`** additionally deletes any existing `leftSpace` edge (head = user, tail = spaceDid) — today only the handler's `removeLeftSpaceEdge` does this; the materialiser needs it so re-joining correctly clears left history during replay.
+3. **Handler fast-path stays:** `leaveSpace`/`joinSpace` keep writing/removing edges directly for read-after-write consistency; the materialiser is the durability backstop (idempotent, same as the existing `joinedSpace` dual path).
+
+**Migration:** This is a materialiser-logic change, not a schema change. Bump `SCHEMA_VERSION` (appserver `db.ts`) so the wipe+replay rebuilds edges from the now-complete materialiser output. Because the change is *additive* (new edges on replay), no data is lost by the wipe; existing handler-written `leftSpace` edges are dropped and re-derived from `personal.leaveSpace` events in the log.
+
+**Caveat — history before this change:** `leftSpace` edges that exist *before* this prerequisite ships were created by handlers only; their corresponding `personal.leaveSpace` events ARE in the event log, so replay reconstructs them. The only lossless gap is a leave that happens between the last schema wipe and this prerequisite — i.e. current production left markers do not survive the first wipe. That is the accepted, pre-existing rebuild behavior this prerequisite fixes going forward.
+
+**Verification:** seed events → run `reMaterializeFromLocalEvents` on a wiped DB → assert `leftSpace` edges exist for users whose `personal.leaveSpace` events replayed; `getSpaces?includeLeft=true` returns them with `isMember = false`.
+
 ## Phase 1: Schema Split + Dual-Write
 
 **Goal**: Create the per-space DB infrastructure and dual-write all materialization to both the old monolithic DB and the new per-space DBs. No behaviour change — the monolithic DB remains the source of truth for reads. This phase is fully reversible.
+
+> **Depends on**: the §Prerequisite (event-backed `leftSpace`) shipping first — Phase 1's dual-write and the global DB's "regenerable" property both assume it.
 
 ### 1a. New Schema Files
 
@@ -134,10 +171,11 @@ These queries touch data across spaces and need special handling:
 
 The per-space schema is the current `schema.sql` minus cross-space tables. Specifically, it drops:
 
-- `comp_user_personal_stream` (moves to global DB)
 - The `joinedSpace`/`leftSpace` edge labels (moves to global DB — but the `edges` table itself stays, just without those labels)
 
 Everything else stays: `entities`, `edges`, `comp_space`, `comp_room`, `comp_content`, `comp_info`, `comp_user`, `comp_reaction`, all embed tables, `comp_bans`, `comp_invite`, `roles`, `member_roles`, `role_rooms`, `activity_item`, `comp_calendar_*`, `comp_page_edits`, `comp_comment`, `comp_discord_origin`, `comp_last_read`.
+
+`materialization_cursor` also moves here (one row per stream, currently a single global table in the materialised DB). `reMaterializeFromLocalEvents` reads it per-space to decide which streams need replay; moving it per-space means each space DB is self-describing about its own re-materialization state and a schema-version wipe on one space DB doesn't force re-materialization of others.
 
 The schema version is tracked independently per space DB (a `space_schema_version` table). This lets us evolve per-space schemas without forcing a global re-materialization.
 
@@ -147,12 +185,6 @@ The schema version is tracked independently per space DB (a `space_schema_versio
 create table if not exists global_schema_version (
   id integer primary key check (id = 1),
   version text not null
-) strict;
-
-create table if not exists comp_user_personal_stream (
-  user_did text primary key,
-  personal_stream_did text not null,
-  resolved_at integer not null default (unixepoch() * 1000)
 ) strict;
 
 create table if not exists edges (
@@ -301,18 +333,14 @@ export async function applyBundle(
 
 Some materializer statements write to tables that now live in the global DB:
 
-- `joinedSpace`/`leftSpace` edges (from `personalJoinSpace`/`personalLeaveSpace` events)
-- `comp_user_personal_stream` (from personal stream resolution)
+- `joinedSpace`/`leftSpace` edges (from `personalJoinSpace`/`personalLeaveSpace` events — `head = userDid`)
 
-These writes need to go to the global DB instead of (or in addition to) the per-space DB. The materializer's `streamId` determines which DB to use: if `streamId` is a personal stream, the `joinedSpace`/`leftSpace` edges go to the global DB.
-
-**Detection**: Check if `streamId` matches a known personal stream DID (from `comp_user_personal_stream`). Or simpler: always write `joinedSpace`/`leftSpace` edges to the global DB, and all other edge labels to the per-space DB. The materializer statements are opaque SQL — we need to route them based on the table being written.
+These writes need to go to the global DB instead of (or in addition to) the per-space DB. Always write `joinedSpace`/`leftSpace` edges to the global DB, and all other edge labels to the per-space DB. The materializer statements are opaque SQL — we need to route them based on the table being written.
 
 **Routing approach**: The `applyBundle` function inspects each statement's SQL to determine the target DB:
 
 ```typescript
 function targetDb(sql: string, mainDb: DbLike, spaceDb: DbLike, globalDb: DbLike): DbLike {
-  if (sql.includes('comp_user_personal_stream')) return globalDb;
   if (sql.includes("'joinedSpace'") || sql.includes("'leftSpace'")) return globalDb;
   return spaceDb;
 }
@@ -344,14 +372,13 @@ Every handler that takes a `spaceId` parameter changes its `openDb()` call to `o
 export async function selectJoinedSpaces(
   globalDb: DbLike,
   userDid: UserDid,
-  personalStreamDid: StreamDid,
   options: SelectSpacesOptions = {},
 ): Promise<SpaceRow[]> {
   // Step 1: get space DIDs from global DB (as today)
   const spaceDids = await globalDb.query(`
     select tail from edges
     where head = ? and label = 'joinedSpace'
-  `).all<{ tail: string }>([personalStreamDid]);
+  `).all<{ tail: string }>([userDid]);
 
   // Step 2: fan-out to per-space DBs for details
   const spaceRows = await Promise.all(
@@ -378,18 +405,16 @@ The fan-out runs in parallel across the pool. Each space's detail query hits a d
 
 #### `getActivityFeed` (no space filter) — fan-out + merge
 
-```typescript
 export async function selectActivityFeed(
   globalDb: DbLike,
   userDid: string,
-  personalStreamDid: string,
+  membershipDid: string,
   scope: ActivityFeedScope,
 ): Promise<{ feed: ActivityFeedItem[]; cursor: string | null }> {
   // Step 1: get joined space DIDs from global DB
   const spaceDids = await globalDb.query(`
     select tail from edges where head = ? and label = 'joinedSpace'
-  `).all<{ tail: string }>([personalStreamDid]);
-
+  `).all<{ tail: string }>([membershipDid]);
   // Step 2: fan-out to each space's activity_item table
   const perSpaceFeeds = await Promise.all(
     spaceDids.map(async (row) => {
@@ -445,7 +470,7 @@ await globalDb.run(
 
 ### 1f. Read-State DB Changes
 
-The read-state DB (`read_positions`, `user_thread_activity`) stays separate. It's already in its own file and accessed through its own worker. No changes needed here.
+The read-state DB (`read_positions`, `user_thread_activity`) stays separate. It's already in its own file; today it's `ATTACH`ed into the single materialised-DB worker rather than having its own worker, but the split keeps it as its own file (and optionally its own worker — see the architecture diagram). No changes needed here.
 
 However, `getSpaceUnreadCount` currently joins `read_positions` with `entities` by `stream_id`:
 
@@ -560,6 +585,10 @@ select ... from main.comp_space where entity = ?;
 
 This is a one-time copy per space. For a space with 100k events, this is ~100k rows. It's fast (single SQLite transaction, no round-trips).
 
+> **Alternative recovery path**: instead of copying from the monolithic DB, a space DB can always be rebuilt from scratch by replaying the local event log (`reMaterializeFromLocalEvents` for that stream). The event-log DB (`data/roomy-events.sqlite`) is append-only and never wiped, so deleting a corrupted space DB file and re-running re-materialization for that stream is always safe. The copy-from-monolithic path is just faster because it avoids re-running the materializer.
+
+> **Global DB backfill**: the `joinedSpace`/`leftSpace` edges for the global DB come from the same lazy-creation pass — copy `edges` rows with those labels from the monolithic DB, or (after the §Prerequisite ships) simply replay the event log for the affected streams. The §Prerequisite's event-backing is what makes "regenerate the global DB from the log" a safe recovery claim here and in §1i.
+
 3. **Dual-write from here on**: Once the per-space DB is populated, all subsequent materialization writes to both DBs.
 
 ### 1i. Rollback Plan
@@ -571,7 +600,7 @@ Phase 1 is fully reversible:
 3. Delete the global DB (`data/global.sqlite`)
 4. Restart with the old code
 
-The monolithic DB is always kept in sync during Phase 1, so there's no data loss. The per-space DBs and global DB are derived data that can be regenerated.
+The monolithic DB is always kept in sync during Phase 1, so there's no data loss. The per-space DBs and global DB are derived data that can be regenerated — provided the §Prerequisite (event-backed `leftSpace`) has shipped; without it, a regenerated global DB drops left-space history.
 
 ---
 
@@ -611,16 +640,19 @@ Run the full test suite with the monolithic DB in read-only mode. All tests shou
 6. **Remove dual-write code paths** from materializers
 7. **Remove `SCHEMA_VERSION`** from `db.ts` (per-space DBs have their own version tracking)
 
+> **Do NOT delete `data/roomy-events.sqlite`** or `src/db/eventsSchema.sql`. The event-log DB is the append-only source of truth and stays as a single shared file/worker regardless of this split. The worker that owns the event-log DB may merge with the global-DB worker or stay standalone — either is fine, but it is separate from the per-space pool.
+
 ---
 
 ## Effort Estimate
 
 | Phase | Files changed | New files | Estimated time |
 |---|---|---|---|
+| Prerequisite: event-back `leftSpace` | ~4 (SDK materialisers, appserver `SCHEMA_VERSION` bump, tests) | 0 | 1–2 days |
 | Phase 1: Schema split + dual-write | ~20 | ~6 | 1–1.5 weeks |
 | Phase 2: Cutover reads | ~15 | 0 | 3–5 days |
 | Phase 3: Remove monolithic DB | ~10 | 0 | 1–2 days |
-| **Total** | | | **2–3 weeks** |
+| **Total** | | | **2–3.5 weeks** |
 
 ## Risks and Mitigations
 
@@ -628,9 +660,9 @@ Run the full test suite with the monolithic DB in read-only mode. All tests shou
 |---|---|
 | **Space DB file doesn't exist yet** | `openDb(spaceDid)` creates + initializes on first access. Materializer creates it before writing. |
 | **Race: materializer writes while handler reads** | WAL mode allows concurrent readers. The pool worker serializes reads and writes for a space through its message queue. |
-| **Space DB gets corrupted** | Each space DB is independent. Recovery: delete the space DB file and re-materialize from Leaf. |
 | **Too many open file descriptors** | LRU cache in each pool worker. Close least-recently-used DB handles when cache exceeds limit. |
-| **Startup backfill with thousands of spaces** | Pool workers open space DBs on demand. Backfill concurrency is bounded by pool size. |
+| **Space DB gets corrupted** | Each space DB is independent. Recovery: delete the space DB file and re-materialize from the local event log (`reMaterializeFromLocalEvents` for that stream). The event-log DB is append-only and never wiped. |
 | **Embed sweeper needs to scan all spaces** | Global `pending_links` index table, dual-written during materialization. |
 | **Migration: existing monolithic DB** | Phase 1 dual-write populates per-space DBs gradually. On first access to each space, backfill from the monolithic DB. |
 | **Test infrastructure churn** | Every test that seeds a DB needs to seed the per-space DB too. The `e2e/helpers.ts` seed functions are the bulk of the test churn. |
+| **Global DB rebuild drops left-space history** | `leftSpace` edges are handler-only today; rebuilding the global DB from the event log loses them. Mitigated by the §Prerequisite (event-back `leftSpace` via `PersonalLeaveSpace`/`PersonalJoinSpace` materialisers) before Phase 1's dual-write starts. |
