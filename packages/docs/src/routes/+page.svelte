@@ -19,15 +19,25 @@
   <h2>What is the Appserver?</h2>
 
   <p>
-    The Roomy Appserver is a <strong>Bun/TypeScript service</strong> that provides an XRPC interface
-    between thin clients (SvelteKit browser apps) and the Leaf event-stream backend. It acts as an
-    <strong>adapter layer</strong> over Leaf, providing a clean, denormalized API that clients consume
-    directly — no client-side SQLite, no workers, no materialisation.
+    The Roomy Appserver is a <strong>Bun/TypeScript service</strong> that owns the
+    server-side event store and materialised views, and exposes them to thin clients
+    (SvelteKit browser apps) through an XRPC interface. Clients call it directly —
+    no client-side SQLite, no workers, no materialisation.
   </p>
 
   <p>
-    The appserver is explicitly <strong>transitional</strong> — it will be replaced by a Rust service
-    with the same XRPC interface. The XRPC interface, client architecture (TanStack Query), and the
+    The appserver <strong>is the source of truth for every stream</strong>: it stores
+    the raw event log in SQLite, materialises events into denormalized view tables as
+    they arrive, and serves fully assembled query responses over XRPC. Write
+    procedures (<code>sendEvents</code>, <code>createSpace</code>, …) append events to
+    the log; a single multiplexed WebSocket pushes row-level diffs and invalidation
+    signals back to subscribed clients.
+  </p>
+
+  <p>
+    The Bun/TypeScript implementation is explicitly <strong>transitional</strong> — it
+    will be replaced by a Rust service with the same XRPC interface. The XRPC
+    interface, the thin-client architecture (TanStack Query), and the
     semantic/denormalized API design are permanent goals.
   </p>
 
@@ -35,13 +45,13 @@
 
   <pre><code>Browser (SvelteKit)
   TanStack Query (in-memory cache, reactive queries)
-    |  HTTP (via PDS proxy) + single multiplexed WebSocket
+    |  HTTP (service-auth JWT) + single multiplexed WebSocket
 Appserver (Bun + TypeScript, Dockerised)
-  SQLite / bun:sqlite (persisted materialised views)
-  Leaf client subscription → materialisation → XRPC handlers
-  Auth middleware (ATProto inter-service JWT + pre-auth tickets)
-    |  Leaf client (existing)
-Leaf Server  ←→  AT Protocol PDS</code></pre>
+  SQLite event store (events.stream_events) + materialised views (bun:sqlite)
+  StreamManager: sendEvents → materialise → invalidation signals
+  Auth middleware (ATProto service-auth JWT + WebSocket pre-auth tickets)
+    |  DID resolution, profile hydration (HappyView → Bluesky appview)
+AT Protocol PDS  ←→  PLC directory</code></pre>
 
   <h2>API Surface</h2>
 
@@ -108,10 +118,10 @@ Leaf Server  ←→  AT Protocol PDS</code></pre>
   <h2>Getting Started</h2>
 
   <ul>
-    <li><a href="/architecture">Architecture overview</a> — full system design and data flow</li>
-    <li><a href="/auth">Authentication</a> — PDS proxy JWTs and WebSocket tickets</li>
+    <li><a href="/architecture">Architecture</a> — full system design and data flow</li>
+    <li><a href="/auth">Authentication</a> — service-auth JWTs and WebSocket tickets</li>
     <li><a href="/sync">Sync protocol</a> — real-time WebSocket communication</li>
-    <li><a href="/schema">Database schema</a> — SQLite materialized view tables</li>
+    <li><a href="/schema">Database schema</a> — SQLite event log and materialized view tables</li>
     <li><a href="/endpoints">All endpoints</a> — complete XRPC method reference</li>
   </ul>
 </div>

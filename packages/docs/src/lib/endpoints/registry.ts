@@ -46,9 +46,9 @@ export const endpoints: EndpointGroup[] = [
         nsid: "space.roomy.auth.getConnectionTicket",
         kind: "procedure",
         description:
-          "Obtains a single-use WebSocket pre-auth ticket. The browser calls this via PDS proxy (full JWT auth), then opens a WebSocket directly to the appserver with the ticket as a query parameter. Tickets are 64-char hex strings with a 60-second TTL.",
+          "Obtains a single-use WebSocket pre-auth ticket. The browser calls this with a service-auth JWT, then opens a WebSocket directly to the appserver with the ticket as a query parameter. Tickets are 64-char hex strings with a 60-second TTL.",
         sourceFile: "space.roomy.auth.getConnectionTicket.ts",
-        auth: "Authenticated (PDS proxy inter-service JWT). Returns 401 if auth.did is null.",
+        auth: "Authenticated (service-auth JWT). Returns 401 if auth.did is null.",
         outputSchema: {
           type: "object",
           properties: {
@@ -88,7 +88,7 @@ export const endpoints: EndpointGroup[] = [
         notes: [
           "isMember and isAdmin are independent — both, either, or neither may be true.",
           "unreadCount is computed only over rooms the caller has read access to.",
-          "Hydrates the caller's personal stream + each referenced space, then queries local SQLite for the union.",
+          "Hydrates the caller's membership (joinedSpace edges), then queries local SQLite for the union.",
         ],
         invalidation: [
           "Caller joins/leaves a space (member edge added/removed)",
@@ -291,7 +291,7 @@ export const endpoints: EndpointGroup[] = [
         nsid: "space.roomy.space.createSpace",
         kind: "procedure",
         description:
-          "Creates a new space. Generates default space events (createSpace, createChannel for #general, createRole for @admin, addMemberRole) and sends them to the Leaf stream. Creates a personal stream for the user if one doesn't exist yet.",
+          "Creates a new space. Registers a new stream DID (PLC), then seeds it with default events (updateSpaceInfo, createRoom for #general, updateSidebar, addAdmin) via the local event store. Joins the caller as a member and records a joinedSpace edge so the space is immediately visible.",
         sourceFile: "space.roomy.space.createSpace.ts",
         auth: "Authenticated. Requires a valid user DID.",
         inputSchema: {
@@ -308,16 +308,18 @@ export const endpoints: EndpointGroup[] = [
           type: "object",
           properties: {
             spaceId: { type: "string", description: "DID of the newly created space stream." },
-            personalStreamDid: { type: "string | undefined", description: "The personal stream DID, if one was created on-the-fly." },
-            needsPersonalStreamRecord: { type: "boolean", description: "True when the appserver created a personal stream locally but could not write the PDS record. Client should call savePersonalStreamId." },
           },
         },
+        notes: [
+          "PLC registration is irreversible — if a later step fails, the entities row is deleted best-effort but the DID stands.",
+          "Emits direct getSpaces + getMetadata invalidation signals for the caller to avoid race conditions with async materialization.",
+        ],
       },
       {
         nsid: "space.roomy.space.joinSpace",
         kind: "procedure",
         description:
-          "Joins a space. Validates invite tokens for private spaces. Appends both the space-side joinSpace event AND the personal-space joinSpace event server-side, so every client joins consistently regardless of whether it tracks the personal space.",
+          "Joins a space. Validates invite tokens for private spaces, appends the space-side joinSpace event to the local event store, and writes the joinedSpace edge directly so the space is immediately visible in the caller's space list.",
         sourceFile: "space.roomy.space.joinSpace.ts",
         auth: "Authenticated. Requires a valid user DID.",
         inputSchema: {
@@ -331,21 +333,19 @@ export const endpoints: EndpointGroup[] = [
           type: "object",
           properties: {
             spaceId: { type: "string", description: "DID of the joined space." },
-            personalStreamDid: { type: "string | undefined", description: "Personal stream DID, if created on-the-fly." },
-            needsPersonalStreamRecord: { type: "boolean", description: "True when local personal stream was created but PDS record couldn't be written." },
           },
         },
         notes: [
-          "Creates a personal stream for the user if one doesn't exist.",
           "Removes any previous 'leftSpace' edge so the space reappears in getSpaces.",
           "On join, the SDK's materializer pre-marks all existing channels as read.",
+          "Emits direct getSpaces + getMetadata invalidation signals for the caller.",
         ],
       },
       {
         nsid: "space.roomy.space.leaveSpace",
         kind: "procedure",
         description:
-          "Leaves a space. Appends both the space-side leaveSpace event AND the personal-space leaveSpace event server-side. Writes a 'leftSpace' edge so the space appears with includeLeft=true. Emits direct invalidation signals to close the race window with async materialization.",
+          "Leaves a space. Appends the space-side leaveSpace event to the local event store and writes a 'leftSpace' edge so the space appears with includeLeft=true. Emits direct invalidation signals to close the race window with async materialization.",
         sourceFile: "space.roomy.space.leaveSpace.ts",
         auth: "Authenticated. Caller must be a member or admin of the space.",
         inputSchema: {
@@ -363,7 +363,7 @@ export const endpoints: EndpointGroup[] = [
         nsid: "space.roomy.space.setHandle",
         kind: "procedure",
         description:
-          "Sets or removes a Leaf-level handle for a space (DNS-based approach). Updates the DID document with a leaf:// alias, or removes it when handle is null. Requires admin access on the space.",
+          "Sets or removes a space handle (DNS-based approach). The handle is persisted in the local DB for fast query access. Requires admin access on the space.",
         sourceFile: "space.roomy.space.setHandle.ts",
         auth: "Authenticated. Caller must be an admin of the space.",
         inputSchema: {
@@ -374,7 +374,7 @@ export const endpoints: EndpointGroup[] = [
           },
         },
         notes: [
-          "The Leaf-level handle registration is no longer performed — only persisted in local DB.",
+          "The handle was historically a Leaf-level registration with a leaf:// DID alias; that registration is no longer performed — the handle is only persisted locally.",
           "Invalidates getMetadata and getSpaces for all viewers of this space.",
         ],
       },
@@ -495,7 +495,7 @@ export const endpoints: EndpointGroup[] = [
         nsid: "space.roomy.room.updateSeen",
         kind: "procedure",
         description:
-          "Marks messages in a room as read up to a given message entity. The appserver is the source of truth for read positions — this replaces the Leaf state event space.roomy.state.markRead.v0. Resets the Engaged push-digest batch for this (user, room).",
+          "Marks messages in a room as read up to a given message entity. The appserver is the source of truth for read positions. Resets the Engaged push-digest batch for this (user, room).",
         sourceFile: "space.roomy.room.updateSeen.ts",
         auth: "Caller must have read access to the room.",
         inputSchema: {
@@ -607,14 +607,15 @@ export const endpoints: EndpointGroup[] = [
         nsid: "space.roomy.sync.subscribe",
         kind: "sync",
         description:
-          "Multiplexed WebSocket subscription for real-time data. A single connection carries all real-time data as typed CBOR frames. The client subscribes/unsubscribes to topics; the server pushes message diffs and invalidation signals.",
+          "Multiplexed WebSocket subscription for real-time data. A single connection carries all real-time data as typed CBOR frames. The client subscribes/unsubscribes to topics; the server pushes message diffs, unread-count deltas, and invalidation signals.",
         sourceFile: "space.roomy.sync.subscribe.ts",
         auth: "WebSocket pre-auth ticket (obtained via getConnectionTicket procedure).",
         notes: [
-          "Client sends JSON text frames: sub/unsub for topics (space:<id>, room:<id>, stream:<id>), cursor for reconnection.",
-          "Server sends CBOR binary frames: #messageDiff (add/update/remove), #invalidate (query stale), #error.",
-          "Reconnection: client sends last received seq, server replays missed diffs or sends full invalidation.",
-          "Bounded in-memory event log (ring buffer, ~10k entries) with global monotonically increasing seq.",
+          "Client sends JSON text frames: sub/unsub for topics (space:<id>, room:<id>, stream:<id>); cursor triggers a full invalidation.",
+          "Server sends CBOR binary frames: #messageDiff (add/update/remove), #roomMetadataDiff (unread delta), #invalidate (query stale), #streamEvents (raw events), #error.",
+          "SDK auto-resubscribes all topics on reconnect; each connect mints a fresh ticket (single-use).",
+          "Subscribing to a room topic immediately invalidates room.getMetadata, room.getMessages, and room.getThreads so the client re-fetches anything missed while disconnected.",
+          "Cursor-based replay of missed diffs is a future concern — reconnection always means HTTP re-fetch.",
           "No persistence across restarts — clients receive full invalidation on restart.",
         ],
       },

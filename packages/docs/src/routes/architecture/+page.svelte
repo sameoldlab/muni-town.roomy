@@ -6,7 +6,7 @@
   <h1>Architecture</h1>
 
   <p class="lead text-lg text-base-600 dark:text-base-400">
-    The Roomy Appserver is an adapter layer over the Leaf event-stream backend, providing a clean XRPC interface for thin clients.
+    The Roomy Appserver owns the server-side event store and materialised views, and exposes them to thin clients through a clean XRPC interface.
   </p>
 
   <hr />
@@ -15,35 +15,36 @@
 
   <pre><code>Browser (SvelteKit)
   TanStack Query (in-memory cache, reactive queries)
-    |  HTTP (via PDS proxy) + single multiplexed WebSocket
+    |  HTTP (service-auth JWT) + single multiplexed WebSocket
 Appserver (Bun + TypeScript, Dockerised)
-  SQLite / bun:sqlite (persisted materialised views)
-  Leaf client subscription → materialisation → XRPC handlers
-  Auth middleware (ATProto inter-service JWT + pre-auth tickets)
-    |  Leaf client (existing)
-Leaf Server  ←→  AT Protocol PDS</code></pre>
+  SQLite event store (events.stream_events) + materialised views (bun:sqlite)
+  StreamManager: sendEvents → materialise → invalidation signals
+  Auth middleware (ATProto service-auth JWT + WebSocket pre-auth tickets)
+    |  DID resolution, profile hydration (HappyView → Bluesky appview)
+AT Protocol PDS  ←→  PLC directory</code></pre>
 
   <h2>Data Flow</h2>
 
   <h3>Initial Load</h3>
   <ol>
-    <li>TanStack Query fires <code>queryFn</code> → HTTP GET via PDS proxy → appserver → SQLite</li>
+    <li>TanStack Query fires <code>queryFn</code> → HTTP GET direct to the appserver with a service-auth JWT → SQLite</li>
     <li>Response populates cache with <code>staleTime: Infinity</code></li>
   </ol>
 
   <h3>Real-time Updates</h3>
   <ol>
-    <li>Leaf event arrives at appserver</li>
-    <li>Appserver materialises to SQLite, determines affected topics</li>
+    <li>A write procedure (<code>sendEvents</code>, <code>createSpace</code>, <code>joinSpace</code>, …) appends events to the stream's SQLite event log</li>
+    <li>The <code>StreamManager</code> materialises the batch into the view tables and emits invalidation signals</li>
     <li>Message events → <code>#messageDiff</code> CBOR frame → WebSocket → <code>setQueryData()</code> (no HTTP)</li>
+    <li>Unread-count changes → <code>#roomMetadataDiff</code> CBOR frame → WebSocket → cache patch (no HTTP)</li>
     <li>Other events → <code>#invalidate</code> CBOR frame → WebSocket → <code>invalidateQueries()</code> → HTTP re-fetch</li>
   </ol>
 
   <h3>Reconnection</h3>
   <ol>
-    <li>Client reconnects with cursor (last received seq)</li>
-    <li>Server replays missed message diffs from SQLite event log</li>
-    <li>Server sends broad invalidation signals for non-message data</li>
+    <li>Client fetches a fresh ticket and reconnects; the SDK automatically re-sends all subscribed topics</li>
+    <li>Subscribing to a room topic triggers an immediate <code>#invalidate</code> for the room's queries, so the client re-fetches anything missed while disconnected</li>
+    <li>Cursor-based replay of missed diffs is a future concern — for now, reconnect means re-fetch</li>
   </ol>
 
   <h2>Implementation Stack</h2>
@@ -65,7 +66,7 @@ Leaf Server  ←→  AT Protocol PDS</code></pre>
       <tr>
         <td>Server DB</td>
         <td>bun:sqlite</td>
-        <td>Built-in, zero-config, sufficient for single-node deployment</td>
+        <td>Built-in, zero-config, sufficient for single-node deployment. Three databases: the event log, the materialised views, and appserver-owned read state (read positions, push subscriptions, flags)</td>
       </tr>
       <tr>
         <td>Client cache</td>
@@ -79,8 +80,8 @@ Leaf Server  ←→  AT Protocol PDS</code></pre>
       </tr>
       <tr>
         <td>Auth</td>
-        <td>@noble/curves + @atcute/identity</td>
-        <td>ES256K/ES256 JWT verification, DID resolution</td>
+        <td>@atproto/xrpc-server + @atproto/identity</td>
+        <td>JWT verification, DID resolution via PLC directory (cached)</td>
       </tr>
       <tr>
         <td>Lexicons</td>
@@ -90,7 +91,7 @@ Leaf Server  ←→  AT Protocol PDS</code></pre>
     </tbody>
   </table>
 
-  <h2>What Disappears from the Client</h2>
+  <h2>What the Client No Longer Does</h2>
 
   <table>
     <thead>
@@ -101,7 +102,7 @@ Leaf Server  ←→  AT Protocol PDS</code></pre>
     </thead>
     <tbody>
       <tr><td>SQLite WASM worker</td><td>Appserver SQLite (bun:sqlite)</td></tr>
-      <tr><td>Peer/shared worker materialisation</td><td>Appserver subscribes to Leaf, materialises server-side</td></tr>
+      <tr><td>Client-side materialisation</td><td>Appserver materialises from its local event log</td></tr>
       <tr><td>LiveQuery / livequery() calls</td><td>TanStack Query + WS invalidation signals</td></tr>
       <tr><td>Client-side join logic</td><td>Server handles in query responses</td></tr>
     </tbody>
@@ -111,37 +112,43 @@ Leaf Server  ←→  AT Protocol PDS</code></pre>
 
   <pre><code>packages/appserver/
   src/
-    index.ts                  ← Bun.serve() entry, DID doc, CORS
-    appserver.ts              ← Server factory (createAppserver)
+    index.ts                  ← Bun.serve() entry, startup re-materialisation
+    appserver.ts              ← Server factory (createAppserver, buildRouter)
     xrpc/
-      router.ts               ← XrpcRouter: HTTP + WS routing
-      types.ts                ← Shared types (AuthCtx, Frame, handlers)
+      router.ts               ← XrpcRouter: HTTP + WS routing, rate limiting
       auth.ts                 ← JWT validation, DID resolution, ticket store
+      authGuards.ts           ← XRPC adapter over auth/access.ts
+      types.ts                ← Shared types (AuthCtx, Frame, handlers)
       errors.ts               ← XrpcError class
       frame.ts                ← CBOR frame encoding
     sync/
-      handler.ts              ← Multiplexed WS sync handler
+      handler.ts              ← SyncManager: multiplexed WS + topic routing
+    streams/
+      StreamManager.ts        ← Event writes → inline materialisation → signals
+      reMaterialize.ts        ← Startup replay from the event log
+    materialization/          ← Event materialisation (applyBatch)
+    invalidation/             ← Signal inference (inferSignals) + pub/sub router
     handlers/                 ← One file per XRPC NSID
     auth/
-      access.ts               ← Shared predicates: isMember, isAdmin, canRead, canWrite
+      access.ts               ← Pure predicates: isMember, isAdmin, canRead, canWrite
+      writeAuth.ts            ← Per-event authorisation for sendEvents
     db/
-      schema.sql              ← SQLite schema + materialised view tables
-    materialization/          ← Event materialisation logic
-    invalidation/             ← Invalidation signal router
-    streams/                  ← StreamManager, reMaterialize
-    embed/                    ← Link-card embed enrichment
-    hydration/                ← User/space hydration from PDS
+      schema.sql              ← Materialised view schema
+      eventsSchema.sql        ← Raw event log (stream_events)
+      readStateSchema.sql     ← Read positions, push, flags (appserver-owned)
     queries/                  ← SQL query helpers
+    hydration/                ← User membership hydration
+    cache/                    ← Server-side query response cache (LRU + TTL)
+    embed/                    ← Link-card embed enrichment
     push/                     ← Web Push notification logic
+    happyview.ts              ← HappyView profile-index config
   lexicons/                   ← ATProto JSON lexicon definitions</code></pre>
 
-  <h2>Migration Strategy</h2>
+  <h2>Migration Status</h2>
 
   <ol>
-    <li><strong>Phase 0 (done):</strong> Architecture docs, research, scaffold package, implement auth foundation.</li>
-    <li><strong>Phase 1 (now):</strong> Implement appserver — Bun HTTP + WebSocket, Leaf connection, SQLite schema, XRPC routing, working queries.</li>
-    <li><strong>Phase 2:</strong> Implement all query handlers + WS sync handler. Port client from LiveQuery to TanStack Query + XRPC.</li>
-    <li><strong>Phase 3:</strong> Remove SQLite WASM worker and peer worker from client.</li>
-    <li><strong>Phase 4:</strong> Hand off to Rust appserver (same XRPC interface, drop-in replacement).</li>
+    <li><strong>Done:</strong> Legacy <code>packages/app</code> (SQLite WASM + workers + LiveQuery) deleted. The client has been ported to TanStack Query + XRPC.</li>
+    <li><strong>Current:</strong> The Bun appserver is the production implementation, owning the event log, materialisation, XRPC serving, and WebSocket sync.</li>
+    <li><strong>Planned:</strong> Hand off to a Rust service exposing the same XRPC interface as a drop-in replacement.</li>
   </ol>
 </div>
