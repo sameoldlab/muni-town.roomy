@@ -18,7 +18,7 @@ import type {
 } from "@roomy-space/sdk";
 
 import { materialize } from "./materializer.ts";
-import { applyBundle } from "./applyBundle.ts";
+import { applyBundle, savepointMutex } from "./applyBundle.ts";
 import {
   isDebugEnabled,
   recordMaterialization,
@@ -190,50 +190,59 @@ export async function applyBatch(
     // rolled back. The cursor is advanced separately below so it also
     // advances past chunks with apply errors, preventing infinite retry
     // loops on every boot.
-    if (chunkSteps.length > 0) {
-      let eventStart = 0;
-      for (let i = 0; i < chunkSteps.length; i++) {
-        const step = chunkSteps[i]!;
-        if (step.type === "exec" && step.sql.startsWith("savepoint evt_")) {
-          // Collect all steps for this event (savepoint → statements → release)
-          const eventSteps: typeof chunkSteps = [];
-          for (let j = i; j < chunkSteps.length; j++) {
-            const s = chunkSteps[j]!;
-            eventSteps.push(s);
-            if (s.type === "exec" && s.sql.startsWith("release evt_")) {
-              i = j;
-              break;
-            }
-          }
-          try {
-            for (const s of eventSteps) {
-              if (s.type === "run") {
-                await db.run(s.sql, ...(s.params ?? []));
-              } else {
-                await db.exec(s.sql);
+    //
+    // The savepoint-managed section is serialized on the process-wide
+    // `savepointMutex` shared with `applyBundle`: both manage
+    // SAVEPOINT/RELEASE via individual async db.exec calls, and concurrent
+    // sections interleave and destroy each other's savepoints. This is the
+    // race between boot-time re-materialization (backfill) and live
+    // `sendEvents` on the same space — the replay is fire-and-forget and
+    // does not share the StreamManager's per-stream serialization queue.
+    await savepointMutex.run(async () => {
+      if (chunkSteps.length > 0) {
+        for (let i = 0; i < chunkSteps.length; i++) {
+          const step = chunkSteps[i]!;
+          if (step.type === "exec" && step.sql.startsWith("savepoint evt_")) {
+            // Collect all steps for this event (savepoint → statements → release)
+            const eventSteps: typeof chunkSteps = [];
+            for (let j = i; j < chunkSteps.length; j++) {
+              const s = chunkSteps[j]!;
+              eventSteps.push(s);
+              if (s.type === "exec" && s.sql.startsWith("release evt_")) {
+                i = j;
+                break;
               }
             }
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            stats.applyErrors++;
-            stats.applied--;
-            const savepointName = eventSteps[0]!.sql.slice("savepoint ".length);
             try {
-              await db.exec(`rollback to ${savepointName}`);
-              await db.exec(`release ${savepointName}`);
-            } catch {
-              // Best-effort cleanup
+              for (const s of eventSteps) {
+                if (s.type === "run") {
+                  await db.run(s.sql, ...(s.params ?? []));
+                } else {
+                  await db.exec(s.sql);
+                }
+              }
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              stats.applyErrors++;
+              stats.applied--;
+              const savepointName = eventSteps[0]!.sql.slice("savepoint ".length);
+              try {
+                await db.exec(`rollback to ${savepointName}`);
+                await db.exec(`release ${savepointName}`);
+              } catch {
+                // Best-effort cleanup
+              }
+              recordFailure(stats, {
+                eventId: "" as unknown as Ulid,
+                type: "unknown",
+                reason: "apply",
+                message,
+              });
             }
-            recordFailure(stats, {
-              eventId: "" as unknown as Ulid,
-              type: "unknown",
-              reason: "apply",
-              message,
-            });
           }
         }
       }
-    }
+    });
 
     // Advance the materialization cursor for this chunk. This is a SEPARATE
     // transaction from the chunk's event SQL, so it advances even when the

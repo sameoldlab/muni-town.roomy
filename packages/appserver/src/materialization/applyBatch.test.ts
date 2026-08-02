@@ -586,3 +586,87 @@ describe("applyBundle concurrency", () => {
     }
   });
 });
+
+describe("applyBatch concurrency", () => {
+  test("concurrent applyBatch calls do not destroy each other's savepoints", async () => {
+    const { db } = freshDb();
+    seedSpace(db, STREAM);
+
+    // Live batches (isBackfill: false) touch readstate.read_positions for
+    // the unread-counter increment, so the readstate schema must be attached
+    // (mirrors joinedSpaces.test.ts / dispatcher.test.ts fixtures).
+    db.exec("attach database ':memory:' as readstate");
+    db.exec(
+      "create table if not exists readstate_schema_version (id integer primary key check (id = 1), version text not null) strict",
+    );
+    db.exec(
+      "create table if not exists readstate.read_positions (user_did text not null, room_id text not null, seen_up_to text not null, unread_count integer not null default 0, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, room_id)) strict",
+    );
+    db.exec(
+      "create table if not exists readstate.user_thread_activity (user_did text not null, thread_id text not null, last_active_at integer not null, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, thread_id)) strict",
+    );
+    db.exec(
+      "create table if not exists readstate.user_room_participation (user_did text not null, room_id text not null, last_message_at integer not null, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, room_id)) strict",
+    );
+
+    // Seed a channel room so createMessage events can reference it.
+    const channelId = newUlid();
+    db.run("insert into entities (id, stream_id) values (?, ?)", [channelId, STREAM]);
+    db.run(
+      "insert into comp_room (entity, label, default_access) values (?, 'space.roomy.channel', 'readwrite')",
+      [channelId],
+    );
+    const asyncDb = yieldingAsyncDb(db);
+
+    // Two batches racing on the same stream — this is the boot-time
+    // re-materialization (backfill) vs a live `sendEvents` write on the same
+    // space. Without the shared savepoint mutex, their inline SAVEPOINT /
+    // RELEASE operations interleave: A creates evt_AAA (starts the implicit
+    // transaction), B creates evt_BBB (nested), A releases evt_AAA (commits,
+    // destroying evt_BBB), and B fails with "no such savepoint: evt_BBB".
+    const backfillEvents = [
+      decoded(createRoomEvent("room-a"), 1),
+      decoded(createRoomEvent("room-b"), 2),
+      decoded(createRoomEvent("room-c"), 3),
+    ];
+    const liveEvents = [
+      decoded(createMessageEvent(channelId, newUlid(), "live message"), 4),
+    ];
+
+    const results = await Promise.allSettled([
+      applyBatch(asyncDb, STREAM, backfillEvents, { isBackfill: true }),
+      applyBatch(asyncDb, STREAM, liveEvents, { isBackfill: false }),
+    ]);
+
+    // Both batches must succeed — no "no such savepoint" errors.
+    for (const [i, result] of results.entries()) {
+      expect(result.status).toBe("fulfilled");
+      if (result.status === "rejected") {
+        throw new Error(`applyBatch ${i} failed: ${result.reason}`);
+      }
+      // The corruption mode: a failed savepoint can leave the surviving
+      // call's rows half-committed and its event counted as an apply error
+      // while the cursor still advances — silent data loss.
+      expect(result.value.applyErrors).toBe(0);
+    }
+
+    // And both batches' rows must actually be there (a failed savepoint
+    // commits the interleaved partner's partial writes and can drop rows).
+    const rooms = await asyncDb
+      .query("select count(*) as count from comp_room")
+      .get<{ count: number }>();
+    // 3 from the backfill batch + the seeded channel room.
+    expect(rooms?.count).toBe(4);
+
+    const messages = await asyncDb
+      .query("select count(*) as count from entities where room = ?")
+      .get<{ count: number }>(channelId);
+    expect(messages?.count).toBe(1);
+
+    // Cursor must have advanced past both batches (idx 4 is the last one).
+    const cursor = await asyncDb
+      .query("select materialized_to from materialization_cursor where stream_id = ?")
+      .get<{ materialized_to: number }>(STREAM);
+    expect(cursor?.materialized_to).toBe(4);
+  });
+});

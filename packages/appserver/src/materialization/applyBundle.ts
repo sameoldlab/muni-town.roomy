@@ -57,7 +57,15 @@ class AsyncMutex {
   }
 }
 
-const savepointMutex = new AsyncMutex();
+/**
+ * Process-wide mutex for savepoint-managed SQL sections on the materialised
+ * DB. Shared by `applyBundle` (side-effects) and `applyBatch`'s inline
+ * per-event loop — both manage SAVEPOINT/RELEASE via individual async
+ * `db.exec` calls on the same DB handle, so any two concurrent sections can
+ * interleave and destroy each other's savepoints. Exporting the instance
+ * lets `applyBatch` acquire the same lock as `applyBundle`.
+ */
+export const savepointMutex = new AsyncMutex();
 
 export interface ApplyBundleOpts {
   /** True for backfill events — skips the unread-counter increment. */
