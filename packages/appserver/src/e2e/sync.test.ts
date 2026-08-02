@@ -15,7 +15,6 @@ import { newUlid } from "@roomy-space/sdk";
 import {
   startAppserver,
   seedSpace,
-  seedPersonalStream,
   seedJoinedSpace,
   seedRoom,
   seedMessage,
@@ -23,7 +22,6 @@ import {
 } from "./helpers.ts";
 
 const USER = "did:plc:sync-user";
-const PERSONAL = "did:web:personal-sync.example";
 const SPACE = "did:web:space-sync.example";
 const ROOM = newUlid();
 const MSG = newUlid();
@@ -36,8 +34,7 @@ async function setupSyncSpace(): Promise<E2eContext> {
   const { db } = ctx;
 
   seedSpace(db, SPACE, USER);
-  seedPersonalStream(db, USER, PERSONAL);
-  seedJoinedSpace(db, PERSONAL, SPACE);
+  seedJoinedSpace(db, USER, SPACE);
   seedRoom(db, ROOM, SPACE);
   seedMessage(db, MSG, ROOM, SPACE, "a");
 

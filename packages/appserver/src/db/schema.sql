@@ -315,15 +315,6 @@ create table if not exists comp_invite (
 ) strict;
 create index if not exists idx_comp_invite_creator on comp_invite(entity, created_by_did);
 
--- Cache of user DID → personal stream DID, resolved from the user's PDS via
--- com.atproto.repo.getRecord. The record on the PDS is meant to be stable per
--- user so we don't TTL these. Appserver-only; no frontend equivalent.
-create table if not exists comp_user_personal_stream (
-  user_did text primary key,
-  personal_stream_did text not null,
-  resolved_at integer not null default (unixepoch() * 1000)
-) strict;
-
 -- Materialized activity feed items. One row per room (channel or thread) that
 -- has seen at least one message. Upserted on every createMessage event.
 -- recent_message_ids stores a JSON array of up to 5 most recent message ULIDs

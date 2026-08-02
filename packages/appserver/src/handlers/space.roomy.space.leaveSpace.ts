@@ -1,9 +1,8 @@
 /**
  * XRPC: space.roomy.space.leaveSpace (procedure).
  *
- * Appends the space-side leaveSpace event AND the personal-space
- * leaveSpace event server-side, so every client leaves a space consistently
- * regardless of whether it tracks the personal space.
+ * Appends the space-side leaveSpace event and writes the `leftSpace` edge
+ * directly so the space remains visible with `includeLeft=true`.
  *
  * @see packages/appserver/docs/plans/procedure-backlog.md
  */
@@ -12,8 +11,7 @@ import { newUlid, StreamDid, parseEvent } from "@roomy-space/sdk";
 import { openDb } from "../db/db.ts";
 import { getStreamManager } from "../streams/StreamManager.ts";
 import { isMember, isAdmin } from "../auth/access.ts";
-import { resolvePersonalStreamDid } from "../hydration/resolvePersonalStream.ts";
-import { recordLeftSpaceEdge } from "../queries/joinedSpaces.ts";
+import { JOINED_SPACE_LABEL, recordLeftSpaceEdge } from "../queries/joinedSpaces.ts";
 import { parseUserDid } from "../xrpc/authGuards.ts";
 import { XrpcError } from "../xrpc/errors.ts";
 import { Router as InvalidationRouter } from "../invalidation/index.ts";
@@ -79,40 +77,25 @@ export const leaveSpaceHandler: ProcedureHandler<LeaveSpaceBody, void> = async (
     callerDid,
   );
 
-  // ── 2. Write personal.leaveSpace to user's personal stream ───────────
-  let personalStreamDid: StreamDid | undefined;
-  try {
-    personalStreamDid = await resolvePersonalStreamDid(db, callerDid);
-    const personalLeaveResult = parseEvent({
-      id: newUlid(),
-      $type: "space.roomy.space.personal.leaveSpace.v0",
-      spaceDid: spaceId,
-    });
-    if (!personalLeaveResult.success) {
-      throw new Error(`Failed to create personal.leaveSpace event: ${personalLeaveResult.error}`);
-    }
-    await streamManager.sendEvents(
-      personalStreamDid,
-      [personalLeaveResult.data],
-      callerDid,
-    );
-  } catch (err) {
-    console.warn(
-      `[leaveSpace] Failed to write personal leave for ${callerDid}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
+  // ── 2. Delete the joinedSpace edge (join intent) ─────────────────────
+  // The PersonalLeaveSpace materialiser used to delete this edge, but the
+  // personal.leaveSpace event is no longer written — remove it here or the
+  // space lingers as joined in getSpaces and the activity feed after
+  // leaving.
+  await db.run(
+    `delete from edges
+      where head = ? and tail = ? and label = ?`,
+    [callerDid, spaceId, JOINED_SPACE_LABEL],
+  );
 
-  // ── 4. Write leftSpace edge so the space appears with includeLeft ─────
-  if (personalStreamDid) {
-    await recordLeftSpaceEdge(db, spaceStreamDid, personalStreamDid);
-  }
+  // ── 3. Write leftSpace edge so the space appears with includeLeft ────
+  await recordLeftSpaceEdge(db, spaceStreamDid, callerDid);
 
-  // ── 5. Emit direct getSpaces + getMetadata invalidation signals ──────
-  // The personal stream materializer also emits these when it processes
-  // the personal.leaveSpace event, but that delivery is asynchronous and
-  // may race with the HTTP response. Emitting directly for the caller
-  // closes the race window.
+  // ── 4. Emit direct getSpaces + getMetadata invalidation signals ──────
+
+  // The live materializer also emits these when it processes the
+  // leaveSpace event, but that delivery is asynchronous and may race with
+  // the HTTP response. Emitting directly for the caller closes the race.
   const router = InvalidationRouter.getInstance();
   if (router) {
     router.emit([

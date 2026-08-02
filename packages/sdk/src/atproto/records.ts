@@ -5,10 +5,6 @@ export interface StreamHandleConfig {
   collection: string;
 }
 
-export interface PersonalStreamRecordConfig {
-  collection: string;
-  schemaVersion: string;
-}
 
 /** Create a stream handle record linking a user's DID to a space. */
 export async function createProfileSpaceRecord(
@@ -90,56 +86,4 @@ export async function uploadBlob(
     blob: blobRef.toJSON(),
     uri: `atblob://${agent.assertDid}/${blobRef.ref}`,
   };
-}
-
-/** Get personal stream ID from PDS record. */
-export async function getPersonalStreamId(
-  agent: Agent,
-  config: PersonalStreamRecordConfig,
-): Promise<StreamDid | undefined> {
-  try {
-    const resp = await agent.com.atproto.repo.getRecord(
-      {
-        collection: config.collection,
-        repo: agent.assertDid,
-        rkey: config.schemaVersion,
-      },
-      {
-        headers: {
-          "atproto-proxy": `${agent.assertDid}#atproto_pds`,
-        },
-      },
-    );
-    const record = resp.data.value as { id?: string };
-    return record.id ? StreamDid.assert(record.id) : undefined;
-  } catch (e) {
-    if ((e as { error?: string }).error === "RecordNotFound") {
-      return undefined;
-    }
-    throw e;
-  }
-}
-
-/** Save personal stream ID to PDS record. */
-export async function savePersonalStreamId(
-  agent: Agent,
-  streamDid: StreamDid,
-  config: PersonalStreamRecordConfig,
-): Promise<void> {
-  const resp = await agent.com.atproto.repo.putRecord(
-    {
-      collection: config.collection,
-      repo: agent.assertDid,
-      rkey: config.schemaVersion,
-      record: { $type: config.collection, id: streamDid },
-    },
-    {
-      headers: {
-        "atproto-proxy": `${agent.assertDid}#atproto_pds`,
-      },
-    },
-  );
-  if (!resp.success) {
-    throw new Error("Failed to save personal stream ID to PDS");
-  }
 }

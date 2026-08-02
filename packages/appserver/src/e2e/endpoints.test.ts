@@ -14,7 +14,6 @@ import {
   seedSpace,
   seedRoom,
   seedMessage,
-  seedPersonalStream,
   seedJoinedSpace,
   seedRole,
   seedMemberRole,
@@ -29,7 +28,6 @@ import { _setAdminDids } from "../admin.ts";
 
 const USER = "did:plc:e2e-user";
 const ADMIN = "did:plc:e2e-admin";
-const PERSONAL = "did:web:personal-e2e.example";
 const SPACE = "did:web:space-e2e.example";
 const ROOM = newUlid();
 const MSG_A = newUlid();
@@ -52,8 +50,7 @@ async function setupBasicSpace(): Promise<E2eContext> {
   const { db } = ctx;
 
   seedSpace(db, SPACE, USER);
-  seedPersonalStream(db, USER, PERSONAL);
-  seedJoinedSpace(db, PERSONAL, SPACE);
+  seedJoinedSpace(db, USER, SPACE);
   seedRoom(db, ROOM, SPACE);
   seedMessage(db, MSG_A, ROOM, SPACE, "a");
   seedMessage(db, MSG_B, ROOM, SPACE, "b");
@@ -113,7 +110,6 @@ describe("space.roomy.space.getSpaces", () => {
   test("authenticated with no spaces → 200 empty", async () => {
     const ctx = await startAppserver()
     const { db } = ctx;
-    seedPersonalStream(db, USER, PERSONAL);
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.space.getSpaces?includeLeft=false`,
     );
@@ -142,7 +138,6 @@ describe("space.roomy.space.getMetadata", () => {
   test("unknown space → 404", async () => {
     const ctx = await startAppserver()
     const { db } = ctx;
-    seedPersonalStream(db, USER, PERSONAL);
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=did:web:nonexistent`,
     );
@@ -200,8 +195,7 @@ describe("space.roomy.space.getThreads", () => {
     const ctx = await startAppserver()
     const { db } = ctx;
     seedSpace(db, SPACE, USER);
-    seedPersonalStream(db, USER, PERSONAL);
-    seedJoinedSpace(db, PERSONAL, SPACE);
+    seedJoinedSpace(db, USER, SPACE);
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.space.getThreads?spaceId=${SPACE}`,
     );
@@ -314,7 +308,6 @@ describe("space.roomy.room.getMetadata", () => {
   test("unknown room → 404", async () => {
     const ctx = await startAppserver()
     const { db } = ctx;
-    seedPersonalStream(db, USER, PERSONAL);
 
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.room.getMetadata?roomId=${newUlid()}`,
@@ -342,8 +335,7 @@ describe("space.roomy.room.getThreads", () => {
     const { db } = ctx;
     const emptyRoom = newUlid();
     seedSpace(db, SPACE, USER);
-    seedPersonalStream(db, USER, PERSONAL);
-    seedJoinedSpace(db, PERSONAL, SPACE);
+    seedJoinedSpace(db, USER, SPACE);
     seedRoom(db, emptyRoom, SPACE);
 
     const res = await ctx.authedFetch(USER)(
@@ -375,9 +367,8 @@ describe("space.roomy.room.getMessages", () => {
     const { db } = ctx;
     const emptyRoom = newUlid();
     seedSpace(db, SPACE, USER);
-    seedPersonalStream(db, USER, PERSONAL);
-    seedJoinedSpace(db, PERSONAL, SPACE);
     seedRoom(db, emptyRoom, SPACE);
+    seedJoinedSpace(db, USER, SPACE);
 
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.room.getMessages?roomId=${emptyRoom}`,
@@ -405,7 +396,6 @@ describe("space.roomy.message.getMessage", () => {
   test("unknown message → 404", async () => {
     const ctx = await startAppserver()
     const { db } = ctx;
-    seedPersonalStream(db, USER, PERSONAL);
 
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.message.getMessage?messageId=${newUlid()}`,
@@ -493,11 +483,6 @@ describe("space.roomy.room.updateSeen", () => {
 describe("space.roomy.space.createSpace", () => {
   test("authenticated → creates space and returns spaceId", async () => {
     const ctx = await startAppserver()
-    const { db } = ctx;
-    // Seed personal stream so resolvePersonalStreamDid finds a cached entry
-    // instead of hitting the PLC directory.
-    seedPersonalStream(db, USER, PERSONAL);
-
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.space.createSpace`,
       {
@@ -552,8 +537,10 @@ describe("space.roomy.space.joinSpace", () => {
   test("authenticated → joins space and returns spaceId", async () => {
     const ctx = await startAppserver()
     const { db } = ctx;
-    seedSpace(db, SPACE, USER);
-    seedPersonalStream(db, USER, PERSONAL);
+    // Private space: the invite token is required to join. Exercise the
+    // token-validation path rather than relying on the public default.
+    seedSpace(db, SPACE, USER, { allowPublicJoin: 0 });
+    seedInvite(db, SPACE, INVITE_TOKEN, USER);
 
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.space.joinSpace`,
@@ -589,6 +576,7 @@ describe("space.roomy.space.joinSpace", () => {
 describe("space.roomy.space.leaveSpace", () => {
   test("authenticated → leaves space and returns 200", async () => {
     const ctx = await setupBasicSpace();
+    const { db } = ctx;
     const res = await ctx.authedFetch(USER)(
       `${ctx.baseUrl}/xrpc/space.roomy.space.leaveSpace`,
       {
@@ -597,6 +585,17 @@ describe("space.roomy.space.leaveSpace", () => {
       },
     );
     expect(res.status).toBe(200);
+
+    // Leave removes join intent: the joinedSpace edge must be deleted and a
+    // leftSpace edge written (so includeLeft still lists the space once).
+    const joined = await db
+      .query("select 1 as n from edges where head = ? and tail = ? and label = 'joinedSpace'")
+      .get(USER, SPACE);
+    expect(joined).toBeNull();
+    const left = await db
+      .query("select 1 as n from edges where head = ? and tail = ? and label = 'leftSpace'")
+      .get(USER, SPACE);
+    expect(left).not.toBeNull();
   });
 
   test("anonymous → 401", async () => {

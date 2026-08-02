@@ -46,19 +46,6 @@ export const getActivityFeedHandler: QueryHandler<
   await hydrateUserMembership(userDid);
   const db = openDb();
 
-  // Resolve the caller's personal stream DID for joined-spaces filtering.
-  const personalStreamRow = await db
-    .query(
-      "select personal_stream_did from comp_user_personal_stream where user_did = ?",
-    )
-    .get<{ personal_stream_did: string }>(userDid);
-
-  if (!personalStreamRow) {
-    // No personal stream resolved — user isn't a member of any space yet.
-    const result: GetActivityFeedResult = { feed: [] };
-    return result;
-  }
-
   // Per-request memo: the feed spans multiple spaces/rooms but each
   // (space, did) membership decision is reused across all items in that
   // space. Without the memo, each item's roomAccess re-queries the same
@@ -72,7 +59,6 @@ export const getActivityFeedHandler: QueryHandler<
   const { feed, cursor: nextCursor } = await selectActivityFeed(
     db,
     userDid,
-    personalStreamRow.personal_stream_did as string,
     { spaceId, limit, cursor },
   );
 

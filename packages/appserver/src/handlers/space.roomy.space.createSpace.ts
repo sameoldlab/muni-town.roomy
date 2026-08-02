@@ -6,11 +6,6 @@ import {
 } from "@roomy-space/sdk";
 import { openDb } from "../db/db.ts";
 import { getStreamManager } from "../streams/StreamManager.ts";
-import {
-  PersonalStreamRecordNotFound,
-  createAndCachePersonalStream,
-  resolvePersonalStreamDid,
-} from "../hydration/resolvePersonalStream.ts";
 import { recordPersonalSpaceMembership } from "../queries/joinedSpaces.ts";
 import { parseUserDid } from "../xrpc/authGuards.ts";
 import { XrpcError } from "../xrpc/errors.ts";
@@ -27,14 +22,6 @@ interface CreateSpaceBody {
 
 interface CreateSpaceResult {
   spaceId: string;
-  /** The personal stream DID, if one was created on-the-fly. */
-  personalStreamDid?: string;
-  /**
-   * True when the appserver created a new personal stream locally but
-   * could not write the PDS record on the user's behalf. The client should
-   * call `savePersonalStreamId` to persist the mapping.
-   */
-  needsPersonalStreamRecord?: boolean;
 }
 
 export const createSpaceHandler: ProcedureHandler<
@@ -124,52 +111,18 @@ export const createSpaceHandler: ProcedureHandler<
     callerDid,
   );
 
-  // ── 4. Write personal.joinSpace to creator's personal stream ─────────
+  // ── 4. Record the membership in the local DB ────────────────────────
+  // getSpaces identifies joined spaces by a `joinedSpace` edge (head =
+  // caller DID). No personal.joinSpace event is sent on this path, so the
+  // edge is written directly here. Idempotent.
   const db = openDb();
-  let personalStreamDid: StreamDid;
-  let needsPersonalStreamRecord = false;
-  try {
-    personalStreamDid = await resolvePersonalStreamDid(db, callerDid);
-  } catch (err) {
-    if (err instanceof PersonalStreamRecordNotFound) {
-      // New user without a personal stream record on their PDS.
-      // Create a local personal stream and cache the mapping; the client
-      // will be instructed to save the PDS record.
-      personalStreamDid = await createAndCachePersonalStream(db, callerDid);
-      needsPersonalStreamRecord = true;
-    } else {
-      throw err;
-    }
-  }
+  await recordPersonalSpaceMembership(db, spaceId, callerDid);
 
-  const personalJoinResult = parseEvent({
-    id: newUlid(),
-    $type: "space.roomy.space.personal.joinSpace.v0",
-    spaceDid: spaceId,
-  });
-  if (!personalJoinResult.success) {
-    throw new Error(`Failed to create personal.joinSpace event: ${personalJoinResult.error}`);
-  }
-  await streamManager.sendEvents(
-    personalStreamDid,
-    [personalJoinResult.data],
-    callerDid,
-  );
-
-  // ── 4b. Record the membership in the local DB ────────────────────────
-  // getSpaces identifies joined spaces by a `joinedSpace` edge from the
-  // caller's personal stream. The personal stream's live materialisation of
-  // the personal.joinSpace event above writes that edge too, but may not
-  // have landed by the time this HTTP response returns — so write it
-  // directly. Idempotent w.r.t. the later live materialisation.
-  await recordPersonalSpaceMembership(db, spaceId, personalStreamDid);
-
-  // ── 5. Emit direct getSpaces invalidation signal ──────────────────────
-  // The personal stream materializer will also emit this signal when it
-  // processes the personal.joinSpace event via its live subscription, but
-  // that delivery is asynchronous and may race with the HTTP response.
-  // Emitting directly ensures the sync client receives the signal
-  // immediately.
+  // ── 5. Emit direct getSpaces + getMetadata invalidation signals ──────
+  // The live materializer also emits these when it processes the
+  // joinSpace event, but that delivery is asynchronous and may race with
+  // the HTTP response. Emitting directly ensures the sync client receives
+  // the signal immediately.
   const router = InvalidationRouter.getInstance();
   if (router) {
     router.emit([
@@ -182,10 +135,6 @@ export const createSpaceHandler: ProcedureHandler<
         },
       },
       // getMetadata returns isMember/isAdmin, which flips to true on join.
-      // The personal-stream materializer also emits this (broadcast, via
-      // handlePersonalJoinSpace), but its delivery is asynchronous and may
-      // race with the HTTP response — emit directly for the caller to close
-      // the race window, matching the getSpaces signal above.
       {
         kind: "queryInvalidation",
         signal: {
@@ -197,5 +146,5 @@ export const createSpaceHandler: ProcedureHandler<
     ]);
   }
 
-  return { spaceId, personalStreamDid, needsPersonalStreamRecord };
+  return { spaceId };
 };

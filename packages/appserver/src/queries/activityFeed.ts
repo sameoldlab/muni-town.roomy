@@ -59,7 +59,6 @@ export interface ActivityFeedScope {
 export async function selectActivityFeed(
   db: DbLike,
   userDid: string,
-  personalStreamDid: string,
   scope: ActivityFeedScope,
 ): Promise<{ feed: ActivityFeedItem[]; cursor: string | null }> {
   // Step 1: fetch the raw activity_item rows, filtered and paginated.
@@ -75,7 +74,7 @@ export async function selectActivityFeed(
     params.push(spaceFilter);
   } else {
     conditions.push("ai.space_id in (select tail from edges where head = ? and label = 'joinedSpace')");
-    params.push(personalStreamDid);
+    params.push(userDid);
   }
 
   // Filter out deleted rooms.

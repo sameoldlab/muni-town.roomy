@@ -31,12 +31,6 @@
           "properties": {
             "spaceId": {
               "type": "string"
-            },
-            "needsPersonalStreamRecord": {
-              "type": "boolean"
-            },
-            "personalStreamDid": {
-              "type": "string"
             }
           }
         }

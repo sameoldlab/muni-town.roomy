@@ -112,27 +112,28 @@ const PersonalJoinSpaceSchema = type({
   spaceDid: StreamDid.describe("The space being joined."),
 }).describe(
   "Join a Roomy space. \
-This must be sent in a user's personal stream and is how you update the joined spaces list. \
+Records the user's join intent as a `joinedSpace` edge (head = user DID, tail = space DID). \
 Signaling that you have joined a space inside the space you are joining should be done with a room.joinRoom event.",
 );
 
 export const PersonalJoinSpace = defineEvent(
   PersonalJoinSpaceSchema,
-  ({ streamId, event }) => {
+  ({ streamId, user, event }) => {
     return [
       ensureEntity(streamId, event.spaceDid),
+      ensureEntity(streamId, user),
       sql`
         insert into comp_space (entity)
         values (${event.spaceDid})
         on conflict do update set hidden = 0
       `,
-      // Per-user join intent as an edge (head = personal stream, tail =
-      // space). `comp_space.hidden` above is a single global row per space
-      // and so can't represent which users have joined; this edge can. The
-      // appserver reads joined-space membership from these edges.
+      // Per-user join intent as an edge (head = user DID, tail = space).
+      // `comp_space.hidden` above is a single global row per space and so
+      // can't represent which users have joined; this edge can. The appserver
+      // reads joined-space membership from these edges.
       sql`
         insert or ignore into edges (head, tail, label)
-        values (${streamId}, ${event.spaceDid}, 'joinedSpace')
+        values (${user}, ${event.spaceDid}, 'joinedSpace')
       `,
     ];
   },
@@ -143,19 +144,19 @@ const PersonalLeaveSpaceSchema = type({
   spaceDid: StreamDid.describe("The space being left."),
 }).describe(
   "Leave a Roomy space. \
-This must be sent in a user's personal stream and is how you update the joined spaces list.",
+Removes the `joinedSpace` edge (head = user DID, tail = space DID) written by personal.joinSpace.",
 );
 
 export const PersonalLeaveSpace = defineEvent(
   PersonalLeaveSpaceSchema,
-  ({ streamId, event }) => [
+  ({ user, event }) => [
     sql`
       update comp_space set hidden = 1 where entity = ${event.spaceDid}
     `,
     // Remove the join-intent edge written by PersonalJoinSpace.
     sql`
       delete from edges
-      where head = ${streamId}
+      where head = ${user}
         and tail = ${event.spaceDid}
         and label = 'joinedSpace'
     `,

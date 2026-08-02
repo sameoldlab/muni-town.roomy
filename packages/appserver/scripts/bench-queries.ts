@@ -203,23 +203,14 @@ async function main() {
   ).get() as { space_id: string; cnt: number } | null;
   console.log(`  Sample space: ${sampleSpace?.space_id ?? "N/A"} (${sampleSpace?.cnt ?? 0} activity items)`);
 
-  // Find a user with joinedSpace edges
+  // Find a user with joinedSpace edges (head = user DID)
   const sampleUser = db.query(
-    `SELECT je.tail as user_did, COUNT(*) as cnt
-     FROM edges je
-     WHERE je.label = 'joinedSpace'
-     GROUP BY je.tail ORDER BY cnt DESC LIMIT 1`
-  ).get() as { user_did: string; cnt: number } | null;
-  console.log(`  Sample user: ${sampleUser?.user_did ?? "N/A"} (${sampleUser?.cnt ?? 0} joined spaces)`);
-
-  // Find a personal stream (head of joinedSpace edges)
-  const samplePersonalStream = db.query(
-    `SELECT je.head as personal_stream, COUNT(*) as cnt
+    `SELECT je.head as user_did, COUNT(*) as cnt
      FROM edges je
      WHERE je.label = 'joinedSpace'
      GROUP BY je.head ORDER BY cnt DESC LIMIT 1`
-  ).get() as { personal_stream: string; cnt: number } | null;
-  console.log(`  Sample personal stream: ${samplePersonalStream?.personal_stream ?? "N/A"} (${samplePersonalStream?.cnt ?? 0} joined spaces)`);
+  ).get() as { user_did: string; cnt: number } | null;
+  console.log(`  Sample user: ${sampleUser?.user_did ?? "N/A"} (${sampleUser?.cnt ?? 0} joined spaces)`);
 
   // Find a channel with threads
   const sampleChannel = db.query(
@@ -243,7 +234,6 @@ async function main() {
   const roomId = sampleRoom?.room ?? "";
   const spaceId = sampleSpace?.space_id ?? spaceDid;
   const userDid = sampleUser?.user_did ?? "";
-  const personalStreamDid = samplePersonalStream?.personal_stream ?? "";
   const channelId = sampleChannel?.channel_id ?? "";
 
   // ── BEFORE: Benchmark queries ──────────────────────────────────────────
@@ -309,7 +299,7 @@ async function main() {
     order by ai.last_activity_at desc, ai.room_id desc
     limit 50
   `;
-  const feedParams = [personalStreamDid];
+  const feedParams = [userDid];
 
   console.log(`\n  EXPLAIN QUERY PLAN:`);
   console.log(explainQueryPlan(db, feedSql, feedParams));
@@ -494,9 +484,8 @@ async function main() {
         )
       )
   `;
-  const joinedParams = [userDid, personalStreamDid, "joinedSpace"];
 
-  console.log(`\n  EXPLAIN QUERY PLAN:`);
+  const joinedParams = [userDid, "joinedSpace"];
   console.log(explainQueryPlan(db, joinedSql, joinedParams));
 
   const joinedTiming = await benchQuery("joinedSpaces", asyncDb, joinedSql, joinedParams);

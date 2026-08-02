@@ -71,8 +71,21 @@ import { READSTATE_SCHEMA_VERSION } from "./readStateDb.ts";
  * schema-version wipe, re-materialization from the event log failed to
  * recreate `comp_space` (FK constraint), so `getMetadata` returned 404 and
  * the frontend couldn't navigate to any space. Wipe re-derives the rows.
+ *
+ * `.10-appserver.8`: personal stream removal — `joinedSpace`/`leftSpace` edges
+ * now use the user DID as `head` (not a personal-stream DID). The
+ * `comp_user_personal_stream` table is dropped. Wipe re-materialises edges
+ * from the updated `PersonalJoinSpace`/`PersonalLeaveSpace` materialisers
+ * (which use `user` from the event context as the edge head).
+ *
+ * `.10-appserver.9`: re-run of `.8`'s re-materialisation with a corrected
+ * SDK build. The `.8` wipe ran against a stale `@roomy-space/sdk` dist that
+ * still wrote `joinedSpace` edges with the personal-stream DID as `head`,
+ * so `getSpaces` returned nothing for users whose membership was rebuilt
+ * from the event log. Rebuild the SDK, then wipe again so edges are written
+ * with `head = userDid`.
  */
-export const SCHEMA_VERSION = "10-appserver.7";
+export const SCHEMA_VERSION = "10-appserver.9";
 
 const DEFAULT_DB_PATH = process.env.APPSERVER_DB_PATH ?? "data/roomy.sqlite";
 

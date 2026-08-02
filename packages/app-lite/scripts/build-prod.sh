@@ -16,8 +16,8 @@ echo "OAuth Host URL: $target_url"
 # ║  IMPORTANT: Keep this in sync with src/lib/config.ts:                       ║
 # ║    - APPSERVER_RPCS → rpc:<nsid>?aud=*                                     ║
 # ║    - OAUTH_SCOPE rpc:/repo: quoted entries → verbatim                       ║
-# ║    - OAUTH_SCOPE template literals (getServiceAuth, personalStream) →      ║
-# ║      env-var-backed defaults below                                         ║
+# ║    - OAUTH_SCOPE template literals (getServiceAuth) → env-var-backed      ║
+# ║      defaults below                                                         ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 SCOPE="atproto"
@@ -28,7 +28,6 @@ SCOPE+=" blob:*/*"
 # ── Repo Scopes (blob uploads + handle writes) ───────────────────────────
 SCOPE+=" repo:space.roomy.upload.v0"
 SCOPE+=" repo:${VITE_STREAM_HANDLE_NSID:-space.roomy.space.handle.dev}"
-SCOPE+=" repo:${VITE_PERSONAL_STREAM_NSID:-space.roomy.space.personal.dev}"
 SCOPE+=" repo:space.roomy.user.profile"
 
 # ── Service auth (for direct/non-proxied XRPC calls) ───────────────────

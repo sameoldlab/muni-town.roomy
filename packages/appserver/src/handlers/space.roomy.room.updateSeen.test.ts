@@ -15,7 +15,6 @@ import { _resetHydrationInflight } from "../hydration/userHydration.ts";
 import { updateSeenHandler } from "./space.roomy.room.updateSeen.ts";
 
 const USER = UserDid.assert("did:plc:seen-user");
-const PERSONAL = StreamDid.assert("did:web:personal.example");
 const SPACE = StreamDid.assert("did:web:space.example");
 
 
@@ -58,13 +57,9 @@ beforeEach(async () => {
     [msgB, SPACE, roomId, "b"],
   );
 
-  // Make the background hydration hermetic: seed the personal-stream cache and
-  // pre-warm ONLY the personal materializer with an instant fake. The room's
-  // space (SPACE) intentionally has NO materializer registered.
-  await db.run(
-    "insert into comp_user_personal_stream (user_did, personal_stream_did, resolved_at) values (?, ?, ?)",
-    [USER, PERSONAL, 0],
-  );
+  // Make the background hydration hermetic: the room's space (SPACE)
+  // intentionally has NO materializer registered, so the handler must rely
+  // solely on the already-on-disk materialisation when writing the watermark.
 });
 
 afterEach(() => {

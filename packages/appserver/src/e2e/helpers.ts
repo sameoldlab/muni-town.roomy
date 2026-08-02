@@ -9,8 +9,6 @@
  * - `seedRoom(db, roomId, spaceId, label?)` — inserts a room entity.
  * - `seedMessage(db, msgId, roomId, spaceId, sortIdx?)` — inserts a message.
  * - `seedUser(db, userDid, handle?)` — inserts a user entity + comp_user row.
- * - `seedPersonalStream(db, userDid, personalStreamDid)` — inserts the
- *   personal-stream cache row.
  * - `seedMembership(db, spaceId, userDid, label?)` — inserts a membership edge.
  * - `seedRole(db, roleId, spaceId, name?)` — inserts a role.
  * - `seedInvite(db, spaceId, token, creatorDid)` — inserts an invite token.
@@ -166,43 +164,28 @@ export function seedSpace(
 
 
 /**
- * Seed a personal-stream cache row so hydrateUserMembership can resolve
- * the user's personal stream without a remote event backend.
- */
-export function seedPersonalStream(
-  db: Database,
-  userDid: string,
-  personalStreamDid: string,
-): void {
-  db.run(
-    `insert or ignore into comp_user_personal_stream (user_did, personal_stream_did, resolved_at)
-     values (?, ?, ?)`,
-    [userDid, personalStreamDid, 0],
-  );
-}
-
-/**
- * Seed a joinedSpace edge from the personal stream to the space.
+ * Seed a joinedSpace edge from the user to the space.
  * This is what getSpaces reads to determine membership.
- * Also inserts the personal stream entity if it doesn't exist (edges
+ * Also inserts the user entity if it doesn't exist (edges
  * have FK constraints on entities(id)).
  */
 export function seedJoinedSpace(
   db: Database,
-  personalStreamDid: string,
+  userDid: string,
   spaceId: string,
 ): void {
-  // Ensure the personal stream has an entity row (edges FK on entities(id)).
+  // Ensure the user has an entity row (edges FK on entities(id)).
   db.run(
     "insert or ignore into entities (id, stream_id) values (?, ?)",
-    [personalStreamDid, personalStreamDid],
+    [userDid, userDid],
   );
   db.run(
     `insert or ignore into edges (head, tail, label)
      values (?, ?, 'joinedSpace')`,
-    [personalStreamDid, spaceId],
+    [userDid, spaceId],
   );
 }
+
 
 /**
  * Seed a room entity + comp_room row.

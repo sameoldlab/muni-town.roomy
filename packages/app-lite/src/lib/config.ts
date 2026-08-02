@@ -58,10 +58,6 @@ export const CONFIG = {
   usePublicClient: import.meta.env.VITE_OAUTH_PUBLIC_CLIENT === "true",
   profileSpaceNsid:
     import.meta.env.VITE_STREAM_HANDLE_NSID || "space.roomy.space.handle.dev",
-  personalStreamNsid:
-    import.meta.env.VITE_PERSONAL_STREAM_NSID || "space.roomy.space.personal.dev",
-  personalStreamSchemaVersion:
-    import.meta.env.VITE_PERSONAL_STREAM_SCHEMA_VERSION || "4",
   /** Test-mode app-password credentials (bake into env for headless E2E). */
   testIdentifier: dynamicEnv.PUBLIC_TEST_IDENTIFIER || null,
   testAppPassword: dynamicEnv.PUBLIC_TEST_APP_PASSWORD || null,
@@ -79,7 +75,6 @@ export const OAUTH_SCOPE = [
   "repo:space.roomy.upload.v0", // Grant all actions (create, update, delete)
   `repo:space.roomy.user.profile`,
   `repo:${CONFIG.profileSpaceNsid}`,
-  `repo:${CONFIG.personalStreamNsid}`,
   // Allow calling getServiceAuth on the appserver's PDS to obtain
   // service auth tokens for direct (non-proxied) XRPC calls.
   `rpc:com.atproto.server.getServiceAuth?aud=${CONFIG.appserverDid}`,

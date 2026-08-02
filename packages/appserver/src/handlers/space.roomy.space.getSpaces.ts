@@ -2,8 +2,8 @@
  * XRPC: space.roomy.space.getSpaces (query).
  *
  * Returns the caller's joined-and-not-removed spaces. Hydrates the caller's
- * personal stream + each referenced space, then queries local SQLite for
- * the union of personal-stream intent and per-space membership truth.
+ * membership, then queries local SQLite for the union of join intent
+ * (`joinedSpace` edges from the user DID) and per-space membership truth.
  *
  * When `includeLeft=true`, also returns spaces the user has previously left
  * (with `isMember=false`).
@@ -33,16 +33,13 @@ export const getSpacesHandler: QueryHandler<
     return { spaces: [] };
   }
 
-  const { personalStreamDid } = await hydrateUserMembership(userDid);
-  if (!personalStreamDid) {
-    return { spaces: [] };
-  }
+  await hydrateUserMembership(userDid);
 
   const params = rawParams as unknown as GetSpacesParams;
   const includeLeft = params.includeLeft === "true" || params.includeLeft === "1";
 
   const db = openDb();
   return {
-    spaces: await selectJoinedSpaces(db, userDid, personalStreamDid, { includeLeft }),
+    spaces: await selectJoinedSpaces(db, userDid, { includeLeft }),
   };
 };

@@ -19,8 +19,6 @@ const SCHEMA_PATH = join(__dirname, "..", "db", "schema.sql");
 const SCHEMA_VERSION = "10-appserver.4";
 
 const USER = UserDid.assert("did:plc:test-user");
-const PERSONAL = StreamDid.assert("did:web:personal-stream.example");
-const OTHER_PERSONAL = StreamDid.assert("did:web:other-personal.example");
 const SPACE = StreamDid.assert("did:web:space-stream.example");
 
 function freshDb(): { db: Database; asyncDb: DbLike } {
@@ -79,23 +77,22 @@ function seedSpace(db: Database): void {
   ]);
 }
 
-/** Seed a `joinedSpace` edge: `personal` has joined `space`. */
-function joinEdge(db: Database, personal: string, space: string): void {
+/** Seed a `joinedSpace` edge: `user` has joined `space`. */
+function joinEdge(db: Database, user: string, space: string): void {
   db.run("insert into edges (head, tail, label) values (?, ?, ?)", [
-    personal,
+    user,
     space,
     JOINED_SPACE_LABEL,
   ]);
 }
 
 describe("selectJoinedSpaces", () => {
-  test("a space the personal stream has a joinedSpace edge to is visible", async () => {
+  test("a space the user has a joinedSpace edge to is visible", async () => {
     const { db, asyncDb } = freshDb();
     seedSpace(db);
-    seedEntity(db, PERSONAL);
-    joinEdge(db, PERSONAL, SPACE);
+    joinEdge(db, USER, SPACE);
 
-    const spaces = await selectJoinedSpaces(asyncDb, USER, PERSONAL);
+    const spaces = await selectJoinedSpaces(asyncDb, USER);
     expect(spaces).toHaveLength(1);
     expect(spaces[0]).toMatchObject({
       id: SPACE,
@@ -107,36 +104,34 @@ describe("selectJoinedSpaces", () => {
 
   test("a space with no joinedSpace edge is invisible even if it exists", async () => {
     const { db, asyncDb } = freshDb();
-    // Space fully materialised (entity, info, member edge) but the personal
-    // stream never joined it — no joinedSpace edge.
+    // Space fully materialised (entity, info, member edge) but the user
+    // never joined it — no joinedSpace edge.
     seedSpace(db);
-    seedEntity(db, PERSONAL);
 
-    expect(await selectJoinedSpaces(asyncDb, USER, PERSONAL)).toEqual([]);
+    expect(await selectJoinedSpaces(asyncDb, USER)).toEqual([]);
   });
 
-  test("a space joined by a different personal stream is not visible (multi-user)", async () => {
+  test("a space joined by a different user is not visible (multi-user)", async () => {
     const { db, asyncDb } = freshDb();
     seedSpace(db);
-    seedEntity(db, PERSONAL);
-    seedEntity(db, OTHER_PERSONAL);
+    const OTHER_USER = UserDid.assert("did:plc:other-user");
+    seedEntity(db, OTHER_USER);
     // Another user joined the same space. Their edge must not leak into ours.
-    joinEdge(db, OTHER_PERSONAL, SPACE);
+    joinEdge(db, OTHER_USER, SPACE);
 
-    expect(await selectJoinedSpaces(asyncDb, USER, PERSONAL)).toEqual([]);
+    expect(await selectJoinedSpaces(asyncDb, USER)).toEqual([]);
   });
 
   test("a joined space the caller is banned from is excluded", async () => {
     const { db, asyncDb } = freshDb();
     seedSpace(db);
-    seedEntity(db, PERSONAL);
-    joinEdge(db, PERSONAL, SPACE);
+    joinEdge(db, USER, SPACE);
     db.run("insert into comp_bans (entity, user_did) values (?, ?)", [
       SPACE,
       USER,
     ]);
 
-    expect(await selectJoinedSpaces(asyncDb, USER, PERSONAL)).toEqual([]);
+    expect(await selectJoinedSpaces(asyncDb, USER)).toEqual([]);
   });
 
   test("a joined space with no member/admin edge for the caller is excluded", async () => {
@@ -144,14 +139,14 @@ describe("selectJoinedSpaces", () => {
     // joinedSpace intent exists, but the space stream never recorded the
     // member edge (e.g. join not yet accepted) — not a real membership.
     seedEntity(db, SPACE);
-    seedEntity(db, PERSONAL);
+    seedEntity(db, USER);
     db.run("insert into comp_info (entity, name) values (?, ?)", [
       SPACE,
       "Test Space",
     ]);
-    joinEdge(db, PERSONAL, SPACE);
+    joinEdge(db, USER, SPACE);
 
-    expect(await selectJoinedSpaces(asyncDb, USER, PERSONAL)).toEqual([]);
+    expect(await selectJoinedSpaces(asyncDb, USER)).toEqual([]);
   });
 });
 
@@ -159,19 +154,19 @@ describe("recordPersonalSpaceMembership", () => {
   test("makes an already-materialised space visible to getSpaces", async () => {
     const { db, asyncDb } = freshDb();
     seedSpace(db);
-    expect(await selectJoinedSpaces(asyncDb, USER, PERSONAL)).toEqual([]);
+    expect(await selectJoinedSpaces(asyncDb, USER)).toEqual([]);
 
-    await recordPersonalSpaceMembership(asyncDb, SPACE, PERSONAL);
+    await recordPersonalSpaceMembership(asyncDb, SPACE, USER);
 
-    const spaces = await selectJoinedSpaces(asyncDb, USER, PERSONAL);
+    const spaces = await selectJoinedSpaces(asyncDb, USER);
     expect(spaces).toHaveLength(1);
     expect(spaces[0]).toMatchObject({ id: SPACE, name: "Test Space" });
   });
 
   test("seeds the entity rows the joinedSpace edge depends on", async () => {
     const { db, asyncDb } = freshDb();
-    // Neither the space nor the personal stream entity exists yet.
-    await recordPersonalSpaceMembership(asyncDb, SPACE, PERSONAL);
+    // Neither the space nor the user entity exists yet.
+    await recordPersonalSpaceMembership(asyncDb, SPACE, USER);
 
     const edge = db
       .query<
@@ -179,9 +174,9 @@ describe("recordPersonalSpaceMembership", () => {
         [string]
       >("select head, tail from edges where label = ?")
       .get(JOINED_SPACE_LABEL);
-    expect(edge).toEqual({ head: PERSONAL, tail: SPACE });
+    expect(edge).toEqual({ head: USER, tail: SPACE });
 
-    // The space entity is scoped to its own stream, not the personal stream.
+    // The space entity is scoped to its own stream, not the user.
     const spaceEntity = db
       .query<
         { stream_id: string },
@@ -195,9 +190,9 @@ describe("recordPersonalSpaceMembership", () => {
     const { db, asyncDb } = freshDb();
     seedSpace(db);
 
-    await recordPersonalSpaceMembership(asyncDb, SPACE, PERSONAL);
-    await recordPersonalSpaceMembership(asyncDb, SPACE, PERSONAL);
+    await recordPersonalSpaceMembership(asyncDb, SPACE, USER);
+    await recordPersonalSpaceMembership(asyncDb, SPACE, USER);
 
-    expect(await selectJoinedSpaces(asyncDb, USER, PERSONAL)).toHaveLength(1);
+    expect(await selectJoinedSpaces(asyncDb, USER)).toHaveLength(1);
   });
 });

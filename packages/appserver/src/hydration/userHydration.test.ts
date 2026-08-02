@@ -18,7 +18,6 @@ const SCHEMA_PATH = join(__dirname, "..", "db", "schema.sql");
 const SCHEMA_VERSION = "10-appserver.4";
 
 const USER = UserDid.assert("did:plc:hydration-user");
-const PERSONAL = StreamDid.assert("did:web:personal.example");
 const SPACE_A = StreamDid.assert("did:web:space-a.example");
 const SPACE_B = StreamDid.assert("did:web:space-b.example");
 
@@ -34,22 +33,21 @@ function freshDb(): { db: Database; asyncDb: DbLike } {
 }
 
 /**
- * Fake-personal-stream seeding: the production materializer would write these
- * rows from PersonalJoinSpace events. We bypass the materializer here and
- * write the rows directly so we can test hydration in isolation.
- *
- * A joined space is a `joinedSpace` edge from the personal stream; a left
- * space has no such edge (PersonalLeaveSpace deletes it).
+ * Intent seeding: the production materializer writes `joinedSpace` edges
+ * (head = userDid, tail = spaceId) from PersonalJoinSpace events. We bypass
+ * the materializer here and write the rows directly so hydration can be
+ * tested in isolation. A left space has no such edge (PersonalLeaveSpace
+ * deletes it).
  */
 function seedPersonalIntent(
   db: Database,
-  personalStreamDid: StreamDid,
+  userDid: UserDid,
   joinedSpaces: StreamDid[],
   leftSpaces: StreamDid[] = [],
 ): void {
   // Entity rows are the FK targets for the joinedSpace edges. Each entity is
   // scoped to its own stream.
-  for (const did of [personalStreamDid, ...joinedSpaces, ...leftSpaces]) {
+  for (const did of [userDid, ...joinedSpaces, ...leftSpaces]) {
     db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [
       did,
       did,
@@ -58,41 +56,35 @@ function seedPersonalIntent(
   for (const did of joinedSpaces) {
     db.run(
       "insert or ignore into edges (head, tail, label) values (?, ?, 'joinedSpace')",
-      [personalStreamDid, did],
+      [userDid, did],
     );
   }
 }
 
 describe("hydrateUserMembership", () => {
-  test("no personal stream record → empty result", async () => {
+  test("no joinedSpace edges → empty result", async () => {
     _resetHydrationInflight();
-    const { db, asyncDb } = freshDb();
+    const { asyncDb } = freshDb();
 
     const result = await hydrateUserMembership(USER, {
       db: asyncDb,
-      resolveDid: async () => ({ pdsEndpoint: "https://pds.example" }),
-      fetchRecord: async () => null,
     });
 
-    expect(result.personalStreamDid).toBeNull();
     expect(result.intendedSpaceDids).toEqual([]);
     expect(result.hydrationFailures).toEqual([]);
   });
 
-  test("personal stream + two joined spaces → all hydrated", async () => {
+  test("two joined spaces → all hydrated", async () => {
     _resetHydrationInflight();
     const { db, asyncDb } = freshDb();
 
-    // Pre-seed personal-stream rows so the SQL for intent picks them up.
-    seedPersonalIntent(db, PERSONAL, [SPACE_A, SPACE_B]);
+    // Pre-seed joinedSpace edges so the SQL for intent picks them up.
+    seedPersonalIntent(db, USER, [SPACE_A, SPACE_B]);
 
     const result = await hydrateUserMembership(USER, {
       db: asyncDb,
-      resolveDid: async () => ({ pdsEndpoint: "https://pds.example" }),
-      fetchRecord: async () => ({ id: PERSONAL }),
     });
 
-    expect(result.personalStreamDid).toBe(PERSONAL);
     expect(new Set(result.intendedSpaceDids)).toEqual(
       new Set([SPACE_A, SPACE_B]),
     );
@@ -103,12 +95,10 @@ describe("hydrateUserMembership", () => {
     _resetHydrationInflight();
     const { db, asyncDb } = freshDb();
 
-    seedPersonalIntent(db, PERSONAL, [SPACE_A], [SPACE_B]);
+    seedPersonalIntent(db, USER, [SPACE_A], [SPACE_B]);
 
     const result = await hydrateUserMembership(USER, {
       db: asyncDb,
-      resolveDid: async () => ({ pdsEndpoint: "https://pds.example" }),
-      fetchRecord: async () => ({ id: PERSONAL }),
     });
 
     expect(result.intendedSpaceDids).toEqual([SPACE_A]);
@@ -118,20 +108,10 @@ describe("hydrateUserMembership", () => {
     _resetHydrationInflight();
     const { db, asyncDb } = freshDb();
 
-    seedPersonalIntent(db, PERSONAL, [SPACE_A]);
+    seedPersonalIntent(db, USER, [SPACE_A]);
 
-    let resolveCount = 0;
-    let fetchCount = 0;
     const opts = {
       db: asyncDb,
-      resolveDid: async () => {
-        resolveCount++;
-        return { pdsEndpoint: "https://pds.example" };
-      },
-      fetchRecord: async () => {
-        fetchCount++;
-        return { id: PERSONAL };
-      },
     };
 
     const [a, b] = await Promise.all([
@@ -140,7 +120,5 @@ describe("hydrateUserMembership", () => {
     ]);
 
     expect(a).toBe(b);
-    expect(resolveCount).toBe(1);
-    expect(fetchCount).toBe(1);
   });
 });

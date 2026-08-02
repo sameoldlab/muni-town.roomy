@@ -171,18 +171,18 @@ import type { QueryNsid } from "./invalidation/types.ts";
 import type { UserDid } from "@roomy-space/sdk";
 
 /**
- * Seed a minimal space + personal-stream cache row into the process-wide DB
- * (opened by createAppserver) so getMetadata returns 200 without hitting the
- * network. Must be called AFTER createAppserver has opened the singleton DB.
+ * Seed a minimal space + user entity into the process-wide DB (opened by
+ * createAppserver) so getMetadata returns 200 without hitting the network.
+ * Must be called AFTER createAppserver has opened the singleton DB.
  */
 function seedMinimalSpace(spaceId: string, userDid: string): void {
   const db = openDb();
   // Space entity + comp_space + comp_info.
   db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [spaceId, spaceId]);
   db.run(
-    `insert or ignore into comp_space (entity, handle, allow_public_join, allow_member_invites)
-     values (?, ?, ?, ?)`,
-    [spaceId, null, null, 1],
+    `insert or ignore into comp_space (entity, allow_public_join, allow_member_invites)
+     values (?, ?, ?)`,
+    [spaceId, null, 1],
   );
   db.run(
     `insert or ignore into comp_info (entity, name) values (?, ?)`,
@@ -192,14 +192,9 @@ function seedMinimalSpace(spaceId: string, userDid: string): void {
     `update comp_space set sidebar_config = '{}' where entity = ?`,
     [spaceId],
   );
-  // User entity + personal-stream cache so hydrateUserMembership doesn't
-  // try to resolve the DID via PLC (which has no server in tests).
+  // User entity so hydrateUserMembership has an FK target for joinedSpace
+  // edges without trying to resolve the DID via PLC (no server in tests).
   db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [userDid, userDid]);
-  db.run(
-    `insert or ignore into comp_user_personal_stream (user_did, personal_stream_did, resolved_at)
-     values (?, ?, ?)`,
-    [userDid, userDid, 0],
-  );
 }
 
 describe("query response cache", () => {
@@ -265,14 +260,10 @@ describe("query response cache", () => {
       disableEmbedSweeper: true,
     });
     seedMinimalSpace("did:web:cache-test.space", "did:plc:user1");
-    // Also seed user2's personal stream (the space entity already exists).
+    // Also seed user2's entity (the space entity already exists).
     {
       const db = openDb();
       db.run("insert or ignore into entities (id, stream_id) values (?, ?)", ["did:plc:user2", "did:plc:user2"]);
-      db.run(
-        `insert or ignore into comp_user_personal_stream (user_did, personal_stream_did, resolved_at) values (?, ?, ?)`,
-        ["did:plc:user2", "did:plc:user2", 0],
-      );
     }
     const base = `http://localhost:${handle.port}`;
     const url = `${base}/xrpc/space.roomy.space.getMetadata?spaceId=did:web:cache-test.space`;

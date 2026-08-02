@@ -10,8 +10,5 @@ export {
   createProfileSpaceRecord,
   removeProfileSpaceRecord,
   uploadBlob,
-  getPersonalStreamId,
-  savePersonalStreamId,
   type StreamHandleConfig,
-  type PersonalStreamRecordConfig,
 } from "./records";

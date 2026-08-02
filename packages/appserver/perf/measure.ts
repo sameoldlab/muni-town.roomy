@@ -75,7 +75,6 @@ interface Fixture {
   msgId2: string;
   roleId: string;
   inviteToken: string;
-  personalStreamDid: string;
   secondUserDid: string;
 }
 
@@ -90,7 +89,6 @@ function seedFixture(db: Database): Fixture {
   const msgId2 = newUlid();
   const roleId = newUlid();
   const inviteToken = "perf-invite-token";
-  const personalStreamDid = "did:web:perf-personal.example";
   const secondUserDid = "did:plc:perf-user2";
 
   // ── Space ──
@@ -114,10 +112,8 @@ function seedFixture(db: Database): Fixture {
   db.run("insert or ignore into edges (head, tail, label) values (?, ?, 'admin')", [spaceId, adminDid]);
   db.run("insert or ignore into edges (head, tail, label) values (?, ?, 'admin')", [adminDid, spaceId]);
 
-  // ── Personal stream ──
-  db.run("insert or ignore into comp_user_personal_stream (user_did, personal_stream_did, resolved_at) values (?, ?, ?)", [userDid, personalStreamDid, 0]);
-  db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [personalStreamDid, personalStreamDid]);
-  db.run("insert or ignore into edges (head, tail, label) values (?, ?, 'joinedSpace')", [personalStreamDid, spaceId]);
+  // ── Join intent ──
+  db.run("insert or ignore into edges (head, tail, label) values (?, ?, 'joinedSpace')", [userDid, spaceId]);
 
   // ── Room ──
   db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [roomId, spaceId]);
@@ -141,10 +137,8 @@ function seedFixture(db: Database): Fixture {
   // ── Read position ──
   db.run("insert or ignore into readstate.read_positions (user_did, room_id, seen_up_to, unread_count) values (?, ?, ?, ?)", [userDid, roomId, msgId, 0]);
 
-  return {
     db, baseUrl: "", // filled after server starts
-    userDid, adminDid, spaceId, roomId, msgId, msgId2, roleId, inviteToken, personalStreamDid, secondUserDid,
-  };
+    userDid, adminDid, spaceId, roomId, msgId, msgId2, roleId, inviteToken, secondUserDid,
 }
 
 
@@ -542,7 +536,6 @@ async function main() {
   const fixture = seedFixture(db);
 
   // Pre-warm materializers so handlers don't try to connect to a remote event backend
-  await preWarmMaterializer(fixture.personalStreamDid);
   await preWarmMaterializer(fixture.spaceId);
   fixture.baseUrl = baseUrl;
 

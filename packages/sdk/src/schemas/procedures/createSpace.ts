@@ -18,6 +18,4 @@ export const Input = type({
 
 export const Output = type({
   spaceId: "string",
-  "personalStreamDid?": "string",
-  "needsPersonalStreamRecord?": "boolean",
 });

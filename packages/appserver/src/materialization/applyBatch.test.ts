@@ -42,8 +42,8 @@ function freshDb(): { db: Database; asyncDb: DbLike } {
 
 function seedSpace(db: Database, streamDid: StreamDid): void {
   // The space entity + comp_space row are normally created by the
-  // PersonalJoinSpace materialiser on the user's personal stream. Tests for
-  // the apply machinery seed them directly so we can verify backfilled_to.
+  // PersonalJoinSpace materialiser. Tests for the apply machinery seed
+  // them directly so we can verify backfilled_to.
   db.run("insert into entities (id, stream_id) values (?, ?)", [
     streamDid,
     streamDid,
@@ -297,6 +297,51 @@ describe("applyBatch", () => {
       .query("select count(*) as n from edges where label = 'link'")
       .get<{ n: number }>())?.n;
     expect(count).toBe(1);
+  })
+
+  // Regression (10-appserver.8/.9): the personal.joinSpace materialiser must
+  // write the `joinedSpace` edge with the *user DID* as head, not the
+  // personal-stream DID. The original `.8` wipe ran against a stale SDK
+  // build that wrote `head = streamId`, so `getSpaces` returned nothing for
+  // users whose membership was rebuilt from the event log. This test pins
+  // the edge shape so a stale dist / wrong materialiser fails loudly.
+  test("personal.joinSpace writes joinedSpace edge with user DID as head", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpace(db, STREAM);
+
+    const personalStream = StreamDid.assert("did:plc:personal-stream");
+    const spaceDid = StreamDid.assert("did:plc:target-space");
+    const joinEvent = {
+      $type: "space.roomy.space.personal.joinSpace.v0",
+      id: newUlid(),
+      spaceDid,
+    } as unknown as Event;
+
+    const stats = await applyBatch(
+      asyncDb,
+      personalStream,
+      [{ event: joinEvent, idx: 0 as StreamIndex, user: USER }],
+      { isBackfill: true },
+    );
+
+    expect(stats.applied).toBe(1);
+    expect(stats.materializerErrors).toBe(0);
+    expect(stats.applyErrors).toBe(0);
+
+    // Edge head must be the user, never the stream the event was written to.
+    const userEdge = await asyncDb
+      .query(
+        "select 1 as n from edges where head = ? and tail = ? and label = 'joinedSpace'",
+      )
+      .get<{ n: number }>(USER, spaceDid);
+    expect(userEdge?.n).toBe(1);
+
+    const streamEdge = await asyncDb
+      .query(
+        "select 1 as n from edges where head = ? and tail = ? and label = 'joinedSpace'",
+      )
+      .get<{ n: number }>(personalStream, spaceDid);
+    expect(streamEdge?.n).toBeUndefined();
   })
 });
 
