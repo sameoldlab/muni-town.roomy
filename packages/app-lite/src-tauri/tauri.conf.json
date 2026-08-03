@@ -46,7 +46,6 @@
         },
         {
           "scheme": ["https"],
-          "pathPrefix": ["/oauth/callback"],
           "host": "space.roomy",
           "appLink": true
         }
