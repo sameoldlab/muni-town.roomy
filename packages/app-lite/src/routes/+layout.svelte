@@ -36,23 +36,6 @@
   let { children } = $props();
 
   onMount(() => {
-/*    if ('__TAURI__' in window) {
-      const { onOpenUrl } = window.__TAURI__.deepLink;
-      // returned state
-      onOpenUrl((urls: string[]) => {
-        if (!urls || urls.length === 0) return;
-        console.log({ urls })
-        console.log(0)
-
-        const url = new URL(urls[0]!);
-        const path = page.url;
-
-        path.search = url.search;
-        path.pathname = url.pathname;
-        console.log({path})
-        window.location.href = path.href;
-      })
-    }*/
     // Catch unhandled ATProto rejections (e.g. background token refresh
     // failures) that would otherwise leave the app unusable. In the PWA the
     // page cannot be manually refreshed, so this is the safety net.
