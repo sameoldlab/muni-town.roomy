@@ -12,7 +12,6 @@ import { CONFIG, OAUTH_SCOPE } from "./config";
 import { scheduleAutoReload } from "./error-recovery";
 import { setAppserverOrigin } from "./appserver-origin";
 import { subscribeIfAlreadyPermitted, clearPushSubscription } from "./push.svelte";
-import { page } from "$app/state";
 
 const { ServiceAuthClient, DirectXrpcClient, resolveAppserverHttpOrigin } = transport;
 
@@ -144,13 +143,11 @@ export async function init() {
       void subscribeIfAlreadyPermitted();
       return;
     }
-    console.log({ CONFIG })
     const result = await initSession(CONFIG.appserverDid, {
       port: CONFIG.port,
       scope: OAUTH_SCOPE,
       usePublicClient: CONFIG.usePublicClient,
     });
-    console.log({ result, url: page.url })
     if (result) {
       session = result.session;
       agent = result.agent;
