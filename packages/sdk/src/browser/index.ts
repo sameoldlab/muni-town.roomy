@@ -23,6 +23,7 @@ export {
   DEFAULT_APPSERVER_DID,
   type CreateOAuthClientOptions,
   type InitSessionOptions,
+  type LoginOutcome,
 } from "./oauth";
 
 export { createTanstackCacheAdapter } from "./tanstack";

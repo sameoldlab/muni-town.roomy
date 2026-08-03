@@ -13,6 +13,7 @@ import {
   BrowserOAuthClient,
   atprotoLoopbackClientMetadata,
   buildLoopbackClientId,
+  OAuthCallbackError,
 } from "@atproto/oauth-client-browser";
 import { Agent } from "@atproto/api";
 import type { OAuthSession } from "@atproto/oauth-client-browser";
@@ -353,11 +354,17 @@ export interface InitSessionOptions {
  * is the OAuth `state` value round-tripped through the PDS (present only
  * when this call processed an OAuth callback, not a plain session restore).
  */
-export interface LoginResult {
+export type = LoginResult {
   session: OAuthSession;
   agent: Agent;
   state?: string | null;
 }
+
+/** Result of {@link login}: a session on success, a failure reason otherwise. */
+export type LoginOutcome = LoginResult |  {
+  /** Why an OAuth login did not produce a session. */
+  failure: LoginFailureReason = "timeout" | "rejected" | "invalid";
+};
 
 /**
  * Wait for the next deep-link event targeting this app. Resolves with the
@@ -458,35 +465,36 @@ export async function initSession(
  *
  * Web: redirects the browser to the PDS authorization page; the promise does
  * **not** resolve in the current page context (the browser navigates away)
- * and the returned `null` is never reached.
+ * and the returned value is never reached.
  *
  * Tauri: opens the PDS in the system browser, then **blocks** until the
  * deep-link redirect (`space.roomy:/?state=…&code=…`) arrives and processes
- * the callback in place. Returns `{ session, agent, state }` on success, or
- * `null` if the user rejected the request, abandoned the flow (10-minute
- * timeout), or the callback state was invalid.
+ * the callback in place. Returns `{ session, agent, state }` on success, or a
+ * `{ failure }` with a reason when the user rejected the request, abandoned
+ * the flow (10-minute timeout), or the callback state was invalid.
  */
 export async function login(
   appserverDid: string,
   handle: string,
   opts: InitSessionOptions = {},
-): Promise<LoginResult | null> {
+): Promise<LoginOutcome> {
   const client = await createOAuthClient(appserverDid, opts);
   // Forward `state` so the app can round-trip a return URL through the PDS.
   // The value comes back unchanged via the `state` field of the result.
   const tauri = window.__TAURI__;
   if (!tauri) {
     await client.signIn(handle, opts.state ? { state: opts.state } : undefined);
-    return null; // unreachable — the browser has navigated to the PDS
+    return { failure: "invalid" }; // unreachable — the browser has navigated to the PDS
   }
 
   // Race the whole Tauri flow (opener IPC, deep-link wait, callback) against
-  // a timeout so an abandoned login ALWAYS resolves (`null`), letting the
-  // caller revert its loading state. `waitForDeepLink` alone can't guarantee
-  // this: the opener IPC promise or the deep-link listener could in theory
-  // never settle, and the flow must not hang on them.
+  // a timeout so an abandoned login ALWAYS resolves, letting the caller
+  // revert its loading state and surface the expiry. `waitForDeepLink` alone
+  // can't guarantee this: the opener IPC promise or the deep-link listener
+  // could in theory never settle, and the flow must not hang on them.
   const timeoutMs = opts.loginTimeoutMs ?? 10 * 60_000;
-  return withTimeout(tauriLogin(client, handle, opts, tauri), timeoutMs);
+  const outcome = await withTimeout(tauriLogin(client, handle, opts, tauri), timeoutMs);
+  return outcome ?? { failure: "timeout" };
 }
 
 async function tauriLogin(
@@ -494,7 +502,7 @@ async function tauriLogin(
   handle: string,
   opts: InitSessionOptions,
   tauri: NonNullable<Window["__TAURI__"]>,
-): Promise<LoginResult | null> {
+): Promise<LoginOutcome> {
   const url = await client.authorize(handle, opts.state ? { state: opts.state } : undefined);
 
   // Fire-and-forget: `openUrl`'s IPC promise may never settle on some
@@ -503,25 +511,18 @@ async function tauriLogin(
   void tauri.opener.openUrl(url).catch(() => {});
 
   const deepUrl = await waitForDeepLink(tauri.deepLink);
-  if (!deepUrl) return null;
+  if (!deepUrl) return { failure: "timeout" };
 
   const params = new URLSearchParams(new URL(deepUrl).search);
-  if (!params.has("state")) return null;
+  if (!params.has("state")) return { failure: "invalid" };
 
-  try {
-    const cbResult = await client.initCallback(params, client.clientMetadata.redirect_uris[0]);
-    if (!cbResult?.session) return null;
-    return {
-      session: cbResult.session,
-      agent: new Agent(cbResult.session as any),
-      state: cbResult.state,
-    };
-  } catch (err) {
-    // OAuthCallbackError — user rejected (error=access_denied) or invalid
-    // state (PKCE state expired while the user was away).
-    console.error("OAuth callback failed:", err);
-    return null;
-  }
+  const cbResult = await client.initCallback(params, client.clientMetadata.redirect_uris[0]);
+  if (!cbResult?.session) return { failure: "invalid" };
+  return {
+    session: cbResult.session,
+    agent: new Agent(cbResult.session as any),
+    state: cbResult.state,
+  };
 }
 
 /**
