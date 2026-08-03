@@ -143,6 +143,7 @@ export async function init() {
       void subscribeIfAlreadyPermitted();
       return;
     }
+
     const result = await initSession(CONFIG.appserverDid, {
       port: CONFIG.port,
       scope: OAUTH_SCOPE,
