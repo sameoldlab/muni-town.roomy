@@ -20,6 +20,10 @@
     {"identifier": "opener:allow-open-path",
     "allow": [
       {"url": "https://*" }
-    ]}
+    ]},
+    {
+      "identifier": "http:default",
+      "allow": [{"url": "https://roomy.space/*"}]
+    }
   ]
 }
