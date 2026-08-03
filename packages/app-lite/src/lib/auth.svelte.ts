@@ -192,14 +192,8 @@ export async function login(handle: string) {
     usePublicClient: CONFIG.usePublicClient,
     state: returnUrl,
   });
-  // Tauri: `sdkLogin` blocks until the deep-link redirect arrives and
-  // processes it in place — no page reload, so no white-flash/spinner.
-  // On failure it returns a `{ failure }` reason instead of throwing. Only
-  // the timeout is worth surfacing: the attempt is provably dead (the
-  // authorization link has expired) and the user otherwise gets no feedback
-  // beyond the button reverting. Rejections/cancellations are self-evident
-  // (the user just clicked away in the browser) and stay silent.
-  if (result && "session" in result) {
+
+  if (result) {
     session = result.session;
     agent = result.agent;
     await setupDirectXrpc(result.agent);
@@ -208,13 +202,6 @@ export async function login(handle: string) {
     if (target && target !== currentReturnUrl()) {
       goto(target, { replaceState: true });
     }
-    return;
-  }
-
-  if (result && "failure" in result && result.failure === "timeout") {
-    throw new Error(
-      "Your sign-in attempt has expired — the authorization link is only valid for about 10 minutes. Please try again.",
-    );
   }
 }
 
