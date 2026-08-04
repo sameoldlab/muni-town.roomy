@@ -65,6 +65,15 @@
     >
       😂
     </Toolbar.Button>
+    <Toolbar.Button
+      onclick={() => onToggleReaction("❤️")}
+      class={[
+        buttonVariants({ variant: "ghost", size: "iconSm" }),
+        "backdrop-blur-none h-[34px]",
+      ]}
+    >
+      ❤️
+    </Toolbar.Button>
 
     <Tooltip tip="Pick an Emoji">
       <PopoverEmojiPicker

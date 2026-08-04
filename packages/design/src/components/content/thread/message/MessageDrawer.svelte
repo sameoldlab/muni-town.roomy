@@ -68,6 +68,13 @@
       >
         😂
       </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        onclick={() => handleQuickReact("❤️")}
+      >
+        ❤️
+      </Button>
 
       <PopoverEmojiPicker
         bind:open={isEmojiPickerOpen}
