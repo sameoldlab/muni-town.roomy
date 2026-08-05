@@ -27,6 +27,7 @@
       "required": [
         "did",
         "isAdmin",
+        "isBanned",
         "roleIds"
       ],
       "properties": {
@@ -34,6 +35,9 @@
           "type": "string"
         },
         "isAdmin": {
+          "type": "boolean"
+        },
+        "isBanned": {
           "type": "boolean"
         },
         "roleIds": {

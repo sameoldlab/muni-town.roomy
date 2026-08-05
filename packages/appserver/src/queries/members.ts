@@ -24,6 +24,7 @@ export interface MemberRow {
   name?: string;
   avatar?: string;
   isAdmin: boolean;
+  isBanned: boolean;
   roleIds: string[];
 }
 
@@ -81,13 +82,17 @@ export async function selectMembers(
            exists (
              select 1 from edges
               where head = m.head and tail = m.tail and label = 'admin'
-           ) as is_admin
+           ) as is_admin,
+           exists (
+             select 1 from comp_bans
+              where entity = m.head and user_did = m.tail
+           ) as is_banned
          from edges m
          left join comp_user cu on cu.did = m.tail
          left join comp_info ci on ci.entity = m.tail
         where m.head = ? and m.label = 'member'${memberFilter.clause}`,
     )
-    .all<{ did: string; handle: string | null; name: string | null; avatar: string | null; is_admin: number }>([spaceId, ...memberFilter.binds]);
+    .all<{ did: string; handle: string | null; name: string | null; avatar: string | null; is_admin: number; is_banned: number }>([spaceId, ...memberFilter.binds]);
 
   // Role assignments per member, scoped to this space's stream.
   const roleStmt = await db.query(
@@ -102,6 +107,7 @@ export async function selectMembers(
       name: r.name,
       avatar: r.avatar,
       isAdmin: !!r.is_admin,
+      isBanned: !!r.is_banned,
       roleIds: (await roleStmt.all<{ role_id: string }>([r.did, spaceId])).map((row) => row.role_id),
     }) as MemberRow,
   ));

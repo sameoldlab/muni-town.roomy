@@ -56,6 +56,41 @@
       console.error(err);
     }
   }
+
+  async function banMember(memberDid: string) {
+    if (!confirm("Ban this member? They will no longer be able to send events in this space.")) return;
+    try {
+      await sendEvents(spaceId, [
+        {
+          id: newUlid(),
+          $type: "space.roomy.space.banAccount.v0",
+          userDid: memberDid as UserDid,
+        },
+      ]);
+      toast.success("Member banned.");
+      membersQuery.refetch();
+    } catch (err) {
+      toast.error("Failed to ban member.");
+      console.error(err);
+    }
+  }
+
+  async function unbanMember(memberDid: string) {
+    try {
+      await sendEvents(spaceId, [
+        {
+          id: newUlid(),
+          $type: "space.roomy.space.unbanAccount.v0",
+          userDid: memberDid as UserDid,
+        },
+      ]);
+      toast.success("Member unbanned.");
+      membersQuery.refetch();
+    } catch (err) {
+      toast.error("Failed to unban member.");
+      console.error(err);
+    }
+  }
 </script>
 
 <div class="max-w-2xl">
@@ -84,6 +119,9 @@
           {#if m.isAdmin}
             <span class="text-[10px] px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">admin</span>
           {/if}
+          {#if m.isBanned}
+            <span class="text-[10px] px-1 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">banned</span>
+          {/if}
           {#if currentUserIsAdmin && m.did !== currentUserDid}
             <ContextMenu>
               {#snippet trigger({ props })}
@@ -102,6 +140,15 @@
               {:else}
                 <ContextMenuItem onclick={() => addAdmin(m.did)}>
                   Promote to Admin
+                </ContextMenuItem>
+              {/if}
+              {#if m.isBanned}
+                <ContextMenuItem onclick={() => unbanMember(m.did)}>
+                  Unban Member
+                </ContextMenuItem>
+              {:else}
+                <ContextMenuItem variant="danger" onclick={() => banMember(m.did)}>
+                  Ban Member
                 </ContextMenuItem>
               {/if}
             </ContextMenu>

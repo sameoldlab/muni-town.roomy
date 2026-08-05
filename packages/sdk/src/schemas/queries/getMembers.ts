@@ -18,6 +18,7 @@ export const Member = type({
   "name?": "string",
   "avatar?": "string",
   isAdmin: "boolean",
+  isBanned: "boolean",
   roleIds: "string[]",
 });
 

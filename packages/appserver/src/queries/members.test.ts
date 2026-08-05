@@ -94,6 +94,7 @@ interface SeedOpts {
   avatar?: string;
   member?: boolean;
   admin?: boolean;
+  banned?: boolean;
   roleIds?: [string, string][];
 }
 
@@ -108,6 +109,12 @@ function seedSpaceWithUsers(db: Database, users: SeedOpts[]): void {
     });
     if (u.member) seedEdge(db, SPACE, u.did, "member");
     if (u.admin) seedEdge(db, SPACE, u.did, "admin");
+    if (u.banned) {
+      db.run(
+        "insert into comp_bans (entity, user_did) values (?, ?)",
+        [SPACE, u.did],
+      );
+    }
     for (const [roleId] of u.roleIds ?? []) {
       db.run(
         "insert into member_roles (user_id, role_id, stream_id) values (?, ?, ?)",
@@ -165,6 +172,19 @@ describe("selectMembers", () => {
     // externalAdmins carry profile fields but no isAdmin/roleIds.
     expect(externalAdmins[0]!.handle).toBe("admin.bsky.social");
     expect("isAdmin" in externalAdmins[0]!).toBe(false);
+  });
+
+  test("banned members are flagged isBanned", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpaceWithUsers(db, [
+      { did: "did:plc:alice", handle: "alice.bsky.social", member: true },
+      { did: "did:plc:bob", handle: "bob.bsky.social", member: true, banned: true },
+    ]);
+
+    const { members } = await selectMembers(asyncDb, SPACE);
+
+    expect(members.find((m) => m.did === "did:plc:alice")!.isBanned).toBe(false);
+    expect(members.find((m) => m.did === "did:plc:bob")!.isBanned).toBe(true);
   });
 
   test("null profile fields are stripped (not present on the wire)", async () => {
