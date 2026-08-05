@@ -124,11 +124,12 @@ let {
   class:mobile-backdrop-hidden={!mobileSidebar.visible}
 ></button>
 
-<!-- Fixed sidebar (full height, left) -->
+<!-- Fixed sidebar (full height, left) — slides in from left on mobile -->
 <div
   class={[
     "isolate fixed top-0 bottom-0 left-0 z-40 overflow-hidden bg-base-50/50 dark:bg-base-950 sm:bg-transparent backdrop-blur-sm sm:backdrop-blur-none sidebar-fixed",
-    mobileSidebar.visible ? "block" : "hidden sm:block",
+    "sidebar-mobile",
+    mobileSidebar.visible ? "sidebar-mobile-visible" : "sidebar-mobile-hidden",
   ]}
 >
   <div class="flex flex-col h-full">
@@ -217,6 +218,21 @@ let {
     transform: translateX(100%);
   }
 
+
+  /* ── Mobile sidebar: slides in from left on mobile, always visible on sm+ ── */
+  .sidebar-mobile {
+    transform: translateX(-100%);
+    transition: transform 300ms cubic-bezier(0.33, 1, 0.68, 1);
+    will-change: transform;
+  }
+  .sidebar-mobile.sidebar-mobile-visible {
+    transform: translateX(0);
+  }
+  @media (min-width: 640px) {
+    .sidebar-mobile {
+      transform: translateX(0);
+    }
+  }
   .sidebar-fixed {
     contain: layout style;
     padding-top: env(safe-area-inset-top);
