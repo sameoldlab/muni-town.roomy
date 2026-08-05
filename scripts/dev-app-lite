@@ -52,7 +52,7 @@ docker run -d \
     # Install deps if missing (fresh worktree)
     if [ ! -d node_modules ]; then
       echo 'Installing dependencies …'
-      pnpm install
+      pnpm install --frozen-lockfile
     fi
     # Build SDK if not already built (app-lite depends on it)
     if [ ! -d packages/sdk/dist ]; then
@@ -60,7 +60,7 @@ docker run -d \
       pnpm --filter @roomy-space/sdk build
     fi
     cd packages/app-lite
-    npx vite dev --host 0.0.0.0 --port $PORT
+    pnpm run dev --host 0.0.0.0 --port $PORT
   "
 echo "✔ Dev server started (http://localhost:$PORT)"
 echo "  Agent (roomy-dev) → http://$DEV_NAME:$PORT"
