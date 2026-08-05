@@ -30,9 +30,8 @@
     }
   });
 
-  // The cogs only swap to an X while hovered when the panel is open, so the
-  // button reads as "settings" at rest and "close" on intent.
-  let settingsHovered = $state(false);
+  // When the settings panel is open, the button shows an X (close) icon.
+  // When closed, it shows the settings cog.
 
   // Opening the settings panel just slides it in (no navigation) — the user
   // navigates by selecting a page from it. Closing it navigates back to the
@@ -100,8 +99,7 @@
   <!-- Settings: opens the settings panel (slides in from the right) without
        navigating; the user navigates by selecting a page from the panel.
        Closing it navigates back to the space's most recently accessed channel,
-       like the space selector. The cogs swap to an X only while hovered when
-       the panel is open, signalling “close”. -->
+       like the space selector. The button shows an X when the panel is open. -->
   <Button
     variant="ghost"
     size="default"
@@ -111,10 +109,8 @@
     aria-expanded={settingsBar.expanded}
     data-current={settingsBar.expanded}
     onclick={toggleSettings}
-    onmouseenter={() => (settingsHovered = true)}
-    onmouseleave={() => (settingsHovered = false)}
   >
-    {#if settingsBar.expanded && settingsHovered}
+    {#if settingsBar.expanded}
       <IconX />
     {:else}
       <IconSettings />
