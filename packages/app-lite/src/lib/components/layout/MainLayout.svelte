@@ -32,6 +32,50 @@ let {
   onNavigate(() => {
     mobileSidebar.visible = false;
   });
+
+  // ── Touch gesture: left-edge swipe opens mobile sidebar ──────────
+  // On mobile, the browser's swipe-back gesture conflicts with the sidebar.
+  // We intercept left-edge touch and open the sidebar instead.
+  const SWIPE_THRESHOLD = 50; // px of horizontal travel to trigger
+  const EDGE_ZONE = 30; // px from left edge to detect
+  const VERTICAL_TOLERANCE = 30; // max vertical drift to still count as horizontal swipe
+
+  let touchStartX = $state(0);
+  let touchStartY = $state(0);
+  let touchActive = $state(false);
+
+  function handleTouchStart(e: TouchEvent) {
+    const touch = e.touches[0];
+    if (!touch) return;
+    // Only intercept left-edge touches on mobile
+    if (touch.clientX > EDGE_ZONE) return;
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+    touchActive = true;
+  }
+
+  function handleTouchMove(e: TouchEvent) {
+    if (!touchActive) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - touchStartX;
+    const dy = Math.abs(touch.clientY - touchStartY);
+    // If vertical drift exceeds tolerance, abort (user is scrolling)
+    if (dy > VERTICAL_TOLERANCE) {
+      touchActive = false;
+      return;
+    }
+    // If horizontal travel exceeds threshold, open sidebar and prevent back-nav
+    if (dx > SWIPE_THRESHOLD) {
+      touchActive = false;
+      mobileSidebar.visible = true;
+      e.preventDefault();
+    }
+  }
+
+  function handleTouchEnd() {
+    touchActive = false;
+  }
 </script>
 
 <!-- Main panel: navbar + page content, offset to clear the fixed sidebar -->
@@ -40,6 +84,9 @@ let {
     "h-full flex flex-col overflow-hidden main-panel bg-white dark:bg-base-950",
     "sm:ml-64",
   ]}
+  ontouchstart={handleTouchStart}
+  ontouchmove={handleTouchMove}
+  ontouchend={handleTouchEnd}
 >
   <EnableNotificationsBanner />
   <Navbar {compact} class={compact ? "h-11 dark:bg-base-900/20" : "dark:bg-base-900/20"}>
