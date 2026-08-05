@@ -21,10 +21,14 @@
     roomId: string;
     message: Message;
     currentUserDid: string | undefined;
+    /** Whether the current user is an admin of the space (moderation). */
+    isAdmin: boolean;
     editingMessageId: string | undefined;
     onStartEdit: (messageId: string) => void;
     onCancelEdit: () => void;
     onOpenMobileMenu: (message: Message) => void;
+    /** Requests the delete confirmation for this message (raised to ChatArea). */
+    onRequestDelete: (message: Message) => void;
     mergeWithPrevious?: boolean;
   };
 
@@ -33,10 +37,12 @@
     roomId,
     message,
     currentUserDid,
+    isAdmin,
     editingMessageId,
     onStartEdit,
     onCancelEdit,
     onOpenMobileMenu,
+    onRequestDelete,
     mergeWithPrevious = false,
   }: Props = $props();
 
@@ -68,7 +74,10 @@
   );
 
   let isBridged = $derived(message.authorDid.startsWith("did:discord:"));
-  let canEditDelete = $derived(message.authorDid === currentUserDid);
+  let isAuthor = $derived(message.authorDid === currentUserDid);
+  // Edit stays author-only; space admins may delete anyone's message.
+  let canEdit = $derived(isAuthor);
+  let canDelete = $derived(isAuthor || isAdmin);
 
   function handleContextAction(e: MouseEvent) {
     // On mobile (coarse pointer), long-press opens the drawer
@@ -194,9 +203,11 @@
           {spaceId}
           {roomId}
           {message}
-          {canEditDelete}
+          {canEdit}
+          {canDelete}
           bind:keepToolbarOpen
           {onStartEdit}
+          onRequestDelete={() => onRequestDelete(message)}
         />
       {/snippet}
 

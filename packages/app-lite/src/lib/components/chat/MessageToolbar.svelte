@@ -2,25 +2,29 @@
   import ToolbarShell from "@roomy/design/components/content/thread/message/ToolbarShell.svelte";
   import { messagingState } from "./messaging-state.svelte";
   import { addReaction } from "$lib/mutations/reaction";
-  import { deleteMessage } from "$lib/mutations/message";
   import type { Message } from "$lib/queries/messages";
 
   type Props = {
     spaceId: string;
     roomId: string;
     message: Message;
-    canEditDelete: boolean;
+    canEdit: boolean;
+    canDelete: boolean;
     keepToolbarOpen?: boolean;
     onStartEdit: (messageId: string) => void;
+    /** Requests the delete confirmation (owned by ChatArea). */
+    onRequestDelete: () => void;
   };
 
   let {
     spaceId,
     roomId,
     message,
-    canEditDelete,
+    canEdit,
+    canDelete,
     keepToolbarOpen = $bindable(false),
     onStartEdit,
+    onRequestDelete,
   }: Props = $props();
 
   function onToggleReaction(emoji: string) {
@@ -39,14 +43,14 @@
     onStartEdit(message.id);
   }
 
-  async function onDelete() {
-    if (!confirm("Delete this message?")) return;
-    await deleteMessage(spaceId, roomId, message.id);
+  function onDelete() {
+    onRequestDelete();
   }
 </script>
 
 <ToolbarShell
-  {canEditDelete}
+  {canEdit}
+  {canDelete}
   bind:keepToolbarOpen
   {onToggleReaction}
   {onEdit}

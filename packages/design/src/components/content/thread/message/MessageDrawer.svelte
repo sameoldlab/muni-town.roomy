@@ -13,7 +13,8 @@
   let {
     visible,
     open = $bindable(false),
-    canEditDelete,
+    canEdit,
+    canDelete,
     onToggleReaction,
     onReply,
     onStartThreading,
@@ -23,7 +24,10 @@
     /** Whether there is a target message — when false the action area is empty. */
     visible: boolean;
     open: boolean;
-    canEditDelete: boolean;
+    /** Author-only — shows the Edit action. */
+    canEdit: boolean;
+    /** Author or space admin — shows the Delete action. */
+    canDelete: boolean;
     onToggleReaction: (emoji: string) => void;
     onReply: () => void;
     onStartThreading: () => void;
@@ -111,7 +115,7 @@
       >
         <IconNeedleThread />Create Thread
       </Button>
-      {#if canEditDelete}
+      {#if canEdit}
         <Button
           onclick={() => {
             onEdit();
@@ -122,7 +126,8 @@
           <IconEdit />
           Edit
         </Button>
-
+      {/if}
+      {#if canDelete}
         <Button
           onclick={() => {
             onDelete();

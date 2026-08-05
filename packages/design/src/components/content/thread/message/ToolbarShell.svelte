@@ -12,7 +12,8 @@
   } from "../../../../icons/index";
 
   let {
-    canEditDelete,
+    canEdit,
+    canDelete,
     keepToolbarOpen = $bindable(false),
     onToggleReaction,
     onEdit,
@@ -20,7 +21,10 @@
     onStartThreading,
     onReply,
   }: {
-    canEditDelete: boolean;
+    /** Author-only — shows the Edit button. */
+    canEdit: boolean;
+    /** Author or space admin — shows the Delete button. */
+    canDelete: boolean;
     /** Bindable — kept open while the emoji picker is open. */
     keepToolbarOpen?: boolean;
     onToggleReaction: (emoji: string) => void;
@@ -96,7 +100,7 @@
       </PopoverEmojiPicker>
     </Tooltip>
 
-    {#if canEditDelete}
+    {#if canEdit}
       <Tooltip tip="Edit Message">
         <Toolbar.Button
           onclick={onEdit}
@@ -109,7 +113,9 @@
           <IconEdit />
         </Toolbar.Button>
       </Tooltip>
+    {/if}
 
+    {#if canDelete}
       <Tooltip tip="Delete Message">
         <Toolbar.Button
           onclick={onDelete}

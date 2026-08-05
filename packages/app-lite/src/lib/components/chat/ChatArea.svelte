@@ -2,6 +2,7 @@
   import { ScrollArea } from "bits-ui";
   import ChatMessage from "./ChatMessage.svelte";
   import MobileMessageDrawer from "./MobileMessageDrawer.svelte";
+  import DeleteMessageDialog from "@roomy/design/components/content/thread/message/DeleteMessageDialog.svelte";
   import { Virtualizer, type VirtualizerHandle } from "virtua/svelte";
   import { setContext, onMount } from "svelte";
   import Button from "@roomy/design/components/ui/button/Button.svelte";
@@ -9,6 +10,8 @@
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import ChatMessageSkeleton from "@roomy/design/components/content/thread/message/ChatMessageSkeleton.svelte";
   import { createMessagesQuery, type Message } from "$lib/queries/messages";
+  import { deleteMessage } from "$lib/mutations/message";
+  import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
   import { auth } from "$lib/auth.svelte";
   import { cache } from "@roomy-space/sdk";
   import { queryClient } from "$lib/client";
@@ -27,6 +30,11 @@
   let { spaceId, roomId, onSeen }: Props = $props();
 
   const messagesQuery = createMessagesQuery(() => roomId);
+
+  // Space admin status gates moderation (deleting others' messages).
+  // `getSpaceMetadata` is shared with the sidebar via the Tanstack cache.
+  const spaceMetaQuery = createSpaceMetadataQuery(() => spaceId);
+  const isAdmin = $derived(spaceMetaQuery.data?.isAdmin ?? false);
   const currentUserDid = $derived(auth.userDid);
 
   let virtualizer: VirtualizerHandle = $state(null!);
@@ -44,10 +52,19 @@
 
   // Lifted state for editing messages
   let editingMessageId = $state<string | undefined>(undefined);
-
   // Mobile drawer state
   let mobileMenuMessage = $state<Message | null>(null);
   let isMobileDrawerOpen = $state(false);
+
+  // Delete-confirmation state — lifted here (not inside the hover-gated
+  // toolbar) so the modal survives while it is open.
+  let deleteMessageTarget = $state<Message | null>(null);
+  let isDeleteConfirmOpen = $state(false);
+
+  function openDeleteConfirm(message: Message) {
+    deleteMessageTarget = message;
+    isDeleteConfirmOpen = true;
+  }
 
   function openMobileMenu(message: Message) {
     mobileMenuMessage = message;
@@ -393,10 +410,12 @@
                       {roomId}
                       message={message}
                       currentUserDid={currentUserDid}
+                      {isAdmin}
                       editingMessageId={editingMessageId}
                       onStartEdit={(id) => (editingMessageId = id)}
                       onCancelEdit={() => (editingMessageId = undefined)}
                       onOpenMobileMenu={openMobileMenu}
+                      onRequestDelete={openDeleteConfirm}
                       mergeWithPrevious={message.mergeWithPrevious}
                     />
                   {/if}
@@ -424,7 +443,31 @@
     roomId={roomId}
     message={mobileMenuMessage}
     bind:open={isMobileDrawerOpen}
-    canEditDelete={mobileMenuMessage?.authorDid === currentUserDid}
+    canEdit={mobileMenuMessage?.authorDid === currentUserDid}
+    canDelete={
+      mobileMenuMessage
+        ? mobileMenuMessage.authorDid === currentUserDid || isAdmin
+        : false
+    }
     onStartEdit={(id) => (editingMessageId = id)}
+    onRequestDelete={() => {
+      if (!mobileMenuMessage) return;
+      isMobileDrawerOpen = false;
+      openDeleteConfirm(mobileMenuMessage);
+    }}
+  />
+
+  <DeleteMessageDialog
+    bind:open={isDeleteConfirmOpen}
+    authorName={deleteMessageTarget?.authorName}
+    isAdminDelete={
+      deleteMessageTarget
+        ? deleteMessageTarget.authorDid !== currentUserDid && isAdmin
+        : false
+    }
+    onConfirm={async () => {
+      if (!deleteMessageTarget) return;
+      await deleteMessage(spaceId, roomId, deleteMessageTarget.id);
+    }}
   />
 </div>
