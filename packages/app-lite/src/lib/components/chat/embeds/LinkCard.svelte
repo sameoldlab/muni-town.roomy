@@ -42,7 +42,7 @@
   class="not-prose max-w-[70ch] rounded-lg border border-base-400/60 dark:border-base-800 bg-base-100/50 dark:bg-base-900/50 flex flex-col justify-stretch gap-4 min-[500px]:flex-row hover:border-accent-400/60 dark:hover:border-accent-800 hover:bg-accent-50/40 dark:hover:bg-accent-900/20 transition-colors no-underline overflow-hidden"
 >
   {#if videoUrl}
-    <div class="w-full flex-shrink-0 min-[500px]:max-w-60 min-[500px]:self-stretch">
+    <div class="w-full flex-shrink-0 max-h-40 overflow-hidden min-[500px]:max-w-60 min-[500px]:self-stretch">
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
         muted
@@ -53,7 +53,7 @@
       </video>
     </div>
   {:else if imageUrl}
-    <div class="w-full flex-shrink-0 min-[500px]:max-w-60 min-[500px]:self-stretch">
+    <div class="w-full flex-shrink-0 max-h-40 overflow-hidden min-[500px]:max-w-60 min-[500px]:self-stretch">
       <img
         alt=""
         class="m-0 h-full w-full object-cover"
