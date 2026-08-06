@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { loadConfig } from "./config.js";
 import { authenticate } from "./auth.js";
 import { createSpace, listSpaces } from "./spaces.js";
-import { listRooms } from "./rooms.js";
+import { listRooms, findLobbyRoom } from "./rooms.js";
 import { sendMessage, readMessages } from "./messages.js";
 
 const program = new Command();
@@ -55,6 +55,28 @@ program
     }
   });
 
+// ── join ───────────────────────────────────────────────────────────────────
+
+program
+  .command("join")
+  .description("Join a space")
+  .requiredOption("--space <id>", "Space ID")
+  .option("--invite-token <token>", "Invite token for private spaces")
+  .action(async (options: { space: string; inviteToken?: string }) => {
+    try {
+      const config = loadConfig();
+      const { xrpc } = await authenticate(config);
+      const { spaceId } = await xrpc.procedure("space.roomy.space.joinSpace", {
+        spaceId: options.space,
+        ...(options.inviteToken ? { inviteToken: options.inviteToken } : {}),
+      });
+      console.log(`Joined space: ${spaceId}`);
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  });
+
 // ── rooms ─────────────────────────────────────────────────────────────────
 
 program
@@ -90,16 +112,23 @@ program
 
 program
   .command("send")
-  .description("Send a message to a room")
+  .description("Send a message to a room (defaults to the lobby)")
   .requiredOption("--space <id>", "Space ID")
-  .requiredOption("--room <id>", "Room ID")
+  .option("--room <id>", "Room ID (defaults to the lobby)")
   .option("--text <text>", "Message text")
-  .action(async (options: { space: string; room: string; text?: string }) => {
+  .action(async (options: { space: string; room?: string; text?: string }) => {
     try {
       const text = options.text ?? await readStdin();
       const config = loadConfig();
       const { xrpc } = await authenticate(config);
-      const { messageId } = await sendMessage(xrpc, options.space, options.room, text);
+      let roomId = options.room;
+      if (!roomId) {
+        const lobby = await findLobbyRoom(xrpc, options.space);
+        if (!lobby) throw new Error(`No rooms found in space ${options.space}`);
+        roomId = lobby.id;
+        console.error(`Using lobby room: ${lobby.name ?? "(unnamed)"} (${roomId})`);
+      }
+      const { messageId } = await sendMessage(xrpc, options.space, roomId, text);
       console.error(`Message sent: ${messageId}`);
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -111,23 +140,43 @@ program
 
 program
   .command("read")
-  .description("Read messages from a room")
-  .requiredOption("--room <id>", "Room ID")
+  .description("Read messages from a room (defaults to the lobby)")
+  .option("--space <id>", "Space ID (required if --room is omitted)")
+  .option("--room <id>", "Room ID (defaults to the lobby)")
   .option("--limit <n>", "Max messages", "20")
-  .action(async (options: { room: string; limit: string }) => {
+  .action(async (options: { space?: string; room?: string; limit: string }) => {
     try {
       const config = loadConfig();
       const { xrpc } = await authenticate(config);
-      const messages = await readMessages(xrpc, options.room, Number(options.limit));
+      let roomId = options.room;
+      if (!roomId) {
+        if (!options.space) throw new Error("Provide --room or --space");
+        const lobby = await findLobbyRoom(xrpc, options.space);
+        if (!lobby) throw new Error(`No rooms found in space ${options.space}`);
+        roomId = lobby.id;
+      }
+      const messages = await readMessages(xrpc, roomId, Number(options.limit));
       for (const m of messages) {
-        const ts = new Date(m.timestamp).toISOString();
-        console.log(`[${ts}] ${m.authorName} (${m.authorDid}): ${m.content}`);
+        const ts = formatTimestamp(m.timestamp);
+        console.log(`[${ts}] ${m.authorName || m.authorDid}: ${m.content}`);
       }
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
   });
+
+/**
+ * Format a message timestamp for display. System events (e.g. "joined the
+ * space") carry an empty timestamp, so fall back gracefully instead of
+ * throwing on `new Date("")`.
+ */
+function formatTimestamp(ts: string): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toISOString();
+}
 
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {

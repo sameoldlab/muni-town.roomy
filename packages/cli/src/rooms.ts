@@ -48,3 +48,17 @@ export async function listRooms(
     })),
   };
 }
+
+/**
+ * Find the lobby room in a space — the default channel new members land in.
+ * Prefers a room named "lobby"; falls back to the first room if none is named
+ * that. Returns undefined if the space has no rooms.
+ */
+export async function findLobbyRoom(
+  xrpc: DirectXrpcClient,
+  spaceId: string,
+): Promise<RoomInfo | undefined> {
+  const { categories, orphans } = await listRooms(xrpc, spaceId);
+  const all = [...categories.flatMap((c) => c.channels), ...orphans];
+  return all.find((r) => r.name?.toLowerCase() === "lobby") ?? all[0];
+}

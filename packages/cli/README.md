@@ -51,6 +51,15 @@ Create a new Roomy space.
 roomy-cli create-space --name "My Space" [--description "A description"]
 ```
 
+### `join`
+
+Join a space (public join, or with an invite token for private spaces).
+
+```bash
+roomy-cli join --space <space-did>
+roomy-cli join --space <space-did> --invite-token <token>
+```
+
 ### `rooms`
 
 List channels (rooms) in a space, grouped by sidebar category.
@@ -61,19 +70,23 @@ roomy-cli rooms --space <space-did>
 
 ### `send`
 
-Send a message to a room. Accepts text inline or piped via stdin.
+Send a message to a room. Accepts text inline or piped via stdin. If `--room`
+is omitted, the message goes to the space's **lobby** room.
 
 ```bash
 roomy-cli send --space <space-did> --room <room-id> --text "Hello!"
-echo "Piped content" | roomy-cli send --space <space-did> --room <room-id>
+roomy-cli send --space <space-did> --text "Hello!"          # → lobby
+roomy-cli send --space <space-did> --room <room-id>          # text via stdin
 ```
 
 ### `read`
 
-Read recent messages from a room.
+Read recent messages from a room. If `--room` is omitted, reads the space's
+**lobby** room. System events (e.g. "joined the space") show a `—` timestamp.
 
 ```bash
 roomy-cli read --room <room-id> [--limit 20]
+roomy-cli read --space <space-did> [--limit 20]   # → lobby
 ```
 
 ## Agent Testing
