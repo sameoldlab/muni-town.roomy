@@ -5,6 +5,7 @@ import { authenticate } from "./auth.js";
 import { createSpace, listSpaces } from "./spaces.js";
 import { listRooms, findLobbyRoom } from "./rooms.js";
 import { sendMessage, readMessages } from "./messages.js";
+import { setProfile } from "./profile.js";
 
 const program = new Command();
 export { program };
@@ -200,6 +201,26 @@ async function readStdin(): Promise<string> {
   });
   return promise;
 }
+
+
+program
+  .command("profile")
+  .description("Set the caller's Roomy profile")
+  .option("--display-name <name>", "Display name")
+  .option("--description <desc>", "Profile description")
+  .option("--pronouns <pronouns>", "Pronouns")
+  .option("--website <url>", "Website URL")
+  .action(async (options: { displayName?: string; description?: string; pronouns?: string; website?: string }) => {
+    try {
+      const config = loadConfig();
+      const { agent } = await authenticate(config);
+      await setProfile(agent, options);
+      console.log("Profile updated");
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  });
 
 // ── parse ─────────────────────────────────────────────────────────────────
 

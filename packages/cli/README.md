@@ -17,6 +17,7 @@ Set these environment variables (or copy `.env.example` to `.env` and source it)
 |---|---|---|---|
 | `ATPROTO_IDENTIFIER` | yes | — | Bluesky handle or DID |
 | `ATPROTO_APP_PASSWORD` | yes | — | App password (generate at bsky.app/settings/app-passwords) |
+| `ATPROTO_PDS` | no | *(auto-resolved from DID doc)* | PDS service endpoint to log in against. Defaults to the account's `AtprotoPersonalDataServer` from its PLC DID document, falling back to `https://bsky.social`. Override when auto-detection fails. |
 | `APPSERVER_URL` | no | `http://localhost:8080` | Roomy appserver URL |
 | `APPSERVER_DID` | no | `did:web:api.roomy.space` | Appserver DID |
 
@@ -58,6 +59,14 @@ Join a space (public join, or with an invite token for private spaces).
 ```bash
 roomy-cli join --space <space-did>
 roomy-cli join --space <space-did> --invite-token <token>
+```
+
+### `profile`
+
+Set (or update) the authenticated user's Roomy profile.
+
+```bash
+roomy-cli profile --display-name "Little Fox" [--description "..."] [--pronouns "she/her"] [--website https://...]
 ```
 
 ### `rooms`
