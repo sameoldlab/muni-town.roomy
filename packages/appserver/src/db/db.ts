@@ -113,8 +113,12 @@ export const SPACE_SCHEMA_VERSION = "1";
 /**
  * Global DB schema version (`data/global.sqlite`). Bump whenever
  * schema-global.sql changes.
+ *
+ * `.2`: added the global `profiles` table (authoritative per-user Roomy
+ * profile). A bump wipes and re-derives the global DB (edges backfill from
+ * the monolithic DB; profiles are re-populated on the next profile fetch).
  */
-export const GLOBAL_SCHEMA_VERSION = "1";
+export const GLOBAL_SCHEMA_VERSION = "2";
 
 const DEFAULT_DB_PATH = process.env.APPSERVER_DB_PATH ?? "data/roomy.sqlite";
 
@@ -192,6 +196,28 @@ export function openSpaceDb(spaceDid: string): AsyncDatabase {
 }
 
 /**
+ * Resolve the space DID that owns `entityId` (a room or message entity) by
+ * reading `entities.stream_id` from the monolithic DB, then return a handle
+ * that routes requests to that space's per-space DB.
+ *
+ * Phase 2 (read cutover): room/message-scoped handlers need to know which
+ * per-space DB to read from, but their XRPC params only carry the room/message
+ * id. The monolithic DB is still dual-written and correct during Phase 2, so
+ * it is the cheap, authoritative place to resolve entity → space. Returns
+ * `null` when the entity doesn't exist (the caller decides 404 vs 400).
+ */
+export async function openSpaceDbForEntity(
+  entityId: string,
+): Promise<AsyncDatabase | null> {
+  const main = openDb();
+  const row = await main
+    .query("select stream_id from entities where id = ?")
+    .get<{ stream_id: string }>(entityId);
+  if (!row) return null;
+  return openSpaceDb(row.stream_id);
+}
+
+/**
  * Return a handle that routes every request to the global DB
  * (`data/global.sqlite`), over the shared worker. The global DB is created
  * lazily on first use and holds only `joinedSpace`/`leftSpace` edges.
@@ -200,6 +226,21 @@ export function openGlobalDb(): AsyncDatabase {
   ensureLink();
   if (!globalDb) {
     globalDb = mainDb!.global();
+  }
+  return globalDb;
+}
+
+/**
+ * Return the global DB handle if the worker-backed DBs are initialised, or
+ * `null` otherwise. Unlike `openGlobalDb()`, this does NOT lazily initialise
+ * the worker — used by code paths that may run against a raw in-memory
+ * `Database` in tests (where the global DB isn't set up) and should skip the
+ * global write rather than spin up a worker.
+ */
+export function tryOpenGlobalDb(): AsyncDatabase | null {
+  if (!mainDb) return null;
+  if (!globalDb) {
+    globalDb = mainDb.global();
   }
   return globalDb;
 }
