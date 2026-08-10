@@ -35,6 +35,12 @@ export interface DbLike {
    * exercise dual-write.
    */
   global?(): DbLike;
+  /**
+   * Optional (Phase 3): backfill the global `entity_space` index from a
+   * per-space DB's `entities` table. Absent on sync adapters used in tests
+   * that don't exercise the entity→space index.
+   */
+  backfillEntitySpace?(spaceDid: string): Promise<{ backfilled: number }>;
 }
 
 // ─── Worker message protocol types ──────────────────────────────────────
@@ -56,13 +62,14 @@ export interface WorkerRequest {
     | "transaction"
     | "close"
     | "init"
-    | "health";
+    | "health"
+    | "backfillEntitySpace";
   /** SQL string (for query/run/exec/prepare). */
   sql?: string;
   /** Bind parameters (for query/run/prepareRun/prepareAll/prepareGet). */
   params?: unknown[];
-  /** Which DB the request targets. Defaults to the monolithic materialised DB. */
-  targetDb?: "main" | "space" | "global";
+  /** Which DB the request targets. Defaults to the event-log DB. */
+  targetDb?: "main" | "space" | "global" | "readstate" | "events";
   /** Per-space DB selector (required when targetDb is "space"). */
   spaceDid?: string;
   /** Query mode: "all" (default) or "get" (single row). */
