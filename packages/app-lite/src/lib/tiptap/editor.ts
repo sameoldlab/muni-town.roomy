@@ -1,5 +1,6 @@
 import { mount, unmount } from "svelte";
 import { keymap } from "@tiptap/pm/keymap";
+import { splitBlock } from "@tiptap/pm/commands";
 import { PluginKey } from "@tiptap/pm/state";
 import Mention from "@tiptap/extension-mention";
 import SuggestionSelect from "@roomy/design/components/helper/SuggestionSelect.svelte";
@@ -21,11 +22,32 @@ export const initKeyboardShortcutHandler = ({
 }: KeyboardShortcutHandlerProps) =>
   Extension.create({
     name: "keyboardShortcutHandler",
+    // Higher than StarterKit's default (100) so this keymap runs before the
+    // HardBreak extension's `Shift-Enter`/`Mod-Enter` → setHardBreak bindings,
+    // letting us override them with splitListItem/splitBlock (new block).
+    priority: 1000,
     addProseMirrorPlugins() {
       return [
         keymap({
+          // Bare Enter sends the message (chat convention).
           Enter: () => {
             onEnter();
+            return true;
+          },
+          // Shift/Cmd+Enter create a new block. In a list this means a new
+          // list item (splitListItem); elsewhere a new paragraph (splitBlock).
+          // This lets users build lists and stack multiple headers in one
+          // message without sending.
+          "Shift-Enter": (state, dispatch) => {
+            if (!this.editor.commands.splitListItem("listItem")) {
+              splitBlock(state, dispatch);
+            }
+            return true;
+          },
+          "Mod-Enter": (state, dispatch) => {
+            if (!this.editor.commands.splitListItem("listItem")) {
+              splitBlock(state, dispatch);
+            }
             return true;
           },
         }),
