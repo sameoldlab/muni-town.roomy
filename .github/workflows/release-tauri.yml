@@ -68,7 +68,7 @@ jobs:
       - name: Generate Build Assets
         run: |
           pnpm install
-          cargo install tauri-cli --version "^2.0.0" --locked
+          pnpm -w add @tauri-apps/cli@2.11
           pnpm turbo run build-lib
           cd ./packages/app-lite
           pnpm tauri icon -o src-tauri/icons static/icons/icon-512.png
