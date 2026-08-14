@@ -17,6 +17,7 @@
 import type { Server } from "bun";
 import { XrpcRouter, type AuthVerifier, type SyncHandler, type WsData } from "./xrpc/index.ts";
 import { selectAuthVerifier } from "./xrpc/auth.ts";
+import { appserverSigningKeyMultibase } from "./auth/serviceAuth.ts";
 import { Router as InvalidationRouter } from "./invalidation/index.ts";
 import { startEmbedSweeper, stopEmbedSweeper, embedSweeperStats } from "./embed/sweeper.ts";
 import { countPendingLinks } from "./embed/enricher.ts";
@@ -361,6 +362,14 @@ export async function createAppserver(
   const DID_DOCUMENT = {
     "@context": ["https://www.w3.org/ns/did/v1"],
     id: ownDid,
+    verificationMethod: [
+      {
+        id: `${ownDid}#atproto`,
+        type: "Multikey",
+        controller: ownDid,
+        publicKeyMultibase: await appserverSigningKeyMultibase(),
+      },
+    ],
     service: [
       {
         id: "#space_roomy_appserver",

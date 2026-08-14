@@ -10,7 +10,8 @@
  *   ├── roomy-events.sqlite       (event log; also holds per-stream DID signing keys)
  *   ├── roomy-readstate.sqlite    (read state)
  *   ├── global.sqlite             (global DB)
- *   └── spaces/                   (per-space DBs)
+ *   ├── spaces/                   (per-space DBs)
+ *   └── appserver-signing-key.hex (appserver signing key for self-signed serviceAuth)
  */
 
 import { join } from "node:path";
