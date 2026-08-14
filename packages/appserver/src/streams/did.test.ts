@@ -25,9 +25,6 @@ beforeEach(async () => {
   _resetHydrationInflight();
   _resetEmbedSweeper();
 
-  const testId = Math.random().toString(36).slice(2, 8);
-  process.env.EVENTS_DB_PATH = `/tmp/roomy-events-${testId}.sqlite`;
-
   db = openDb({ path: ":memory:" });
 
   // Snapshot env vars for restoration in afterEach
@@ -43,7 +40,6 @@ afterEach(() => {
     process.env.PLC_DIRECTORY_URL = origPlcUrl;
   }
   closeDb();
-  delete process.env.EVENTS_DB_PATH;
 });
 
 

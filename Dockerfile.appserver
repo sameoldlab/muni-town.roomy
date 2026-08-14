@@ -77,11 +77,9 @@ RUN mkdir -p /data/spaces
 
 # Static DBs (replicated by Litestream). The monolithic materialised DB was
 # removed in the per-space split, so there is no APPSERVER_DB_PATH. Per-space
-# DBs live under SPACES_DIR and are derived/regenerable, so not listed here.
-ENV EVENTS_DB_PATH=/data/roomy-events.sqlite
-ENV READSTATE_DB_PATH=/data/roomy-readstate.sqlite
-ENV GLOBAL_DB_PATH=/data/global.sqlite
-ENV SPACES_DIR=/data/spaces
+# DBs live under DATA_DIR/spaces and are derived/regenerable, so not listed
+# here. DATA_DIR is the single knob for all DB paths + the signing key.
+ENV DATA_DIR=/data
 
 EXPOSE 8080
 

@@ -60,7 +60,6 @@ function ulidForTimestamp(ts: number): string {
  */
 function setup(): { readState: DbLike } {
   closeDb();
-  process.env.READSTATE_DB_PATH = ":memory:";
   openDb({ path: ":memory:" });
   const readState = openReadStateDb();
   return { readState };

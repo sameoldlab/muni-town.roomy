@@ -34,10 +34,6 @@ beforeEach(async () => {
   _resetHydrationInflight();
   _resetEmbedSweeper();
 
-  // Use a unique events DB path per test so events don't leak between tests.
-  const testId = Math.random().toString(36).slice(2, 8);
-  process.env.EVENTS_DB_PATH = `/tmp/roomy-events-${testId}.sqlite`;
-
   // In-memory event-log DB; derived DBs (per-space/global/readstate) are
   // also in-memory. `db` is the event-log handle.
   db = openDb({ path: ":memory:" });
@@ -45,7 +41,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   closeDb();
-  delete process.env.EVENTS_DB_PATH;
 });
 
 /**

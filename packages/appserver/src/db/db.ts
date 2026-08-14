@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { AsyncDatabase } from "./asyncDatabase.ts";
 import { DatabasePool, PooledDatabase } from "./pool.ts";
 import { READSTATE_SCHEMA_VERSION } from "./readStateDb.ts";
+import { dbPath, spacesDir } from "./paths.ts";
 
 /**
  * Per-space DB schema version (`data/spaces/*.sqlite`). Bump whenever
@@ -54,7 +55,7 @@ let router: PooledDatabase | null = null;
 let globalDb: AsyncDatabase | null = null;
 
 export interface OpenDbOptions {
-  /** Event-log DB path or `:memory:`. Defaults to `EVENTS_DB_PATH` or `data/roomy-events.sqlite`. */
+  /** Event-log DB path or `:memory:`. Defaults to `dbPath("roomy-events.sqlite")` (under `DATA_DIR`). */
   path?: string;
   /** If true, skip the process-wide singleton (useful for tests). */
   isolated?: boolean;
@@ -80,20 +81,20 @@ function poolSizeFromEnv(): number {
 export function openDb(opts: OpenDbOptions = {}): PooledDatabase {
   if (!opts.isolated && router) return router;
 
-  const path = opts.path ?? process.env.EVENTS_DB_PATH ?? "data/roomy-events.sqlite";
+  const path = opts.path ?? dbPath("roomy-events.sqlite");
   const workerPath = join(dirname(fileURLToPath(import.meta.url)), "worker.ts");
   const size = opts.isolated ? 1 : poolSizeFromEnv();
   const p = new DatabasePool(size, workerPath);
   const isMemory = path === ":memory:";
   void p.init({
-    readStateDbPath: process.env.READSTATE_DB_PATH ?? "data/roomy-readstate.sqlite",
+    readStateDbPath: isMemory ? ":memory:" : dbPath("roomy-readstate.sqlite"),
     eventsDbPath: path,
     // In-memory event-log DB (tests) ⇒ in-memory derived DBs too, so tests
     // never touch the filesystem. The worker applies the same fallback when
     // these are absent, but db.ts pins them so env vars can't leak files
     // into a :memory: test run.
-    spacesDir: isMemory ? ":memory:" : (process.env.SPACES_DIR ?? "data/spaces"),
-    globalDbPath: isMemory ? ":memory:" : (process.env.GLOBAL_DB_PATH ?? "data/global.sqlite"),
+    spacesDir: isMemory ? ":memory:" : spacesDir(),
+    globalDbPath: isMemory ? ":memory:" : dbPath("global.sqlite"),
     readStateSchemaVersion: READSTATE_SCHEMA_VERSION,
     spaceSchemaVersion: SPACE_SCHEMA_VERSION,
     globalSchemaVersion: GLOBAL_SCHEMA_VERSION,

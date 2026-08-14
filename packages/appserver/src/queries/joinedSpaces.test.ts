@@ -23,7 +23,6 @@ const SPACE = StreamDid.assert("did:web:space-stream.example");
  */
 function setup(): { globalDb: DbLike; mainDb: DbLike } {
   closeDb();
-  process.env.READSTATE_DB_PATH = ":memory:";
   openDb({ path: ":memory:" });
   const globalDb = openGlobalDb();
   const mainDb = openReadStateDb();

@@ -31,10 +31,7 @@ const realFetch = globalThis.fetch;
 beforeAll(() => {
   // Point every DB at in-memory storage so the shared worker (used by
   // openGlobalDb / openSpaceDb) never touches the filesystem across tests.
-  process.env.EVENTS_DB_PATH = ":memory:";
-  process.env.READSTATE_DB_PATH = ":memory:";
-  process.env.SPACES_DIR = ":memory:";
-  process.env.GLOBAL_DB_PATH = ":memory:";
+  process.env.DATA_DIR = ":memory:";
   globalThis.fetch = ((
     _input: RequestInfo | URL,
     _init?: RequestInit,

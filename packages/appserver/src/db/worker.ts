@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "nod
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkerRequest, WorkerResponse } from "./types.ts";
+import { dbPath, spacesDir as resolveSpacesDir } from "./paths.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -816,16 +817,16 @@ function handleInit(req: WorkerRequest): {
 } {
   const opts = req.initOpts!;
   const readStatePath =
-    opts.readStateDbPath ?? "data/roomy-readstate.sqlite";
-  const eventsPath = opts.eventsDbPath ?? "data/roomy-events.sqlite";
+    opts.readStateDbPath ?? dbPath("roomy-readstate.sqlite");
+  const eventsPath = opts.eventsDbPath ?? dbPath("roomy-events.sqlite");
 
   // Per-space split (Phase 3): lazily-created space DBs + global DB. When
   // the read-state DB is :memory: (tests), keep the derived DBs in-memory
   // too so tests never touch the filesystem.
   const isMemory = readStatePath === ":memory:";
-  spacesDir = opts.spacesDir ?? (isMemory ? ":memory:" : "data/spaces");
+  spacesDir = opts.spacesDir ?? (isMemory ? ":memory:" : resolveSpacesDir());
   globalDbPath =
-    opts.globalDbPath ?? (isMemory ? ":memory:" : "data/global.sqlite");
+    opts.globalDbPath ?? (isMemory ? ":memory:" : dbPath("global.sqlite"));
   spaceSchemaVersion = opts.spaceSchemaVersion ?? "";
   globalSchemaVersion = opts.globalSchemaVersion ?? "";
   if (opts.maxSpaceDbs !== undefined) maxSpaceDbs = opts.maxSpaceDbs;

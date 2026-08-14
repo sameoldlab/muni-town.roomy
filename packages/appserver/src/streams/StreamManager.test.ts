@@ -25,10 +25,6 @@ beforeEach(async () => {
   _resetHydrationInflight();
   _resetEmbedSweeper();
 
-  // Use a unique events DB path per test so events don't leak between tests.
-  const testId = Math.random().toString(36).slice(2, 8);
-  process.env.EVENTS_DB_PATH = `/tmp/roomy-events-${testId}.sqlite`;
-
   // In-memory singleton so the events DB schema is initialized.
   db = openDb({ path: ":memory:" });
 
@@ -41,7 +37,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   closeDb();
-  delete process.env.EVENTS_DB_PATH;
 });
 
 function makeEvent(name: string) {

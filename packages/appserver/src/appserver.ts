@@ -90,9 +90,9 @@ export interface AppserverOptions {
   serviceEndpoint?: string;
   /** CORS origin header. Defaults to `process.env.CORS_ORIGIN` or `"*"`. */
   corsOrigin?: string;
-  /** Materialisation DB path. Defaults to `process.env.APPSERVER_DB_PATH`. */
+  /** Materialisation DB path. Defaults to `dbPath("roomy-events.sqlite")` (under `DATA_DIR`). */
   dbPath?: string;
-  /** Read-state DB path. Defaults to `process.env.READSTATE_DB_PATH`. */
+  /** Read-state DB path. Defaults to `dbPath("roomy-readstate.sqlite")` (under `DATA_DIR`). */
   readStateDbPath?: string;
   /** Suppress the per-request console.log. Tests set this to quiet output. */
   quiet?: boolean;
