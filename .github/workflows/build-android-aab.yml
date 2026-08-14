@@ -1,0 +1,91 @@
+name: Build Android AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  build-android-aab:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get app version
+        shell: bash
+        run: echo "APP_VERSION=$(jq -r .version packages/app-lite/src-tauri/tauri.conf.json)" >> $GITHUB_ENV
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+      - name: Setup node
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: 'pnpm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '.packages/app-lite/src-tauri -> target'
+
+      - name: Setup java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          local-cache: false
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      - name: Generate Build Assets
+        run: |
+          pnpm install
+          pnpm -w add @tauri-apps/cli@2.11
+          pnpm turbo run build-lib
+          cd ./packages/app-lite
+          pnpm tauri icon -o src-tauri/icons static/icons/icon-512.png
+          pnpm build
+
+      - name: Init android
+        run: |
+          cd ./packages/app-lite
+          pnpm tauri android init
+          ./scripts/copy-android-assets.sh
+          cd ./src-tauri/gen/android
+          if [ -n "${{ secrets.ANDROID_KEY_BASE64 }}" ]; then
+            echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+            echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+            # generate keystore.jks locally and add to secrets with `base64 -i keystore.jks`
+            base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
+            echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          fi
+
+      - name: Build Android AAB
+        run: |
+          cd ./packages/app-lite
+          pnpm tauri android build --aab
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: roomy-chat-${{ env.APP_VERSION }}.aab
+          path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
+          if-no-files-found: error
