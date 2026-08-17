@@ -68,6 +68,7 @@ import { setPreferencesHandler } from "./handlers/space.roomy.push.setPreference
 import { startPushDispatcher, pushDispatcherStats, _resetPushDispatcher } from "./push/dispatcher.ts";
 import { schemas } from "@roomy-space/sdk";
 import { initHappyView, type HappyViewConfig } from "./happyview.ts";
+import { getArbiterConfig, type ArbiterConfig } from "./arbiter/config.ts";
 
 import { proxyBlob } from "./blob.ts";
 import {
@@ -107,6 +108,10 @@ export interface AppserverOptions {
    *  (`HAPPYVIEW_ENDPOINT` / `HAPPYVIEW_DID`). When `null`, HappyView is
    *  disabled and profile fetching uses Bluesky only. */
   happyView?: HappyViewConfig | null;
+  /** Arbiter server config. When unset, reads from env (`ARBITER_URL` /
+   *  `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
+   *  self-provisioned (legacy did:plc path). */
+  arbiter?: ArbiterConfig | null;
 }
 
 
@@ -359,6 +364,14 @@ export async function createAppserver(
     ? initHappyView()
     : (opts.happyView as HappyViewConfig | null);
 
+  // ─── Arbiter config ────────────────────────────────────────────────
+  // When `opts.arbiter` is unset, reads from env (`ARBITER_URL` /
+  // `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
+  // self-provisioned (legacy did:plc path).
+  const arbiter = opts.arbiter === undefined
+    ? getArbiterConfig()
+    : opts.arbiter;
+
   const DID_DOCUMENT = {
     "@context": ["https://www.w3.org/ns/did/v1"],
     id: ownDid,
@@ -408,6 +421,8 @@ export async function createAppserver(
     invalidationRouter,
     appserverUrl: serviceEndpoint,
     happyView,
+    arbiter,
+    ownDid,
   });
   setStreamManager(streamManager);
   // Start the centralized embed enrichment sweeper.

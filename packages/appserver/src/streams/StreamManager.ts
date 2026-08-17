@@ -22,6 +22,8 @@ import { pokeEmbedSweeper } from "../embed/sweeper.ts";
 import { pokePushDispatcher } from "../push/dispatcher.ts";
 import { decodeTime } from "ulidx";
 import { createStreamDid } from "./did.ts";
+import { provisionSpace } from "../arbiter/provision.ts";
+import type { ArbiterConfig } from "../arbiter/config.ts";
 
 /**
  * Singleton StreamManager — writes events directly to the events DB,
@@ -56,6 +58,10 @@ export class StreamManager {
   readonly #appserverUrl: string;
   readonly #getProfiles?: GetProfilesFn;
   readonly #happyView: HappyViewConfig | null;
+  /** Arbiter config. When set, new spaces are provisioned as real ATProto accounts. */
+  readonly #arbiter: ArbiterConfig | null;
+  /** The appserver's own DID (the arbiter policy owner + service record host). */
+  readonly #ownDid: string;
   /** Live-event listeners, notified after each sendEvents batch. */
   readonly #streamListeners = new Set<StreamEventListener>();
 
@@ -75,6 +81,10 @@ export class StreamManager {
       getProfiles?: GetProfilesFn;
       /** HappyView profile index config. When `null`, Bluesky-only. */
       happyView?: HappyViewConfig | null;
+      /** Arbiter config. When set, new spaces are provisioned via the arbiter. */
+      arbiter?: ArbiterConfig | null;
+      /** The appserver's own DID (arbiter policy owner + service record host). */
+      ownDid?: string;
     },
   ) {
     this.#db = db;
@@ -85,6 +95,8 @@ export class StreamManager {
     // (tests), use the injectable ensureProfilesForBatch path.
     this.#getProfiles = opts.getProfiles;
     this.#happyView = opts.happyView ?? null;
+    this.#arbiter = opts.arbiter ?? null;
+    this.#ownDid = opts.ownDid ?? "";
   }
 
   /**
@@ -266,21 +278,26 @@ export class StreamManager {
   }
 
   /**
-   * Create a new stream locally: register DID, write addAdmin event.
+   * Create a new stream locally: provision the space DID, write addAdmin event.
    * The caller is responsible for sending seed events via sendEvents().
    *
-   * Note: PLC directory registration is irreversible — once the DID is
-   * registered at plc.directory it cannot be rolled back. If subsequent
-   * steps fail, the entities row is deleted (best-effort) but the PLC
-   * operation stands.
+   * Provisioning is irreversible — via the arbiter the new DID is a real
+   * ATProto account on the Roomy PDS; via the legacy path the PLC registration
+   * at plc.directory stands. If subsequent steps fail, the entities row is
+   * deleted (best-effort) but the provisioning operation stands.
    */
   async createStream(adminDid: UserDid): Promise<StreamDid> {
-    // 1. Register a new DID PLC (irreversible)
-    const streamDid = await createStreamDid(
-      this.#appserverUrl,
-      adminDid,
-      this.#db,
-    );
+    // 1. Provision the space DID. When the arbiter is configured, this
+    //    creates a real ATProto account (with a PDS repo) and installs the
+    //    policy + service record. Otherwise fall back to self-generated
+    //    did:plc (legacy path, retained as a migration shim).
+    const streamDid = this.#arbiter
+      ? await provisionSpace(this.#arbiter, this.#ownDid)
+      : await createStreamDid(
+          this.#appserverUrl,
+          adminDid,
+          this.#db,
+        );
 
     try {
       // 2. Insert space entity row (before addAdmin so materialization FK resolves)

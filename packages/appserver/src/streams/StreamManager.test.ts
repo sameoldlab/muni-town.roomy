@@ -15,6 +15,7 @@ import { _resetEmbedSweeper } from "../embed/sweeper.ts";
 import { StreamManager } from "./StreamManager.ts";
 import { storeStreamKey, getStreamSigningKey, listStreamOwners } from "./keys.ts";
 import type { DbLike } from "../db/types.ts";
+import type { ArbiterConfig } from "../arbiter/config.ts";
 
 const ADMIN = UserDid.assert("did:plc:test-admin");
 let db: DbLike;
@@ -202,6 +203,52 @@ describe("createStream", () => {
 
     // The entities row should have been cleaned up (deleted)
     expect(insertedEntity).toBeNull();
+  });
+
+  test("provisions via the arbiter when configured", async () => {
+    // A minimal mock arbiter that answers createArbiter / resetPolicy / proxy.
+    const calls: string[] = [];
+    const arbiterDid = "did:plc:arbiter-provisioned";
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        calls.push(url.pathname);
+        if (url.pathname.endsWith("/town.muni.arbiter.createArbiter")) {
+          return Response.json({ did: arbiterDid });
+        }
+        if (url.pathname.endsWith("/town.muni.arbiter.resetPolicy")) {
+          return Response.json({});
+        }
+        if (url.pathname.endsWith("/town.muni.arbiter.proxy")) {
+          return Response.json({});
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const arbiter: ArbiterConfig = {
+        url: `http://127.0.0.1:${server.port}`,
+        did: "did:web:arbiter.example",
+      };
+      const arbiterSm = new StreamManager(db, {
+        appserverUrl: "http://test.example",
+        getProfiles: undefined,
+        arbiter,
+        ownDid: "did:web:api.roomy.space",
+      });
+
+      const streamDid = await arbiterSm.createStream(ADMIN);
+
+      // The space DID is the arbiter-returned DID.
+      expect(streamDid).toBe(StreamDid.assert(arbiterDid));
+      // The arbiter was called for createArbiter, resetPolicy, and proxy.
+      expect(calls).toContain("/xrpc/town.muni.arbiter.createArbiter");
+      expect(calls).toContain("/xrpc/town.muni.arbiter.resetPolicy");
+      expect(calls).toContain("/xrpc/town.muni.arbiter.proxy");
+    } finally {
+      server.stop();
+    }
   });
 });
 

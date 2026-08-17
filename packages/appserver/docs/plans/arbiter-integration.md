@@ -1,7 +1,7 @@
 # Arbiter Integration (leaf-0.4)
 
 **Date:** 2026-08-13
-**Status:** In progress — Phase 0 implemented (appserver signing key + self-signed serviceAuth); Phases 1–4 not yet implemented
+**Status:** In progress — Phase 0 implemented (appserver signing key + self-signed serviceAuth); Phase 1 implemented (new spaces provisioned via the arbiter); Phases 2–4 not yet implemented
 
 ## Purpose
 
@@ -135,12 +135,15 @@ This is a prerequisite for every phase below.
 
 ## Phase 1 — New spaces: provision through the arbiter
 
-Replace the appserver's direct did:plc creation with arbiter-backed creation.
+**Status: implemented.** New spaces are provisioned as real ATProto accounts
+via the arbiter when `ARBITER_URL` + `ARBITER_DID` are configured. The legacy
+self-provisioned did:plc path is retained as a fallback (and as a migration
+shim until Phase 4).
 
 - **Current:** `StreamManager.createStream` → `createStreamDid` (PLC POST +
   key storage in appserver DB).
-- **Proposed:** the appserver calls the arbiter to provision a stewarded
-  account for the new space:
+- **Implemented:** the appserver calls the arbiter to provision a stewarded
+  account for the new space (`src/arbiter/`):
   1. `town.muni.arbiter.createArbiter` (authenticated as the appserver DID via
      the Phase 0 token). The arbiter creates a real account on the Roomy PDS,
      records the appserver DID as recovery admin, and writes the
@@ -148,20 +151,25 @@ Replace the appserver's direct did:plc creation with arbiter-backed creation.
   2. The arbiter returns the new DID. The appserver stores the mapping
      `spaceId ↔ space DID` (still the entity id) and proceeds with the
      `addAdmin` seed event as today.
-  3. The appserver installs the policy via `resetPolicy` (it is the recovery
-     admin) so Roomy space admins can act (see Phase 2).
+  3. The appserver installs the default policy via `resetPolicy` (it is the
+     recovery admin). The default policy (`src/arbiter/policy.ts`) allows only
+     the space itself and the appserver (the owner) to act on the space DID.
+  4. The appserver proxies a `com.atproto.repo.putRecord` of
+     `space.roomy.service/self` (did = appserver) under the new account via
+     `town.muni.arbiter.proxy`, marking it as a Roomy space hosted by the
+     appserver.
 - **Retain** `createStreamDid` and the `did_keys` storage only as a migration
   shim until Phase 4 completes, then remove.
 - The Roomy PDS is a new deployment requirement (the arbiter's "default PDS"
   or a dedicated Roomy PDS). The space account's repo lives there.
 
-**Open question:** whether a space needs a *real* PDS repo with the full ATProto
-event log, or whether the arbiter can proxy to the appserver-as-PDS. The
-arbiter's `execute_remote` logs into the steward's `#atproto_pds` with a
-password and proxies. If the appserver remains the space's PDS, it must
-implement `createSession` + repo serving for space DIDs (significant). The
-simpler and more standard path is a real Roomy PDS hosting space repos. **This
-is the biggest architectural decision in the plan.**
+**Open question (resolved):** whether a space needs a *real* PDS repo with the
+full ATProto event log, or whether the arbiter can proxy to the
+appserver-as-PDS. The arbiter's `execute_remote` logs into the steward's
+`#atproto_pds` with a password and proxies. If the appserver remains the
+space's PDS, it must implement `createSession` + repo serving for space DIDs
+(significant). The simpler and more standard path is a real Roomy PDS hosting
+space repos — **chosen** for Phase 1.
 
 ## Phase 2 — Policy: Roomy admins may act on the space DID
 
@@ -282,14 +290,17 @@ substantial appserver work and deviates from the standard ATProto layout.
 3. **Arbiter `did:web` caller support** — **confirmed** (Phase 0 verification):
    the arbiter's auth resolves the caller DID doc and reads only
    `verification_method`; no `#atproto_pds` required on the caller.
-4. New XRPC **`space.roomy.space.isAdmin`** endpoint + lexicon + SDK schema.
-5. Arbiter deployment (URL + DID) with `createArbiter`/`resetPolicy`/`proxy`
-   enabled for the appserver.
+4. New XRPC **`space.roomy.space.isAdmin`** endpoint + lexicon + SDK schema
+   (Phase 2 — not yet implemented).
+5. **Arbiter deployment** (URL + DID) with `createArbiter`/`resetPolicy`/`proxy`
+   enabled for the appserver — **required for Phase 1** (`ARBITER_URL` +
+   `ARBITER_DID`).
 
 ## Open questions
 
-- Does a space need a full PDS repo, or can the arbiter proxy to the appserver
-  as the space's PDS? (biggest decision — drives Phase 1 & 4)
+- ~~Does a space need a full PDS repo, or can the arbiter proxy to the
+  appserver as the space's PDS?~~ **Resolved (Phase 1):** a real Roomy PDS
+  hosting space repos.
 - Should Roomy admins be enumerated in the Rego policy (policy data) or via the
   live appserver `isAdmin` call? The latter keeps the appserver authoritative
   but couples the arbiter's authorization to appserver availability.
