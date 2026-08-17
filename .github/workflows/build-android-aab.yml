@@ -12,9 +12,11 @@ jobs:
   build-android-aab:
     permissions:
       contents: read
+      id-token: 'write'
+
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Get app version
         shell: bash
@@ -89,3 +91,22 @@ jobs:
           name: roomy-chat-${{ env.APP_VERSION }}.aab
           path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
           if-no-files-found: error
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/849612607524/locations/global/workloadIdentityPools/github/providers/roomy-repo
+          service_account: roomy-ghci@fast-incentive-505509-m6.iam.gserviceaccount.com
+
+      - uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: ${{ steps.auth.outputs.credentials_file_path }}
+          packageName: space.roomy
+          releaseFiles: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
+          tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'closed' || 'internal' }}
+          status: inProgress
+          inAppUpdatePriority: 1
+          # whatsNewDirectory:  github.workspace }}/packages/app-lite/src-tauri/android/app/src/main/listings/en-US/whatsnew
+          # mappingFile: app/build/outputs/mapping/release/mapping.txt
+          # debugSymbols: app/intermediates/merged_native_libs/release/out/lib
+
