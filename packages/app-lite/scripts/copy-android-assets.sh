@@ -23,6 +23,7 @@ echo "  dst: $DST"
 
 cp -v "$SRC/app/build.gradle.kts" "$DST/app/build.gradle.kts"
 cp -rv "$SRC/app/src/main/res/." "$DST/app/src/main/res/"
+rm -rf "$DST/app/src/main/play/"
 
 if [ -d "$SRC/app/src/main/play" ]; then
   cp -rv "$SRC/app/src/main/play/." "$DST/app/src/main/play/"
