@@ -81,6 +81,40 @@ describe("resolveMentionsToBlocks", () => {
 		expect(resolveMentionsToBlocks("", undefined, ctx(), SPACE)).toEqual([]);
 	});
 
+	test("preserves single newlines within a paragraph (Discord soft breaks)", () => {
+		const blocks = resolveMentionsToBlocks(
+			"line one\nline two\nline three",
+			[],
+			ctx(),
+			SPACE,
+		);
+		expect(blocks.map((b) => b.$type)).toEqual([
+			"space.roomy.richtext.blocks#text",
+		]);
+		expect(blocks[0] && "text" in blocks[0] ? blocks[0].text : undefined).toBe(
+			"line one\nline two\nline three",
+		);
+	});
+
+	test("splits paragraphs on a blank line but keeps single newlines", () => {
+		const blocks = resolveMentionsToBlocks(
+			"line one\nline two\n\npara two",
+			[],
+			ctx(),
+			SPACE,
+		);
+		expect(blocks.map((b) => b.$type)).toEqual([
+			"space.roomy.richtext.blocks#text",
+			"space.roomy.richtext.blocks#text",
+		]);
+		expect(blocks[0] && "text" in blocks[0] ? blocks[0].text : undefined).toBe(
+			"line one\nline two",
+		);
+		expect(blocks[1] && "text" in blocks[1] ? blocks[1].text : undefined).toBe(
+			"para two",
+		);
+	});
+
 	test("produces a plain text block without mentions", () => {
 		const blocks = resolveMentionsToBlocks("Hello, world!", [], ctx(), SPACE);
 		expect(blocks).toHaveLength(1);
@@ -419,6 +453,46 @@ describe("Discord markdown → richtext", () => {
 	test("parses a blockquote", () => {
 		const blocks = resolveMentionsToBlocks("> quoted text", [], ctx(), SPACE);
 		expect(blocks[0]?.$type).toBe("space.roomy.richtext.blocks#blockquote");
+		expect(blocks[0] && "text" in blocks[0] ? blocks[0].text : undefined).toBe(
+			"quoted text",
+		);
+	});
+
+	test("parses a Discord `>>>` multi-line blockquote", () => {
+		const blocks = resolveMentionsToBlocks(
+			">>> line one\nline two\nline three\n\nafter",
+			[],
+			ctx(),
+			SPACE,
+		);
+		expect(blocks.map((b) => b.$type)).toEqual([
+			"space.roomy.richtext.blocks#blockquote",
+			"space.roomy.richtext.blocks#text",
+		]);
+		expect(blocks[0] && "text" in blocks[0] ? blocks[0].text : undefined).toBe(
+			"line one line two line three",
+		);
+	});
+
+	test("parses a nested `>>` blockquote with level 2", () => {
+		const blocks = resolveMentionsToBlocks(">> nested quote", [], ctx(), SPACE);
+		expect(blocks[0]?.$type).toBe("space.roomy.richtext.blocks#blockquote");
+		expect(blocks[0] && "text" in blocks[0] ? blocks[0].text : undefined).toBe(
+			"nested quote",
+		);
+		expect(blocks[0] && "level" in blocks[0] ? blocks[0].level : undefined).toBe(2);
+	});
+
+	test("preserves nesting levels across mixed blockquote lines", () => {
+		const blocks = resolveMentionsToBlocks("> a\n>> b\n> c", [], ctx(), SPACE);
+		expect(blocks.map((b) => b.$type)).toEqual([
+			"space.roomy.richtext.blocks#blockquote",
+			"space.roomy.richtext.blocks#blockquote",
+			"space.roomy.richtext.blocks#blockquote",
+		]);
+		expect(blocks.map((b) => (b && "level" in b ? b.level : 1))).toEqual([
+			1, 2, 1,
+		]);
 	});
 
 	test("parses Discord `-# small text` into a small block", () => {

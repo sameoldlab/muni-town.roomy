@@ -32,6 +32,12 @@ describe("blocksToDiscordMarkdown", () => {
 		);
 	});
 
+	test("preserves single newlines inside a text block", () => {
+		expect(blocksToDiscordMarkdown([textBlock("line one\nline two")])).toBe(
+			"line one\nline two",
+		);
+	});
+
 	describe("inline formatting facets", () => {
 		const facetAt = (byteStart: number, byteEnd: number, $type: string) => ({
 			index: { byteStart, byteEnd },
@@ -176,6 +182,18 @@ describe("blocksToDiscordMarkdown", () => {
 					{ $type: "space.roomy.richtext.blocks#blockquote", text: "quoted" },
 				]),
 			).toBe("> quoted");
+		});
+
+		test("nested blockquote prefixed with >>", () => {
+			expect(
+				blocksToDiscordMarkdown([
+					{
+						$type: "space.roomy.richtext.blocks#blockquote",
+						text: "nested",
+						level: 2,
+					},
+				]),
+			).toBe(">> nested");
 		});
 
 		test("small text prefixed with -# (Discord small text)", () => {
