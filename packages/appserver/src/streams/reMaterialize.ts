@@ -24,6 +24,7 @@ import {
 } from "../materialization/profiles.ts";
 import type { HappyViewConfig } from "../happyview.ts";
 import { log } from "../log.ts";
+import { runPendingGlobalMigrations } from "../db/globalMigrations.ts";
 
 interface RawEvent {
   idx: number;
@@ -65,7 +66,22 @@ export async function reMaterializeFromLocalEvents(
     .query("SELECT DISTINCT stream_id FROM stream_events ORDER BY stream_id")
     .all<{ stream_id: string }>();
 
+  const streamDids = streams.map(({ stream_id }) => stream_id as StreamDid);
+  const finishGlobalMigrations = async (): Promise<void> => {
+    try {
+      await runPendingGlobalMigrations(db, streamDids);
+    } catch (err) {
+      // A failed post-migration remains pending and retries next boot. It must
+      // not prevent normal per-space catch-up from completing.
+      log.error(
+        "startup",
+        `global post-migration failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   if (streams.length === 0) {
+    await finishGlobalMigrations();
     log.info("startup", "no streams to re-materialize from local events DB");
     return;
   }
@@ -153,6 +169,7 @@ export async function reMaterializeFromLocalEvents(
   }
 
   if (toReplay.length === 0) {
+    await finishGlobalMigrations();
     log.info(
       "startup",
       `re-materialization: all ${skipped} streams already up to date, nothing to replay`,
@@ -278,6 +295,8 @@ export async function reMaterializeFromLocalEvents(
   };
 
   await Promise.all(Array.from({ length: cap }, () => replayWorker()));
+
+  await finishGlobalMigrations();
 
   log.info(
     "startup",

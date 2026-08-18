@@ -32,7 +32,9 @@ export const SPACE_SCHEMA_VERSION = "1";
 
 /**
  * Global DB schema version (`data/global.sqlite`). Bump whenever
- * schema-global.sql changes.
+ * schema-global.sql changes. Global changes are additive and migrate in place;
+ * never wipe this DB on a version bump because per-space cursors do not track
+ * whether its cross-space indexes were rebuilt.
  *
  * `.2`: added the global `profiles` table (authoritative per-user Roomy
  * profile).
@@ -49,8 +51,12 @@ export const SPACE_SCHEMA_VERSION = "1";
  * per (mentioned DID, message), dual-written during materialization so the
  * `mentions:<did>` sync topic can backfill via getMentions and deleteMessage
  * can resolve a deleted message's mentioned DIDs.
+ *
+ * `.6`: added resumable global post-migration tracking and schedules a
+ * one-time repair of active joined-space edges from per-space membership
+ * truth. This recovers global DBs wiped by the v4→v5 deployment bug.
  */
-export const GLOBAL_SCHEMA_VERSION = "5";
+export const GLOBAL_SCHEMA_VERSION = "6";
 
 /** Default pool size (per-space workers). Override via `APPSERVER_DB_POOL_SIZE`. */
 const DEFAULT_POOL_SIZE = 4;
