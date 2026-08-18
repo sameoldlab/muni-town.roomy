@@ -1,9 +1,7 @@
 {
   "default": "../static/icons/icon-512.png",
   "bg_color": "#250041",
-  "_android_bg": "./android/app/src/main/res/drawable/ic_launcher_background.xml",
   "android_fg": "../static/icons/icon_foreground.png",
-  "android_fg_scale": 100,
-  "android_monochrome": "../static/logo/roomy_blob_flat.png",
-  "_android_monochrome": "./android/app/src/main/res/drawable/ic_launcher_monochrome.xml"
+  "android_fg_scale": 85,
+  "android_monochrome": "../static/icons/icon_monochrome.png"
 }

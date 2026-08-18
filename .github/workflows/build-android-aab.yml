@@ -62,7 +62,6 @@ jobs:
           pnpm -w add @tauri-apps/cli@2.11
           pnpm turbo run build-lib
           cd ./packages/app-lite
-          pnpm tauri icon ./src-tauri/icon.manifest.json 
           pnpm build
 
       - name: Init android
@@ -70,6 +69,7 @@ jobs:
           cd ./packages/app-lite
           pnpm tauri android init
           ./scripts/copy-android-assets.sh
+          pnpm tauri icon ./src-tauri/icon.manifest.json 
           cd ./src-tauri/gen/android
           if [ -n "${{ secrets.ANDROID_KEY_BASE64 }}" ]; then
             echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
