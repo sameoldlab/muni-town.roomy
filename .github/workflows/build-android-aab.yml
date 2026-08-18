@@ -34,7 +34,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -82,15 +82,16 @@ jobs:
       - name: Build Android AAB
         run: |
           cd ./packages/app-lite
-          pnpm tauri android build --apk
+          pnpm tauri android build --apk --split-per-abi -t aarch64
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
-          name: roomy-chat-${{ env.APP_VERSION }}.aab
-          path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.apk
+          name: roomy${{ env.APP_VERSION }}.apk
+          path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk
+          # path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.apk
           if-no-files-found: error
 
       # - id: auth
