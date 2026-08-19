@@ -34,7 +34,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -82,32 +82,32 @@ jobs:
       - name: Build Android AAB
         run: |
           cd ./packages/app-lite
-          pnpm tauri android build --apk --split-per-abi -t aarch64
+          pnpm tauri android build --aab
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
-          name: roomy${{ env.APP_VERSION }}.apk
-          path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk
-          # path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.apk
+          name: roomy${{ env.APP_VERSION }}.aab
+          # path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk
+          path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
           if-no-files-found: error
 
-      # - id: auth
-      #   uses: google-github-actions/auth@v2
-      #   with:
-      #     workload_identity_provider: projects/849612607524/locations/global/workloadIdentityPools/github/providers/roomy-repo
-      #     service_account: roomy-ghci@fast-incentive-505509-m6.iam.gserviceaccount.com
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/849612607524/locations/global/workloadIdentityPools/github/providers/roomy-repo
+          service_account: roomy-ghci@fast-incentive-505509-m6.iam.gserviceaccount.com
 
-      # - uses: r0adkll/upload-google-play@v1
-      #   with:
-      #     serviceAccountJson: ${{ steps.auth.outputs.credentials_file_path }}
-      #     packageName: space.roomy
-      #     releaseFiles: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
-      #     tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'closed' || 'internal' }}
-      #     inAppUpdatePriority: 1
-      #     status: completed
+      - uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: ${{ steps.auth.outputs.credentials_file_path }}
+          packageName: space.roomy
+          releaseFiles: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
+          tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'closed' || 'internal' }}
+          inAppUpdatePriority: 1
+          status: completed
           # whatsNewDirectory:  github.workspace }}/packages/app-lite/src-tauri/android/app/src/main/listings/en-US/whatsnew
           # mappingFile: app/build/outputs/mapping/release/mapping.txt
           # debugSymbols: app/intermediates/merged_native_libs/release/out/lib
