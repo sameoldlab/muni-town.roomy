@@ -173,3 +173,37 @@ export async function removeLinkEmbed(
     ],
   });
 }
+
+export async function forwardMessage(
+  spaceId: string,
+  fromRoomId: string,
+  messageId: string,
+  toRoomId: string,
+  body = "",
+): Promise<string> {
+  const id = newUlid();
+  const event: Record<string, unknown> = {
+    id,
+    room: toRoomId,
+    $type: "space.roomy.message.createMessage.v0",
+    body: {
+      mimeType: "text/markdown",
+      data: toBytes(new TextEncoder().encode(body)),
+    },
+    extensions: {
+      "space.roomy.extension.attachments.v0": {
+        $type: "space.roomy.extension.attachments.v0",
+        attachments: [
+          {
+            $type: "space.roomy.attachment.forward.v0",
+            target: messageId,
+            fromRoomId,
+          },
+        ],
+      },
+    },
+  };
+
+  await sendEvents(spaceId, [event]);
+  return id;
+}
