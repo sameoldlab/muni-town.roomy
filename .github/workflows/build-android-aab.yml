@@ -90,7 +90,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: roomy${{ env.APP_VERSION }}.aab
-          # path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk
           path: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
           if-no-files-found: error
 
@@ -105,7 +104,7 @@ jobs:
           serviceAccountJson: ${{ steps.auth.outputs.credentials_file_path }}
           packageName: space.roomy
           releaseFiles: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
-          tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'closed' || 'internal' }}
+          tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'closed' || 'closed' }}
           inAppUpdatePriority: 1
           status: completed
           # whatsNewDirectory:  github.workspace }}/packages/app-lite/src-tauri/android/app/src/main/listings/en-US/whatsnew
