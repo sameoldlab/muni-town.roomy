@@ -57,12 +57,18 @@ export const CreateRoomLink = defineEvent(
             'author'
         `,
       // 'linked to' is probably not what we want, but this is not a user facing affordance for now
+      //
+      // The user label is stored as their DID (deterministic at materialisation
+      // time — the acting user may have no profile row yet, e.g. the Discord
+      // bridge bot). The appserver resolves the DID to a display name/handle at
+      // read time from the global profile store, so we never bake a missing or
+      // stale handle into the stored message.
       sql`
         insert or replace into comp_content (entity, mime_type, data, last_edit)
         values (
           ${event.id},
           'text/markdown',
-          cast(('[@' || (select handle from comp_user where did = ${user}) || '](/user/' || ${user} || ') ' || ${event.isCreationLink ? "created [" : "linked to ["} || (select name from comp_info where entity = ${event.linkToRoom}) || '](' || ${event.linkToRoom} || '?parent=' || ${event.room} || ').') as blob),
+          cast(('[@' || ${user} || '](/user/' || ${user} || ') ' || ${event.isCreationLink ? "created [" : "linked to ["} || coalesce((select name from comp_info where entity = ${event.linkToRoom}), 'this room') || '](' || ${event.linkToRoom} || '?parent=' || ${event.room} || ').') as blob),
           ${event.id}
       )
       `,

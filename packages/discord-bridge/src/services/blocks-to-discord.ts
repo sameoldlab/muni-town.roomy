@@ -53,8 +53,12 @@ function applyFeatures(segment: string, features: FacetFeature[]): string {
 				out = `\`${out}\``;
 				break;
 			case "space.roomy.richtext.facet#link":
-				// Discord auto-links bare URLs; emit the URI so it becomes clickable.
-				if ("uri" in f) out = `${out} (${f.uri})`;
+				// Discord auto-links bare URLs. If the link text is already the
+				// URI, emit it as-is (Discord auto-links it); otherwise append
+				// the URI so the link target is visible.
+				if ("uri" in f) {
+					out = out.trim() === f.uri ? out : `${out} (${f.uri})`;
+				}
 				break;
 			case "space.roomy.richtext.facet#didMention":
 				// Bridged Discord users carry `did:discord:<snowflake>`; render a
@@ -141,7 +145,17 @@ export function blocksToDiscordMarkdown(blocks: Block[]): string {
 			}
 			case "space.roomy.richtext.blocks#blockquote": {
 				const t = textOf(block);
-				if (t) parts.push(`> ${renderInline(t.text, t.facets)}`);
+				if (!t) break;
+				const level = "level" in block && typeof block.level === "number"
+					? Math.max(1, Math.floor(block.level))
+					: 1;
+				parts.push(`${">".repeat(level)} ${renderInline(t.text, t.facets)}`);
+				break;
+			}
+			case "space.roomy.richtext.blocks#small": {
+				const t = textOf(block);
+				// Discord's `-# small text` renders smaller than body text.
+				if (t) parts.push(`-# ${renderInline(t.text, t.facets)}`);
 				break;
 			}
 			case "space.roomy.richtext.blocks#code": {

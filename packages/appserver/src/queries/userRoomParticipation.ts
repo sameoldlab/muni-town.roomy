@@ -61,29 +61,42 @@ export async function hasUserParticipated(
  * existing users get digests without sending a new message first. Analogous
  * to `backfillUserThreadActivity`.
  *
+ * Reads candidates from the per-space DB (`spaceDb` — entities/content/edges
+ * live there since the Phase 3 per-space split) and writes rows to the
+ * read-state DB (`readStateDb`).
+ *
  * Uses the `author` edge (set by the message materialiser) to identify
  * authored messages, so it works regardless of authorOverride (the edge's
  * tail is the effective author).
  */
 export async function backfillUserRoomParticipation(
-  db: DbLike,
+  readStateDb: DbLike,
+  spaceDb: DbLike,
   userDid: string,
   spaceId: string,
 ): Promise<void> {
-  await db.run(
-    `insert or ignore into user_room_participation
-       (user_did, room_id, last_message_at, updated_at)
-     select ?, e.room, max(cc.timestamp), (unixepoch() * 1000)
-       from entities e
-       join comp_content cc on cc.entity = e.id
-       join edges author_e on author_e.head = e.id and author_e.label = 'author'
-      where author_e.tail = ?
-        and e.stream_id = ?
-      group by e.room`,
-    userDid,
-    userDid,
-    spaceId,
-  );
+  const candidates = await spaceDb
+    .query(
+      `select e.room as room, max(cc.timestamp) as ts
+         from entities e
+         join comp_content cc on cc.entity = e.id
+         join edges author_e on author_e.head = e.id and author_e.label = 'author'
+        where author_e.tail = ?
+          and e.stream_id = ?
+          and e.room is not null
+        group by e.room`,
+    )
+    .all<{ room: string; ts: number | null }>([userDid, spaceId]);
+  for (const c of candidates) {
+    await readStateDb.run(
+      `insert or ignore into user_room_participation
+         (user_did, room_id, last_message_at, updated_at)
+       values (?, ?, ?, (unixepoch() * 1000))`,
+      userDid,
+      c.room,
+      c.ts ?? Date.now(),
+    );
+  }
 }
 
 /**
@@ -101,18 +114,20 @@ const backfilledPairs = new Set<string>();
  * subsequent calls are just a cheap PK lookup.
  */
 export async function hasUserParticipatedInSpace(
-  db: DbLike,
+  readStateDb: DbLike,
+  spaceDb: DbLike,
   userDid: string,
   spaceId: string,
   roomId: string,
 ): Promise<boolean> {
   const key = `${userDid}\u0000${spaceId}`;
   if (!backfilledPairs.has(key)) {
-    await backfillUserRoomParticipation(db, userDid, spaceId);
+    await backfillUserRoomParticipation(readStateDb, spaceDb, userDid, spaceId);
     backfilledPairs.add(key);
   }
-  return hasUserParticipated(db, userDid, roomId);
+  return hasUserParticipated(readStateDb, userDid, roomId);
 }
+
 
 /** Reset the backfill cache (tests only). */
 export function _resetParticipationBackfillCache(): void {

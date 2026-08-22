@@ -20,6 +20,9 @@ beforeEach(() => {
   _resetHydrationInflight();
   _resetEmbedSweeper();
   _resetProfileStoreCache();
+  // Use a temp data dir so the DID-doc test's signing key lands in /tmp,
+  // not the real data dir.
+  process.env.DATA_DIR = "/tmp/appserver-test-data";
 });
 
 afterEach(async () => {
@@ -56,6 +59,13 @@ describe("createAppserver factory", () => {
     const didBody = await didDoc.json();
     expect(didBody.id).toBe("did:web:test.example");
     expect(didBody.service[0].serviceEndpoint).toBe("http://test.example");
+    // The DID doc exposes the appserver's signing key as a Multikey
+    // verification method so the arbiter can validate self-signed serviceAuth
+    // tokens against it.
+    expect(didBody.verificationMethod).toHaveLength(1);
+    expect(didBody.verificationMethod[0].id).toBe("did:web:test.example#atproto");
+    expect(didBody.verificationMethod[0].type).toBe("Multikey");
+    expect(didBody.verificationMethod[0].publicKeyMultibase).toMatch(/^z/);
 
   });
 

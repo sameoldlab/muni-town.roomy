@@ -140,8 +140,16 @@ export const BlockquoteBlock = type({
   $type: "'space.roomy.richtext.blocks#blockquote'",
   text: "string",
   "facets?": Facet.array(),
-});
+  "level?": "number.integer>=1",
+}).describe("A quoted block of text. `level` is the nesting depth (1 = top-level, 2 = nested inside another quote).");
 export type BlockquoteBlock = typeof BlockquoteBlock.infer;
+
+export const SmallTextBlock = type({
+  $type: "'space.roomy.richtext.blocks#small'",
+  text: "string",
+  "facets?": Facet.array(),
+}).describe("Small text (Discord `-# small text`), rendered smaller than body text.");
+export type SmallTextBlock = typeof SmallTextBlock.infer;
 
 export const CodeBlock = type({
   $type: "'space.roomy.richtext.blocks#code'",
@@ -201,6 +209,7 @@ export const Block = type.or(
   TextBlock,
   HeaderBlock,
   BlockquoteBlock,
+  SmallTextBlock,
   CodeBlock,
   OrderedListBlock,
   UnorderedListBlock,

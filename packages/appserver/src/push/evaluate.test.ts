@@ -76,6 +76,28 @@ function freshDb(): DbLike {
   return toAsyncDb(db);
 }
 
+/**
+ * Two genuinely separate connections, mirroring production Phase 3/4:
+ * `spaceDb` = per-space materialisation DB (entities/edges/comp_*),
+ * `readStateDb` = read-state DB (readstate tables only, NO materialisation
+ * tables — any query crossing into `entities` fails with "no such table").
+ */
+function splitFreshDbs(): { readStateDb: DbLike; spaceDb: DbLike } {
+  const space = new Database(":memory:");
+  space.exec("pragma journal_mode = wal");
+  space.exec("pragma synchronous = normal");
+  space.exec("pragma foreign_keys = on");
+  space.exec(readFileSync(SCHEMA_PATH, "utf8"));
+
+  const readState = new Database(":memory:");
+  readState.exec("pragma journal_mode = wal");
+  readState.exec("pragma synchronous = normal");
+  readState.exec("pragma foreign_keys = on");
+  readState.exec(readFileSync(READSTATE_SCHEMA_PATH, "utf8"));
+
+  return { readStateDb: toAsyncDb(readState), spaceDb: toAsyncDb(space) };
+}
+
 async function seedSpace(db: DbLike, spaceId = SPACE): Promise<void> {
   await db.run("insert into entities (id, stream_id) values (?, ?)", [spaceId, spaceId]);
   await db.run("insert into comp_space (entity) values (?)", [spaceId]);
@@ -375,6 +397,64 @@ describe("push/evaluate — Engaged digest path", () => {
     }
     // Participation gate skips before any notification_state write.
     expect(await notifState(db, ENGAGED_READER, CHANNEL)).toBeUndefined();
+  });
+
+  test("engaged backfill reads per-space DB, writes read-state DB (split handles)", async () => {
+    // Phase 3/4 regression: the participation backfill ran its whole SELECT
+    // against the read-state handle ("no such table: entities"), throwing
+    // before any Engaged digest could accumulate. These are genuinely
+    // separate connections — the read-state side has NO materialisation
+    // tables — so the old wiring fails and the fixed wiring passes.
+    const { readStateDb, spaceDb } = splitFreshDbs();
+    _resetParticipationBackfillCache();
+
+    // Space side: entity graph + membership.
+    await spaceDb.run("insert into entities (id, stream_id) values (?, ?)", [SPACE, SPACE]);
+    await spaceDb.run("insert into comp_space (entity) values (?)", [SPACE]);
+    for (const did of [AUTHOR, ENGAGED_READER]) {
+      await spaceDb.run("insert or ignore into entities (id, stream_id) values (?, ?)", [did, did]);
+      await spaceDb.run("insert into edges (head, tail, label) values (?, ?, 'member')", [SPACE, did]);
+    }
+    await spaceDb.run("insert into entities (id, stream_id) values (?, ?)", [CHANNEL, SPACE]);
+    await spaceDb.run(
+      "insert into comp_room (entity, label, default_access) values (?, 'space.roomy.channel', 'readwrite')",
+      [CHANNEL],
+    );
+    await spaceDb.run("insert into comp_info (entity, name) values (?, ?)", [CHANNEL, "general"]);
+    // A message authored by ENGAGED_READER in CHANNEL — the backfill finds
+    // participation via the `author` edge on the per-space side.
+    const theirMsg = "01MSPLIT000000000000000000";
+    await spaceDb.run("insert into entities (id, stream_id, room) values (?, ?, ?)", [theirMsg, SPACE, CHANNEL]);
+    await spaceDb.run(
+      "insert into comp_content (entity, mime_type, data, last_edit, timestamp) values (?, ?, ?, ?, ?)",
+      [theirMsg, "text/markdown", Buffer.from("hi"), theirMsg, 500_000],
+    );
+    await spaceDb.run("insert into edges (head, tail, label) values (?, ?, 'author')", [theirMsg, ENGAGED_READER]);
+
+    // Read-state side: flag + subscription, NO participation row yet (the
+    // backfill must populate it).
+    await readStateDb.run(
+      "insert into feature_flags (key, global_enabled, updated_at) values ('push-notifications', 1, (unixepoch() * 1000))",
+    );
+    await upsertSubscription(readStateDb, {
+      userDid: ENGAGED_READER,
+      endpoint: "https://push.test/split",
+      p256dh: "k",
+      auth: "a",
+      expirationTime: null,
+    });
+
+    // Live messages from AUTHOR: 1-4 accumulate, the 5th fires the digest —
+    // only reachable if the backfill succeeded against the per-space DB.
+    for (let i = 1; i <= 4; i++) {
+      const deliveries = await evaluatePush(readStateDb, spaceDb, msgJob(i));
+      expect(deliveries.find((d) => d.userDid === ENGAGED_READER)).toBeUndefined();
+    }
+    const deliveries5 = await evaluatePush(readStateDb, spaceDb, msgJob(5));
+    const digest = deliveries5.find((d) => d.userDid === ENGAGED_READER);
+    expect(digest).toBeDefined();
+    expect(digest!.payload.type).toBe("digest");
+    expect(digest!.payload.count).toBe(DIGEST_THRESHOLD);
   });
 
   test("after a digest fires, further messages in the batch do not re-fire", async () => {

@@ -16,7 +16,7 @@ import type { DbLike } from "../db/types.ts";
 import type { SQLQueryBindings } from "bun:sqlite";
 
 import { toAsyncDb } from "../db/syncAdapter.ts";
-import { closeDb, openDb } from "../db/db.ts";
+import { closeDb, openDb, openReadStateDb } from "../db/db.ts";
 import { applyBatch } from "./applyBatch.ts";
 import { applyBundle } from "./applyBundle.ts";
 import type { StatementBundleSuccess } from "./types.ts";
@@ -324,6 +324,40 @@ describe("applyBatch", () => {
     expect(count).toBe(1);
   })
 
+  // Regression: a createRoomLink's system message ("created [thread]") must
+  // never be empty. When the acting user has no profile yet (e.g. the Discord
+  // bridge bot, which creates threads without a comp_user row), SQLite's ||
+  // with a NULL handle operand yields NULL for the whole content expression,
+  // materialising an *empty* system message in the parent room. The
+  // materialiser must coalesce the author handle (to the DID) and the linked
+  // room name so the message is always non-empty and clickable.
+  test("createRoomLink system message is non-empty even when the author has no profile", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpace(db, STREAM);
+    const channelId = newUlid();
+    const threadId = newUlid();
+    seedChannelAndThread(db, channelId, threadId);
+    db.run("insert into comp_info (entity, name) values (?, ?)", [
+      threadId,
+      "My Thread",
+    ]);
+
+    const link = createRoomLinkEvent(channelId, threadId);
+
+    await applyBatch(asyncDb, STREAM, [decoded(link, 1)], { isBackfill: true });
+
+    // The system message's markdown content must not be NULL. The author is
+    // USER (no profile/handle), so it falls back to the DID.
+    const row = await asyncDb
+      .query("select data, mime_type from comp_content where entity = ?")
+      .get<{ data: Uint8Array | null; mime_type: string }>(link.id as unknown as string);
+    expect(row?.data).not.toBeNull();
+    expect(row?.mime_type).toBe("text/markdown");
+    const text = new TextDecoder().decode(row?.data as Uint8Array);
+    expect(text).toContain("created [My Thread]");
+    expect(text).toContain(USER);
+  })
+
   // The space.joinSpace materialiser must write the `joinedSpace` edge with
   // the *user DID* as head and the space stream as tail — this is what
   // tracks membership. In Phase 3 the appserver routes these membership
@@ -365,6 +399,92 @@ describe("applyBatch", () => {
       )
       .get<{ n: number }>(USER, STREAM);
     expect(spaceEdge?.n).toBeUndefined();
+  })
+
+  // Regression: the materialisation path (not just the XRPC fast-path
+  // handlers) must write durable membership intent to the read-state DB for
+  // LIVE join/leave events. Otherwise a join/leave that reaches applyBatch
+  // without a handler write (e.g. a future multi-writer / subscription
+  // source) would never update user_space_membership, and getSpaces would
+  // silently miss it.
+  test("live join/leave events write durable membership intent to the read-state DB", async () => {
+    const { db, asyncDb } = freshDb();
+    const { asyncDb: globalDb } = freshGlobalDb();
+    seedSpace(db, STREAM);
+
+    const joinEvent = {
+      $type: "space.roomy.space.joinSpace.v0",
+      id: newUlid(),
+    } as unknown as Event;
+    const leaveEvent = {
+      $type: "space.roomy.space.leaveSpace.v0",
+      id: newUlid(),
+    } as unknown as Event;
+
+    // Live join → membership row state 'joined'.
+    await applyBatch(
+      asyncDb,
+      STREAM,
+      [{ event: joinEvent, idx: 0 as StreamIndex, user: USER }],
+      { isBackfill: false },
+      globalDb,
+    );
+    const readState = openReadStateDb();
+    const joined = await readState
+      .query(
+        "select state, source, source_event_id from user_space_membership where user_did = ? and space_did = ?",
+      )
+      .get<{ state: string; source: string; source_event_id: string }>(USER, STREAM);
+    expect(joined?.state).toBe("joined");
+    expect(joined?.source).toBe("space.joinSpace");
+    expect(joined?.source_event_id).toBe(joinEvent.id);
+
+    // Live leave → row flips to 'left'.
+    await applyBatch(
+      asyncDb,
+      STREAM,
+      [{ event: leaveEvent, idx: 1 as StreamIndex, user: USER }],
+      { isBackfill: false },
+      globalDb,
+    );
+    const left = await readState
+      .query(
+        "select state, source, source_event_id from user_space_membership where user_did = ? and space_did = ?",
+      )
+      .get<{ state: string; source: string; source_event_id: string }>(USER, STREAM);
+    expect(left?.state).toBe("left");
+    expect(left?.source).toBe("space.leaveSpace");
+    expect(left?.source_event_id).toBe(leaveEvent.id);
+  })
+
+  // Backfill/replay must NOT write membership: the boot recovery migration
+  // already reduced the full historical log by ULID, and replay events are
+  // not guaranteed to arrive in ULID order across streams — writing them
+  // could overwrite the correct recovered state with an older event.
+  test("backfill join events do not write membership intent", async () => {
+    const { db, asyncDb } = freshDb();
+    const { asyncDb: globalDb } = freshGlobalDb();
+    seedSpace(db, STREAM);
+
+    const joinEvent = {
+      $type: "space.roomy.space.joinSpace.v0",
+      id: newUlid(),
+    } as unknown as Event;
+    await applyBatch(
+      asyncDb,
+      STREAM,
+      [{ event: joinEvent, idx: 0 as StreamIndex, user: USER }],
+      { isBackfill: true },
+      globalDb,
+    );
+
+    const readState = openReadStateDb();
+    const row = await readState
+      .query(
+        "select 1 as n from user_space_membership where user_did = ? and space_did = ?",
+      )
+      .get<{ n: number }>(USER, STREAM);
+    expect(row?.n).toBeUndefined();
   })
 });
 
@@ -517,6 +637,74 @@ describe("forwardMessages sort order", () => {
     expect(messages[0]?.content).toBe("old msg");
     expect(messages[1]?.id).toBe(fwdNewId);
     expect(messages[1]?.content).toBe("new msg");
+  });
+})
+
+describe("forward-as-embed (createMessage + forward attachment)", () => {
+  // The modern representation of a forward: a `createMessage` event carrying
+  // a `space.roomy.attachment.forward.v0` attachment creates a real message in
+  // the destination room (with the forwarder's own body) plus a `forward`
+  // edge to the original. selectMessages keeps the forwarder's own content
+  // and surfaces `forwardedFrom` for the embed.
+  test("creates a real message with its own content and a forward edge", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpace(db, STREAM);
+
+    const channelId = newUlid();
+    const threadId = newUlid();
+    seedChannelAndThread(db, channelId, threadId);
+
+    const originalId = ulid(1_700_000_000_000);
+    const original = createMessageEvent(channelId, originalId, "original text");
+
+    const fwdId = ulid(1_700_000_100_000);
+    const fwd: Event = {
+      $type: "space.roomy.message.createMessage.v0",
+      id: fwdId,
+      room: threadId,
+      body: {
+        mimeType: "text/markdown",
+        data: { buf: new TextEncoder().encode("my take on this") },
+      },
+      extensions: {
+        "space.roomy.extension.attachments.v0": {
+          $type: "space.roomy.extension.attachments.v0",
+          attachments: [
+            {
+              $type: "space.roomy.attachment.forward.v0",
+              target: originalId,
+              fromRoomId: channelId,
+            },
+          ],
+        },
+      },
+    } as unknown as Event;
+
+    await applyBatch(
+      asyncDb,
+      STREAM,
+      [decoded(original, 1), decoded(fwd, 2)],
+      { isBackfill: true },
+    );
+
+    // The forward message keeps its own content and author, and carries a
+    // forward edge to the original.
+    const edge = await asyncDb
+      .query("select tail from edges where head = ? and label = 'forward'")
+      .get<{ tail: string }>(fwdId);
+    expect(edge?.tail).toBe(originalId);
+
+    const { messages } = await selectMessages(asyncDb, {
+      kind: "room",
+      roomId: threadId,
+      limit: 100,
+      cursor: null,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.id).toBe(fwdId);
+    expect(messages[0]?.content).toBe("my take on this");
+    expect(messages[0]?.forwardedFrom?.messageId).toBe(originalId);
+    expect(messages[0]?.forwardedFrom?.roomId).toBe(channelId);
   });
 })
 

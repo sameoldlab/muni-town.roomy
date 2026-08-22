@@ -15,6 +15,7 @@ import {
   DEFAULT_REMATERIALIZE_CONCURRENCY,
 } from "./streams/reMaterialize.ts";
 import { openDb, poolStats } from "./db/db.ts";
+import { runPendingReadStateMigrationsWithRetry } from "./db/userSpaceMembershipMigration.ts";
 import { getHappyView } from "./happyview.ts";
 
 // ─── Server construction ───────────────────────────────────────────────────
@@ -38,6 +39,23 @@ const app: AppserverHandle = await createAppserver();
 // Profile hydration uses the HappyView-first fetcher (HappyView → Bluesky
 // fallback, or Bluesky-only when HappyView is not configured).
 const db = openDb();
+
+// ─── Durable membership recovery (awaited) ────────────────────────────────
+// Recover user-space membership intent from the event log into the read-state
+// DB before serving reads. This is a resumable migration: on a fresh deploy it
+// scans the full join/leave history (current + deprecated personal events) and
+// writes the durable `user_space_membership` rows that getSpaces/hydration/
+// activity-feed now read. It must complete before reads serve, otherwise
+// getSpaces would return empty during the boot window. Idempotent — on
+// subsequent boots the migration is already stamped complete and this is a
+// no-op.
+//
+// We retry a few times (a transient DB hiccup shouldn't take the server down),
+// then fail fast: serving with an empty `user_space_membership` would silently
+// hide every user's spaces, which is worse than a restart. The migration is
+// resumable, so the orchestrator's restart retries it from where it left off.
+await runPendingReadStateMigrationsWithRetry(db);
+
 const happyView = getHappyView();
 const poolSize = poolStats()?.size;
 const concurrency = poolSize ?? DEFAULT_REMATERIALIZE_CONCURRENCY;

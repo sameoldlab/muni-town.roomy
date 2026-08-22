@@ -17,6 +17,7 @@
 import type { Server } from "bun";
 import { XrpcRouter, type AuthVerifier, type SyncHandler, type WsData } from "./xrpc/index.ts";
 import { selectAuthVerifier } from "./xrpc/auth.ts";
+import { appserverSigningKeyMultibase } from "./auth/serviceAuth.ts";
 import { Router as InvalidationRouter } from "./invalidation/index.ts";
 import { startEmbedSweeper, stopEmbedSweeper, embedSweeperStats } from "./embed/sweeper.ts";
 import { countPendingLinks } from "./embed/enricher.ts";
@@ -51,6 +52,7 @@ import { getMessagesHandler } from "./handlers/space.roomy.room.getMessages.ts";
 import { getMessageHandler } from "./handlers/space.roomy.message.getMessage.ts";
 import { getReactionsHandler } from "./handlers/space.roomy.message.getReactions.ts";
 import { getProfileHandler } from "./handlers/space.roomy.user.getProfile.ts";
+import { getMentionsHandler } from "./handlers/space.roomy.mention.getMentions.ts";
 import { getLinkMetadataHandler } from "./handlers/space.roomy.embed.getLinkMetadata.ts";
 import { updateSeenHandler } from "./handlers/space.roomy.room.updateSeen.ts";
 import { sendEventsHandler } from "./handlers/space.roomy.space.sendEvents.ts";
@@ -67,6 +69,7 @@ import { setPreferencesHandler } from "./handlers/space.roomy.push.setPreference
 import { startPushDispatcher, pushDispatcherStats, _resetPushDispatcher } from "./push/dispatcher.ts";
 import { schemas } from "@roomy-space/sdk";
 import { initHappyView, type HappyViewConfig } from "./happyview.ts";
+import { getArbiterConfig, type ArbiterConfig } from "./arbiter/config.ts";
 
 import { proxyBlob } from "./blob.ts";
 import {
@@ -90,9 +93,9 @@ export interface AppserverOptions {
   serviceEndpoint?: string;
   /** CORS origin header. Defaults to `process.env.CORS_ORIGIN` or `"*"`. */
   corsOrigin?: string;
-  /** Materialisation DB path. Defaults to `process.env.APPSERVER_DB_PATH`. */
+  /** Materialisation DB path. Defaults to `dbPath("roomy-events.sqlite")` (under `DATA_DIR`). */
   dbPath?: string;
-  /** Read-state DB path. Defaults to `process.env.READSTATE_DB_PATH`. */
+  /** Read-state DB path. Defaults to `dbPath("roomy-readstate.sqlite")` (under `DATA_DIR`). */
   readStateDbPath?: string;
   /** Suppress the per-request console.log. Tests set this to quiet output. */
   quiet?: boolean;
@@ -106,6 +109,10 @@ export interface AppserverOptions {
    *  (`HAPPYVIEW_ENDPOINT` / `HAPPYVIEW_DID`). When `null`, HappyView is
    *  disabled and profile fetching uses Bluesky only. */
   happyView?: HappyViewConfig | null;
+  /** Arbiter server config. When unset, reads from env (`ARBITER_URL` /
+   *  `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
+   *  self-provisioned (legacy did:plc path). */
+  arbiter?: ArbiterConfig | null;
 }
 
 
@@ -291,6 +298,11 @@ export function buildRouter(
       paramsSchema: schemas.queries.getProfile.Params,
       outputSchema: schemas.queries.getProfile.Response,
     })
+    .query("space.roomy.mention.getMentions", {
+      handler: getMentionsHandler,
+      paramsSchema: schemas.queries.getMentions.Params,
+      outputSchema: schemas.queries.getMentions.Response,
+    })
     .query("space.roomy.embed.getLinkMetadata", {
       handler: getLinkMetadataHandler,
       paramsSchema: schemas.queries.getLinkMetadata.Params,
@@ -358,9 +370,25 @@ export async function createAppserver(
     ? initHappyView()
     : (opts.happyView as HappyViewConfig | null);
 
+  // ─── Arbiter config ────────────────────────────────────────────────
+  // When `opts.arbiter` is unset, reads from env (`ARBITER_URL` /
+  // `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
+  // self-provisioned (legacy did:plc path).
+  const arbiter = opts.arbiter === undefined
+    ? getArbiterConfig()
+    : opts.arbiter;
+
   const DID_DOCUMENT = {
     "@context": ["https://www.w3.org/ns/did/v1"],
     id: ownDid,
+    verificationMethod: [
+      {
+        id: `${ownDid}#atproto`,
+        type: "Multikey",
+        controller: ownDid,
+        publicKeyMultibase: await appserverSigningKeyMultibase(),
+      },
+    ],
     service: [
       {
         id: "#space_roomy_appserver",
@@ -399,6 +427,8 @@ export async function createAppserver(
     invalidationRouter,
     appserverUrl: serviceEndpoint,
     happyView,
+    arbiter,
+    ownDid,
   });
   setStreamManager(streamManager);
   // Start the centralized embed enrichment sweeper.

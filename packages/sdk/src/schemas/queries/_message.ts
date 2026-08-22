@@ -25,8 +25,12 @@ export const Media = type({
 });
 
 export const ForwardedFrom = type({
-  name: "string",
+  /** The ID of the original message that was forwarded. */
+  messageId: "string",
+  /** The room the original message lives in. */
   roomId: "string",
+  /** The name of the source room. */
+  name: "string",
 });
 
 /**
@@ -100,6 +104,12 @@ export const Message = type({
   authorName: "string",
   "authorHandle?": "string",
   "authorAvatar?": "string",
+  /**
+   * True for system messages (e.g. "X joined the space", "X created
+   * [thread]") — authored by the space itself. The author line is not
+   * meaningful for these; clients should hide the author identity.
+   */
+  "system?": "boolean",
   timestamp: "string",
   "replyTo?": "string",
   "forwardedFrom?": ForwardedFrom,

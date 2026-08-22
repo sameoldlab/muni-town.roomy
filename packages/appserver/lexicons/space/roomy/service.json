@@ -1,0 +1,22 @@
+{
+  "lexicon": 1,
+  "id": "space.roomy.service",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "Service record on a Roomy space's repo. Marks the DID as a Roomy space and names the Roomy server that hosts it. The `did` field points at the Roomy appserver DID (e.g. did:web:api.roomy.space).",
+      "key": "literal:self",
+      "record": {
+        "type": "object",
+        "required": ["did"],
+        "properties": {
+          "did": {
+            "type": "string",
+            "format": "did",
+            "description": "The DID of the Roomy server that hosts this space."
+          }
+        }
+      }
+    }
+  }
+}

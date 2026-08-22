@@ -7,6 +7,7 @@ import {
   prioritiseLinksForRead,
   sweepCycle,
   _resetEmbedSweeper,
+  _startSweeperNoLoop,
   stopEmbedSweeper,
   type EmbedSweeperOpts,
 } from "./sweeper.ts";
@@ -31,10 +32,7 @@ const realFetch = globalThis.fetch;
 beforeAll(() => {
   // Point every DB at in-memory storage so the shared worker (used by
   // openGlobalDb / openSpaceDb) never touches the filesystem across tests.
-  process.env.EVENTS_DB_PATH = ":memory:";
-  process.env.READSTATE_DB_PATH = ":memory:";
-  process.env.SPACES_DIR = ":memory:";
-  process.env.GLOBAL_DB_PATH = ":memory:";
+  process.env.DATA_DIR = ":memory:";
   globalThis.fetch = ((
     _input: RequestInfo | URL,
     _init?: RequestInit,
@@ -346,19 +344,23 @@ describe("embed sweeper invalidation room resolution", () => {
     }) as typeof globalThis.fetch;
 
     try {
-      // Start the sweeper ONCE and drive sweepCycle directly (flushSweeper
+      // Mark the sweeper started and drive sweepCycle directly (flushSweeper
       // stops/clears state between calls, which would wipe the backoff map).
+      // Use _startSweeperNoLoop, NOT startEmbedSweeper: starting the real
+      // background loop here races the manual sweepCycle calls via the shared
+      // `wake`/`waitForWake` singleton and hangs under parallel-suite CPU
+      // contention.
       await stopEmbedSweeper();
-      startEmbedSweeper({ globalDb, invalidationRouter: router });
+      _startSweeperNoLoop({ globalDb, invalidationRouter: router });
 
       // First cycle: URL is attempted once and classified transient → parked.
+      // (No background loop is running, so sweepCycle fully resolves the
+      // fetch + backoff classification before returning — no sleep needed.)
       await sweepCycle(globalDb);
-      await new Promise((r) => setTimeout(r, 300));
       const afterFirst = fetchCalls;
 
       // Second cycle: URL is in backoff → must NOT be re-fetched.
       await sweepCycle(globalDb);
-      await new Promise((r) => setTimeout(r, 300));
       expect(fetchCalls).toBe(afterFirst);
     } finally {
       globalThis.fetch = realFetch;
@@ -409,16 +411,14 @@ describe("embed sweeper invalidation room resolution", () => {
 
     try {
       await stopEmbedSweeper();
-      startEmbedSweeper({ globalDb, invalidationRouter: router });
+      _startSweeperNoLoop({ globalDb, invalidationRouter: router });
 
       // Cycle 1: oldUrl is transient → parked in backoff.
       await sweepCycle(globalDb);
-      await new Promise((r) => setTimeout(r, 300));
 
       // Cycle 2: oldUrl is in backoff; the sweeper must skip it and enrich
-      // newUrl instead (not stall on an empty batch).
+      // newUrl instead (not on an empty batch).
       await sweepCycle(globalDb);
-      await new Promise((r) => setTimeout(r, 300));
 
       // newUrl was enriched successfully.
       const newData = await spaceDb

@@ -53,3 +53,8 @@ mise.toml
 
 # Ignore generated credentials from google-github-actions/auth
 gha-creds-*.json
+
+# app-lite atomic build staging
+dist-staging
+build-staging
+build.old

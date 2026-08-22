@@ -52,10 +52,13 @@
   let fetchedEmojis = $state<Set<string>>(new Set());
 
   async function onHover(emoji: string) {
+    // Always open the tooltip (desktop hover or mobile long-press), even if
+    // the reactor data was already fetched — otherwise a second hover/long-
+    // press of the same emoji would do nothing.
+    tooltipOpenByEmoji[emoji] = true;
     if (fetchedEmojis.has(emoji)) return;
     fetchedEmojis.add(emoji);
     // Open tooltip immediately with loading state.
-    tooltipOpenByEmoji[emoji] = true;
     tooltipReactorsByEmoji[emoji] = [];
     try {
       const res = await px().query("space.roomy.message.getReactions", {

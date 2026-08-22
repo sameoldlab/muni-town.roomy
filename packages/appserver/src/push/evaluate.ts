@@ -238,7 +238,7 @@ export async function evaluatePush(
     // Participation gate: only rooms the recipient has sent a message in.
     // (Lazy-backfilled once per user+space so the gate works for existing
     // users without them sending a new message first.)
-    if (!(await hasUserParticipatedInSpace(readStateDb, did, spaceId, roomId))) {
+    if (!(await hasUserParticipatedInSpace(readStateDb, spaceDb, did, spaceId, roomId))) {
       log.debug(`[push-evaluate] skip ${did.slice(0, 20)}…: engaged, not participated in space`);
       continue;
     }

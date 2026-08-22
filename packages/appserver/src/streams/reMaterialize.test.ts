@@ -34,10 +34,6 @@ beforeEach(async () => {
   _resetHydrationInflight();
   _resetEmbedSweeper();
 
-  // Use a unique events DB path per test so events don't leak between tests.
-  const testId = Math.random().toString(36).slice(2, 8);
-  process.env.EVENTS_DB_PATH = `/tmp/roomy-events-${testId}.sqlite`;
-
   // In-memory event-log DB; derived DBs (per-space/global/readstate) are
   // also in-memory. `db` is the event-log handle.
   db = openDb({ path: ":memory:" });
@@ -45,7 +41,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   closeDb();
-  delete process.env.EVENTS_DB_PATH;
 });
 
 /**
@@ -195,6 +190,96 @@ describe("reMaterializeFromLocalEvents", () => {
       .query("select entity, name from comp_info where entity = ?")
       .get<{ entity: string; name: string | null }>(streamDid);
     expect(infoRow2!.name).toBe(infoRow1!.name);
+  });
+
+  test("repairs global membership when space cursors are already current", async () => {
+    const streamDid = StreamDid.assert("did:web:global-membership-repair.example");
+    const member = UserDid.assert("did:plc:global-membership-member");
+    const events = createDefaultSpaceEvents({ name: "Membership Repair" });
+    await seedEvents(db, streamDid, events);
+    await seedEvents(
+      db,
+      streamDid,
+      [
+        {
+          $type: "space.roomy.space.joinSpace.v0",
+          id: newUlid(),
+        },
+      ],
+      member,
+      events.length,
+    );
+
+    await reMaterializeFromLocalEvents(db);
+
+    const globalDb = db.global!();
+    await globalDb.run(
+      "delete from edges where head = ? and tail = ? and label = 'joinedSpace'",
+      member,
+      streamDid,
+    );
+    await globalDb.run(
+      "insert into edges (head, tail, label) values (?, ?, 'leftSpace')",
+      member,
+      streamDid,
+    );
+    await globalDb.run(
+      "update global_schema_migrations set completed_at = null where version = '6'",
+    );
+
+    // The per-space cursor is current, so no events are replayed. The pending
+    // global migration must still reconstruct membership from the retained
+    // member edge, then mark itself complete.
+    await reMaterializeFromLocalEvents(db);
+
+    const joined = await globalDb
+      .query(
+        "select 1 as n from edges where head = ? and tail = ? and label = 'joinedSpace'",
+      )
+      .get<{ n: number }>(member, streamDid);
+    const left = await globalDb
+      .query(
+        "select 1 as n from edges where head = ? and tail = ? and label = 'leftSpace'",
+      )
+      .get<{ n: number }>(member, streamDid);
+    const migration = await globalDb
+      .query(
+        "select completed_at from global_schema_migrations where version = '6'",
+      )
+      .get<{ completed_at: number | null }>();
+    expect(joined?.n).toBe(1);
+    expect(left).toBeNull();
+    expect(migration?.completed_at).not.toBeNull();
+  });
+
+  test("completed global migrations do not run again", async () => {
+    const streamDid = StreamDid.assert("did:web:global-migration-once.example");
+    const member = UserDid.assert("did:plc:global-migration-once-member");
+    const events = createDefaultSpaceEvents({ name: "Migration Once" });
+    await seedEvents(db, streamDid, events);
+    await seedEvents(
+      db,
+      streamDid,
+      [{ $type: "space.roomy.space.joinSpace.v0", id: newUlid() }],
+      member,
+      events.length,
+    );
+    await reMaterializeFromLocalEvents(db);
+
+    const globalDb = db.global!();
+    await globalDb.run(
+      "delete from edges where head = ? and tail = ? and label = 'joinedSpace'",
+      member,
+      streamDid,
+    );
+    await reMaterializeFromLocalEvents(db);
+
+    const joined = await globalDb
+      .query(
+        "select 1 as n from edges where head = ? and tail = ? and label = 'joinedSpace'",
+      )
+      .get<{ n: number }>(member, streamDid);
+    expect(joined).toBeNull();
   });
 
   test("empty events DB", async () => {

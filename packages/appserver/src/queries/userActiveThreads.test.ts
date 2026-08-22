@@ -39,7 +39,6 @@ const OTHER_USER = "did:plc:bob";
 /** Create fresh worker-backed DBs (read-state + per-space) for testing. */
 function freshDb(): { readState: DbLike; spaceDb: DbLike } {
   closeDb();
-  process.env.READSTATE_DB_PATH = ":memory:";
   openDb({ path: ":memory:" });
   return {
     readState: openReadStateDb(),

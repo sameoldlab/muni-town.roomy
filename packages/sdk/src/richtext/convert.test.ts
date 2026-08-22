@@ -35,6 +35,62 @@ describe("richtext convert — blocks ↔ ProseMirror round-trip", () => {
     expect(proseMirrorDocToBlocks(doc)).toEqual(blocks);
   });
 
+  it("round-trips a small-text block through the editor", () => {
+    const blocks: Block[] = [
+      { $type: "space.roomy.richtext.blocks#small", text: "a small caption" },
+    ];
+    const doc = blocksToProseMirrorDoc(blocks);
+    expect(doc.content?.map((n) => n.type)).toEqual(["smallText"]);
+    expect(proseMirrorDocToBlocks(doc)).toEqual(blocks);
+  });
+
+  it("parses Discord `-# small text` into a small block", () => {
+    const blocks = markdownToBlocks("-# a small caption");
+    expect(blocks).toEqual([
+      { $type: "space.roomy.richtext.blocks#small", text: "a small caption" },
+    ]);
+  });
+
+  it("preserves single newlines within a paragraph", () => {
+    const blocks = markdownToBlocks("line one\nline two\nline three");
+    expect(blocks).toEqual([
+      { $type: "space.roomy.richtext.blocks#text", text: "line one\nline two\nline three" },
+    ]);
+  });
+
+  it("parses a Discord `>>>` multi-line blockquote", () => {
+    const blocks = markdownToBlocks(">>> line one\nline two\n\nafter");
+    expect(blocks).toEqual([
+      {
+        $type: "space.roomy.richtext.blocks#blockquote",
+        text: "line one line two",
+      },
+      { $type: "space.roomy.richtext.blocks#text", text: "after" },
+    ]);
+  });
+
+  it("parses a nested `>>` blockquote with level 2", () => {
+    const blocks = markdownToBlocks(">> nested quote");
+    expect(blocks).toEqual([
+      {
+        $type: "space.roomy.richtext.blocks#blockquote",
+        text: "nested quote",
+        level: 2,
+      },
+    ]);
+  });
+
+  it("round-trips a nested blockquote through the editor", () => {
+    const blocks: Block[] = [
+      { $type: "space.roomy.richtext.blocks#blockquote", text: "outer" },
+      { $type: "space.roomy.richtext.blocks#blockquote", text: "inner", level: 2 },
+    ];
+    const doc = blocksToProseMirrorDoc(blocks);
+    expect(doc.content?.[1]?.type).toBe("blockquote");
+    expect(doc.content?.[1]?.content?.[0]?.type).toBe("blockquote");
+    expect(proseMirrorDocToBlocks(doc)).toEqual(blocks);
+  });
+
   it("preserves newlines as hard breaks when re-parsing a soft break", () => {
     // A single newline (soft break) must survive the editor round-trip as a
     // hard break, not collapse to a space.

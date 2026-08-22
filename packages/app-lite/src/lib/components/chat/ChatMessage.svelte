@@ -3,7 +3,7 @@
   import { MediaQuery } from "svelte/reactivity";
   import { Checkbox } from "bits-ui";
   import MessageBubble from "@roomy/design/components/content/thread/message/MessageBubble.svelte";
-  import { messagingState } from "./messaging-state.svelte";
+  import { messagingState, toggleToolbar, toolbarOpenState } from "./messaging-state.svelte";
   import Button from "@roomy/design/components/ui/button/Button.svelte";
   import { IconCheck, IconX } from "@roomy/design/icons";
   import MessageContext from "./MessageContext.svelte";
@@ -11,6 +11,8 @@
   import MessageToolbar from "./MessageToolbar.svelte";
   import MediaEmbed from "./embeds/MediaEmbed.svelte";
   import LinkCard from "./embeds/LinkCard.svelte";
+  import ForwardContext from "./ForwardContext.svelte";
+  import { createMessageQuery } from "$lib/queries/message";
   import MessageContent from "./MessageContent.svelte";
   import ChatInput from "./ChatInput.svelte";
   import { editMessage, removeLinkEmbed } from "$lib/mutations/message";
@@ -38,6 +40,7 @@
     onOpenMobileMenu: (message: Message) => void;
     /** Requests the delete confirmation for this message (raised to ChatArea). */
     onRequestDelete: (message: Message) => void;
+    onForward: (message: Message) => void;
     mergeWithPrevious?: boolean;
   };
 
@@ -52,6 +55,7 @@
     onCancelEdit,
     onOpenMobileMenu,
     onRequestDelete,
+    onForward,
     mergeWithPrevious = false,
   }: Props = $props();
 
@@ -171,14 +175,47 @@
     const cur = messagingState.current;
     return cur.kind === "threading" && cur.selectedMessages.some((m) => m.id === message.id);
   });
+  // On touch devices there is no hover, so the toolbar is shown by tapping the
+  // message (see the onclick on the message box below). Only one message's
+  // toolbar is open at a time (shared `toolbarOpenState`).
+  let isToolbarOpen = $derived(toolbarOpenState.id === message.id);
+  // System messages (e.g. "X joined the space", "X created [thread]") are
+  // authored by the space itself. They carry no meaningful author identity, so
+  // render them as a centred system notice without an avatar/author line.
+  let isSystem = $derived(message.system === true);
   let showToolbar = $derived(
-    (!isEditing && hovered && !isThreading && !isMobile.current) || keepToolbarOpen,
+    !isSystem &&
+      !isEditing &&
+      !isThreading &&
+      ((!isMobile.current && hovered) || (isMobile.current && isToolbarOpen)) ||
+      keepToolbarOpen,
   );
 
   let isBridged = $derived(message.authorDid.startsWith("did:discord:"));
   let isAuthor = $derived(message.authorDid === currentUserDid);
+
+  // ── Forwards ──────────────────────────────────────────────────────────
+  // A forward is a real message (authored by the forwarder) carrying a
+  // forward attachment. The bubble renders as a normal message by the
+  // ORIGINAL author; the forwarder is surfaced only in the forward context
+  // line above the author line. Fetch the original so we can render it.
+  const forwardedFrom = $derived(message.forwardedFrom);
+  const isForward = $derived(!!forwardedFrom);
+  const originalQuery = createMessageQuery(
+    () => forwardedFrom?.messageId ?? "",
+    () => forwardedFrom?.roomId ?? "",
+    { enabled: isForward },
+  );
+  const original = $derived(originalQuery.data);
+  /** The bubble's effective author: the original author when forwarding. */
+  const eff = $derived(isForward && original ? original : null);
+  const effBridged = $derived(
+    eff ? eff.authorDid.startsWith("did:discord:") : isBridged,
+  );
+
   // Edit stays author-only; space admins may delete anyone's message.
-  let canEdit = $derived(isAuthor);
+  // Forwards aren't editable (the visible content belongs to the original).
+  let canEdit = $derived(isAuthor && !isForward);
   let canDelete = $derived(isAuthor || isAdmin);
 
   function handleContextAction(e: MouseEvent) {
@@ -243,24 +280,40 @@
     onmouseenter={() => (hovered = true)}
     onmouseleave={() => (hovered = false)}
     oncontextmenu={handleContextAction}
+    onclick={(e) => {
+      // On touch devices, tapping a message toggles its inline toolbar.
+      // Skip when the tap lands on a link (the user is navigating, not
+      // summoning the toolbar).
+      if (isMobile.current && !isThreading && !isEditing && !(e.target as Element)?.closest?.("a")) {
+        toggleToolbar(message.id);
+      }
+    }}
   >
     <MessageBubble
-      authorDid={message.authorDid}
-      authorName={message.authorName ?? undefined}
-      authorHandle={message.authorHandle ?? undefined}
-      authorAvatarUrl={message.authorAvatar ?? undefined}
-      avatarSrc={resolveBlobUrl(message.authorAvatar)}
-      profileUrl={isBridged ? undefined : `/user/${message.authorDid}`}
-      onAvatarClick={isBridged ? undefined : () => goto(`/user/${message.authorDid}`)}
-      timestamp={new Date(message.timestamp)}
-      {isBridged}
-      {mergeWithPrevious}
+      authorDid={eff ? eff.authorDid : message.authorDid}
+      authorName={eff ? (eff.authorName ?? undefined) : (message.authorName ?? undefined)}
+      authorHandle={eff ? (eff.authorHandle ?? undefined) : (message.authorHandle ?? undefined)}
+      authorAvatarUrl={eff ? (eff.authorAvatar ?? undefined) : (message.authorAvatar ?? undefined)}
+      avatarSrc={eff ? resolveBlobUrl(eff.authorAvatar) : resolveBlobUrl(message.authorAvatar)}
+      profileUrl={effBridged ? undefined : `/user/${eff ? eff.authorDid : message.authorDid}`}
+      onAvatarClick={effBridged ? undefined : () => goto(`/user/${eff ? eff.authorDid : message.authorDid}`)}
+      timestamp={new Date(eff ? eff.timestamp : message.timestamp)}
+      isBridged={effBridged}
+      isSystem={isSystem}
+      mergeWithPrevious={isSystem ? false : mergeWithPrevious}
       {isSelected}
       {isEditing}
       {showToolbar}
     >
       {#snippet replyContext()}
-        {#if message.replyTo}
+        {#if message.forwardedFrom}
+          <ForwardContext
+            name={message.authorName}
+            did={message.authorDid}
+            avatar={message.authorAvatar}
+            timestamp={new Date(message.timestamp)}
+          />
+        {:else if message.replyTo}
           <MessageContext context={{ kind: "replying", replyTo: { id: message.replyTo } }} roomId={roomId} />
         {/if}
       {/snippet}
@@ -320,6 +373,14 @@
               </div>
             {/if}
           </div>
+        {:else if isForward}
+          {#if original}
+            <MessageContent content={original.content} mimeType={original.mimeType} />
+          {:else if originalQuery.isPending}
+            <div class="h-5"></div>
+          {:else}
+            <span class="italic text-base-400 text-sm">Original message unavailable</span>
+          {/if}
         {:else}
           <MessageContent content={message.content} mimeType={message.mimeType} />
         {/if}
@@ -381,11 +442,13 @@
           {spaceId}
           {roomId}
           {message}
+          {mergeWithPrevious}
           {canEdit}
           {canDelete}
           bind:keepToolbarOpen
           {onStartEdit}
           onRequestDelete={() => onRequestDelete(message)}
+          {onForward}
         />
       {/snippet}
 
@@ -401,6 +464,29 @@
         {/if}
       {/snippet}
     </MessageBubble>
+
+    {#if isForward && message.content}
+      <!-- The forwarder's own commentary, rendered below the forwarded
+           message as if it were a separate message (it's modelled as part of
+           the same forward unit). -->
+      <div class="mt-1">
+        <MessageBubble
+          authorDid={message.authorDid}
+          authorName={message.authorName ?? undefined}
+          authorHandle={message.authorHandle ?? undefined}
+          authorAvatarUrl={message.authorAvatar ?? undefined}
+          avatarSrc={resolveBlobUrl(message.authorAvatar)}
+          profileUrl={isBridged ? undefined : `/user/${message.authorDid}`}
+          onAvatarClick={isBridged ? undefined : () => goto(`/user/${message.authorDid}`)}
+          timestamp={new Date(message.timestamp)}
+          {isBridged}
+        >
+          {#snippet content()}
+            <MessageContent content={message.content} mimeType={message.mimeType} />
+          {/snippet}
+        </MessageBubble>
+      </div>
+    {/if}
   </div>
 {/snippet}
 

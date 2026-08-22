@@ -23,21 +23,13 @@ const USER_C = "did:plc:e2e-user-c";
 
 _setAdminDids([ADMIN]);
 
-// Each test gets a fresh events DB file so seeded events don't collide on the
-// (stream_id, idx) unique key across tests. `startAppserver` resets the main
-// in-memory DB but the events DB is a separate file that persists without this.
-let eventsDbPath = "";
+// Each test gets a fresh in-memory DB via `startAppserver` (which opens the
+// event-log DB in-memory), so seeded events don't collide across tests.
 beforeEach(() => {
-  eventsDbPath = `/tmp/roomy-dashboard-${Math.random().toString(36).slice(2, 8)}.sqlite`;
-  process.env.EVENTS_DB_PATH = eventsDbPath;
+  // no-op — startAppserver resets the in-memory DB each test
 });
 afterEach(() => {
-  delete process.env.EVENTS_DB_PATH;
-  try {
-    Bun.$`rm -f ${eventsDbPath}`.quiet();
-  } catch {
-    // ignore
-  }
+  // no-op
 });
 
 /** Insert one event row into the event-log DB (ctx.db IS the event-log DB). */

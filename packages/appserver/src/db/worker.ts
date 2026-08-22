@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "nod
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkerRequest, WorkerResponse } from "./types.ts";
+import { dbPath, spacesDir as resolveSpacesDir } from "./paths.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -139,6 +140,58 @@ function initializeVersionedSchema(
   // stamped as current but missing a table added in the same version heals.
   const schema = readFileSync(schemaPath, "utf-8");
   db.exec(schema);
+}
+
+/**
+ * Global DB upgrades are additive. Apply the idempotent current schema and
+ * advance an older numeric version in place so cross-space derived state
+ * (especially membership edges) is never discarded by a table addition.
+ */
+function initializeGlobalSchema(db: Database, expectedVersion: string): void {
+  let row: { version: string } | null;
+  try {
+    row = db
+      .query<{ version: string }, []>(
+        "select version from global_schema_version where id = 1",
+      )
+      .get();
+  } catch {
+    row = null;
+  }
+
+  const schema = readFileSync(GLOBAL_SCHEMA_PATH, "utf-8");
+  if (!row) {
+    db.exec(schema);
+    db.exec(
+      `insert into global_schema_version (id, version) values (1, '${expectedVersion}')`,
+    );
+    db.query(
+      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
+    ).run(expectedVersion);
+    return;
+  }
+
+  if (row.version === expectedVersion) {
+    db.exec(schema);
+    db.query(
+      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
+    ).run(expectedVersion);
+    return;
+  }
+
+  const actual = Number.parseInt(row.version, 10);
+  const expected = Number.parseInt(expectedVersion, 10);
+  if (!Number.isFinite(actual) || !Number.isFinite(expected) || actual >= expected) {
+    throw new SchemaVersionMismatchError(expectedVersion, row.version);
+  }
+
+  db.transaction(() => {
+    db.exec(schema);
+    db.query("update global_schema_version set version = ? where id = 1").run(expectedVersion);
+    db.query(
+      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
+    ).run(expectedVersion);
+  })();
 }
 
 interface Migration {
@@ -271,11 +324,7 @@ const MIGRATIONS: Migration[] = [
       // Per-space split (§1f): read_positions gains a denormalized
       // `space_did` column so unread sums can be scoped per space without
       // joining entities (which moves to per-space DBs). Purely additive —
-      // no data loss. The row backfill is NOT done here: the read-state DB
-      // is not yet ATTACHed to the main DB when migrations run (the ATTACH
-      // happens after initializeReadStateSchema in handleInit), so the
-      // entities join would fail. handleInit runs the backfill after the
-      // ATTACH instead (see backfillReadPositionsSpaceDid).
+      // no data loss.
       const cols = db
         .query<{ name: string }, []>(
           "select name from pragma_table_info('read_positions')",
@@ -287,6 +336,35 @@ const MIGRATIONS: Migration[] = [
           "alter table read_positions add column space_did text not null default ''",
         );
       }
+    },
+  },
+  {
+    version: 6,
+    up(db: Database) {
+      db.exec(`
+        create table if not exists readstate_schema_migrations (
+          version text primary key,
+          completed_at integer
+        ) strict
+      `);
+      db.exec(`
+        create table if not exists user_space_membership (
+          user_did        text not null,
+          space_did       text not null,
+          state           text not null check(state in ('joined', 'left')),
+          source          text not null,
+          source_event_id text not null,
+          updated_at      integer not null default (unixepoch() * 1000),
+          primary key (user_did, space_did)
+        ) strict
+      `);
+      db.exec(`
+        create index if not exists idx_user_space_membership_user_state
+          on user_space_membership(user_did, state, updated_at desc)
+      `);
+      db.query(
+        "insert or ignore into readstate_schema_migrations (version, completed_at) values ('6', null)",
+      ).run();
     },
   },
 ];
@@ -616,52 +694,9 @@ function openGlobalDbInternal(): Database {
   globalDb.exec("pragma synchronous = normal");
   globalDb.exec("pragma foreign_keys = on");
   globalDb.exec("pragma busy_timeout = 5000");
-  try {
-    initializeVersionedSchema(
-      globalDb,
-      GLOBAL_SCHEMA_PATH,
-      "global_schema_version",
-      globalSchemaVersion ?? "",
-    );
-  } catch (err) {
-    // The global DB is derived data (regenerable from the event log), so a
-    // schema-version mismatch means the on-disk schema is stale. Wipe and
-    // re-derive transparently rather than failing every request — the
-    // membership edges / profiles / entity index are rebuilt by
-    // re-materialization. Mirrors the per-space DB handling.
-    deleteGlobalDbFile(globalDb);
-    globalDb = new Database(globalDbPath, { create: true });
-    globalDb.exec("pragma journal_mode = wal");
-    globalDb.exec("pragma synchronous = normal");
-    globalDb.exec("pragma foreign_keys = on");
-    globalDb.exec("pragma busy_timeout = 5000");
-    initializeVersionedSchema(
-      globalDb,
-      GLOBAL_SCHEMA_PATH,
-      "global_schema_version",
-      globalSchemaVersion ?? "",
-    );
-  }
+  initializeGlobalSchema(globalDb, globalSchemaVersion ?? "");
 
   return globalDb;
-}
-
-/** Close and delete the global DB file (best-effort). */
-function deleteGlobalDbFile(db: Database): void {
-  try {
-    db.close();
-  } catch {
-    /* best-effort */
-  }
-  if (globalDbPath !== ":memory:" && globalDbPath !== null) {
-    for (const suffix of ["", "-wal", "-shm"]) {
-      try {
-        unlinkSync(globalDbPath + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
-  }
 }
 
 
@@ -816,16 +851,16 @@ function handleInit(req: WorkerRequest): {
 } {
   const opts = req.initOpts!;
   const readStatePath =
-    opts.readStateDbPath ?? "data/roomy-readstate.sqlite";
-  const eventsPath = opts.eventsDbPath ?? "data/roomy-events.sqlite";
+    opts.readStateDbPath ?? dbPath("roomy-readstate.sqlite");
+  const eventsPath = opts.eventsDbPath ?? dbPath("roomy-events.sqlite");
 
   // Per-space split (Phase 3): lazily-created space DBs + global DB. When
   // the read-state DB is :memory: (tests), keep the derived DBs in-memory
   // too so tests never touch the filesystem.
   const isMemory = readStatePath === ":memory:";
-  spacesDir = opts.spacesDir ?? (isMemory ? ":memory:" : "data/spaces");
+  spacesDir = opts.spacesDir ?? (isMemory ? ":memory:" : resolveSpacesDir());
   globalDbPath =
-    opts.globalDbPath ?? (isMemory ? ":memory:" : "data/global.sqlite");
+    opts.globalDbPath ?? (isMemory ? ":memory:" : dbPath("global.sqlite"));
   spaceSchemaVersion = opts.spaceSchemaVersion ?? "";
   globalSchemaVersion = opts.globalSchemaVersion ?? "";
   if (opts.maxSpaceDbs !== undefined) maxSpaceDbs = opts.maxSpaceDbs;

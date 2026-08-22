@@ -23,6 +23,15 @@ create table if not exists global_schema_version (
   version text not null
 ) strict;
 
+-- Tracks asynchronous/data post-migrations separately from structural DDL.
+-- A schema bump inserts its version with completed_at null; startup runs the
+-- registered idempotent task and stamps completion only after the whole task
+-- succeeds, so interrupted deployments retry safely.
+create table if not exists global_schema_migrations (
+  version text primary key,
+  completed_at integer
+) strict;
+
 create table if not exists edges (
   head text not null, -- user did
   tail text not null, -- space did
@@ -80,3 +89,19 @@ create table if not exists pending_links (
   primary key (space_did, message_id, url)
 ) strict;
 create index if not exists idx_pending_links_created on pending_links(created_at);
+
+-- Global mentions index. One row per (mentioned DID, message). Dual-written
+-- during materialization so a client subscribed to the `mentions:<did>` sync
+-- topic can backfill history via `space.roomy.mention.getMentions` with a
+-- single cross-space query, and so deleteMessage can resolve which DIDs a
+-- deleted message mentioned. The DID is the stable ID (never the handle or
+-- display name).
+create table if not exists mentions (
+  did text not null,          -- mentioned user DID
+  message_id text not null,  -- the message that mentioned them
+  space_did text not null,
+  room_id text not null,
+  created_at integer not null default (unixepoch() * 1000),
+  primary key (did, message_id)
+) strict;
+create index if not exists idx_mentions_did_created on mentions(did, created_at desc);

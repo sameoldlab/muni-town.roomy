@@ -6,6 +6,7 @@
   import {
     IconSmilePlus,
     IconReply,
+    IconForward,
     IconNeedleThread,
     IconEdit,
     IconTrash,
@@ -14,17 +15,21 @@
   let {
     canEdit,
     canDelete,
+    mergeWithPrevious = false,
     keepToolbarOpen = $bindable(false),
     onToggleReaction,
     onEdit,
     onDelete,
     onStartThreading,
     onReply,
+    onForward,
   }: {
     /** Author-only — shows the Edit button. */
     canEdit: boolean;
     /** Author or space admin — shows the Delete button. */
     canDelete: boolean;
+    /** Whether this is a message sharing the previous message's author and timestamp row. */
+    mergeWithPrevious?: boolean;
     /** Bindable — kept open while the emoji picker is open. */
     keepToolbarOpen?: boolean;
     onToggleReaction: (emoji: string) => void;
@@ -32,6 +37,7 @@
     onDelete: () => void;
     onStartThreading: () => void;
     onReply: () => void;
+    onForward: () => void;
   } = $props();
 
   let isEmojiToolbarPickerOpen = $state(false);
@@ -48,7 +54,7 @@
 
 <BitsTooltip.Provider>
   <Toolbar.Root
-    class={`${isEmojiToolbarPickerOpen ? "flex" : "flex"} shadow-lg border border-base-200 dark:border-base-300/10 backdrop-blur-sm absolute -top-4 right-0 bg-base-50 dark:bg-base-900/50 p-0.5 rounded-[12px] items-center`}
+    class={`${isEmojiToolbarPickerOpen ? "flex" : "flex"} shadow-lg border border-base-200 dark:border-base-300/10 backdrop-blur-sm absolute ${mergeWithPrevious ? "-top-9" : "-top-4"} right-0 bg-base-50 dark:bg-base-900/50 p-0.5 rounded-[12px] items-center`}
     onclick={(e) => e.stopPropagation()}
   >
     <Toolbar.Button
@@ -153,6 +159,19 @@
         aria-label="Reply"
       >
         <IconReply />
+      </Toolbar.Button>
+    </Tooltip>
+
+    <Tooltip tip="Forward">
+      <Toolbar.Button
+        onclick={onForward}
+        class={[
+          buttonVariants({ variant: "ghost", size: "icon" }),
+          "backdrop-blur-none h-[34px]",
+        ]}
+        aria-label="Forward"
+      >
+        <IconForward />
       </Toolbar.Button>
     </Tooltip>
   </Toolbar.Root>

@@ -32,6 +32,12 @@ describe("blocksToDiscordMarkdown", () => {
 		);
 	});
 
+	test("preserves single newlines inside a text block", () => {
+		expect(blocksToDiscordMarkdown([textBlock("line one\nline two")])).toBe(
+			"line one\nline two",
+		);
+	});
+
 	describe("inline formatting facets", () => {
 		const facetAt = (byteStart: number, byteEnd: number, $type: string) => ({
 			index: { byteStart, byteEnd },
@@ -91,6 +97,23 @@ describe("blocksToDiscordMarkdown", () => {
 			expect(blocksToDiscordMarkdown([textBlock("docs", [linkFacet])])).toBe(
 				"docs (https://example.com/x)",
 			);
+		});
+
+		test("link facet whose text is already the URI is not duplicated", () => {
+			const linkFacet = {
+				index: { byteStart: 0, byteEnd: 22 },
+				features: [
+					{
+						$type: "space.roomy.richtext.facet#link",
+						uri: "https://example.com/x",
+					},
+				],
+			};
+			expect(
+				blocksToDiscordMarkdown([
+					textBlock("https://example.com/x", [linkFacet]),
+				]),
+			).toBe("https://example.com/x");
 		});
 
 		test("didMention facet for a bridged Discord user renders <@snowflake>", () => {
@@ -159,6 +182,29 @@ describe("blocksToDiscordMarkdown", () => {
 					{ $type: "space.roomy.richtext.blocks#blockquote", text: "quoted" },
 				]),
 			).toBe("> quoted");
+		});
+
+		test("nested blockquote prefixed with >>", () => {
+			expect(
+				blocksToDiscordMarkdown([
+					{
+						$type: "space.roomy.richtext.blocks#blockquote",
+						text: "nested",
+						level: 2,
+					},
+				]),
+			).toBe(">> nested");
+		});
+
+		test("small text prefixed with -# (Discord small text)", () => {
+			expect(
+				blocksToDiscordMarkdown([
+					{
+						$type: "space.roomy.richtext.blocks#small",
+						text: "a small caption",
+					},
+				]),
+			).toBe("-# a small caption");
 		});
 
 		test("code block with language renders as a fenced code block", () => {

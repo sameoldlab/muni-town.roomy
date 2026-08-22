@@ -29,9 +29,9 @@ set -euo pipefail
 # from the event log on first access, so they are intentionally not
 # replicated or restored here.
 
-DATA_DIR="${APPSERVER_DATA_DIR:-/data}"
+DATA_DIR="${DATA_DIR:-/data}"
 mkdir -p "$DATA_DIR"
-mkdir -p "${SPACES_DIR:-$DATA_DIR/spaces}"
+mkdir -p "$DATA_DIR/spaces"
 
 # ── Optional Litestream ──────────────────────────────────────────────────
 # If any required S3 var is missing, run the app directly (no backups). This
@@ -52,9 +52,9 @@ ALLOW_FRESH_START="${LITESTREAM_ALLOW_FRESH_START:-false}"
 # source of truth; read-state is a persistent source of truth; global holds
 # membership/profiles. Per-space DBs are derived and excluded.
 STATIC_DBS=(
-  "${EVENTS_DB_PATH:-$DATA_DIR/roomy-events.sqlite}"
-  "${READSTATE_DB_PATH:-$DATA_DIR/roomy-readstate.sqlite}"
-  "${GLOBAL_DB_PATH:-$DATA_DIR/global.sqlite}"
+  "$DATA_DIR/roomy-events.sqlite"
+  "$DATA_DIR/roomy-readstate.sqlite"
+  "$DATA_DIR/global.sqlite"
 )
 
 # SQLite database files begin with the 16-byte magic "SQLite format 3\0".

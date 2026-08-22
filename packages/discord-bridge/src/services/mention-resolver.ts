@@ -79,9 +79,22 @@ function headerBlock(text: string, level: number, facets?: Facet[]): Block {
 	return facets && facets.length > 0 ? { ...base, facets } : base;
 }
 
-function blockquoteBlock(text: string, facets?: Facet[]): Block {
+function blockquoteBlock(
+	text: string,
+	facets?: Facet[],
+	level?: number,
+): Block {
 	const base = {
 		$type: "space.roomy.richtext.blocks#blockquote" as const,
+		text,
+		...(level && level > 1 ? { level } : {}),
+	};
+	return facets && facets.length > 0 ? { ...base, facets } : base;
+}
+
+function smallBlock(text: string, facets?: Facet[]): Block {
+	const base = {
+		$type: "space.roomy.richtext.blocks#small" as const,
 		text,
 	};
 	return facets && facets.length > 0 ? { ...base, facets } : base;
@@ -203,17 +216,61 @@ function parseBlocks(content: string, ctx: InlineCtx): Block[] {
 			continue;
 		}
 
-		// Blockquote (single level; nested quotes flattened).
+		// Small text (Discord `-# small text`).
+		const small = /^-#\s+(.*)$/.exec(trimmed);
+		if (small) {
+			const content = small[1] ?? "";
+			const { text, facets } = inlineFacets(content);
+			blocks.push(smallBlock(text, facets));
+			i++;
+			continue;
+		}
+
+		// Blockquote. Discord supports `> ` (single-line), `>> ` (nested), and
+		// `>>> ` (multi-line: everything until a blank line is quoted).
 		if (trimmed.startsWith(">")) {
-			const quoteLines: string[] = [];
+			// Multi-line blockquote: `>>> text` quotes the rest of this line
+			// and every following line until a blank line.
+			if (/^>>>/.test(trimmed)) {
+				const quoteLines: string[] = [trimmed.replace(/^>>>\s?/, "")];
+				i++;
+				while (i < lines.length) {
+					const ln = lines[i];
+					if (ln === undefined || ln.trim() === "") break;
+					quoteLines.push(ln.trim());
+					i++;
+				}
+				const { text, facets } = inlineFacets(quoteLines.join(" "));
+				blocks.push(blockquoteBlock(text, facets));
+				continue;
+			}
+
+			// Single-line / nested: group consecutive `>`-prefixed lines by
+			// their nesting depth (number of leading `>`), emitting one
+			// blockquote block per level so nesting is preserved.
 			while (i < lines.length) {
 				const ln = lines[i];
 				if (ln === undefined || !ln.trim().startsWith(">")) break;
-				quoteLines.push(ln.trim().replace(/^>\s?/, ""));
+				const t = ln.trim();
+				const level = (t.match(/^>+/) ?? [""])[0]?.length ?? 1;
+				const quoteLines: string[] = [t.replace(/^>+\s?/, "")];
 				i++;
+				while (i < lines.length) {
+					const nxt = lines[i];
+					if (nxt === undefined) break;
+					const nt = nxt.trim();
+					if (
+						!nt.startsWith(">") ||
+						(nt.match(/^>+/) ?? [""])[0]?.length !== level
+					) {
+						break;
+					}
+					quoteLines.push(nt.replace(/^>+\s?/, ""));
+					i++;
+				}
+				const { text, facets } = inlineFacets(quoteLines.join(" "));
+				blocks.push(blockquoteBlock(text, facets, level));
 			}
-			const { text, facets } = inlineFacets(quoteLines.join(" "));
-			blocks.push(blockquoteBlock(text, facets));
 			continue;
 		}
 
@@ -278,6 +335,7 @@ function parseBlocks(content: string, ctx: InlineCtx): Block[] {
 			if (
 				t === "" ||
 				/^(#{1,6})\s+/.test(t) ||
+				/^-\#\s+/.test(t) ||
 				/^```/.test(t) ||
 				/^>/.test(t) ||
 				/^([-*+])\s+/.test(t) ||
@@ -289,7 +347,10 @@ function parseBlocks(content: string, ctx: InlineCtx): Block[] {
 			paraLines.push(t);
 			i++;
 		}
-		const { text, facets } = inlineFacets(paraLines.join(" "));
+		// Join consecutive lines with a newline (not a space) so Discord's
+		// single-line breaks survive the bridge — multiple lines must not
+		// collapse into one.
+		const { text, facets } = inlineFacets(paraLines.join("\n"));
 		blocks.push(textBlock(text, facets));
 	}
 
@@ -415,6 +476,23 @@ function parseInline(
 				]),
 			);
 			i += link[0].length;
+			continue;
+		}
+
+		// Bare URL (Discord auto-links these). Turn it into a link facet so the
+		// URL is clickable on the Roomy side too.
+		const bareUrl = /^https?:\/\/[^\s<>()]+/.exec(rest);
+		if (bareUrl) {
+			flush();
+			const url = bareUrl[0] ?? "";
+			segments.push({
+				text: url,
+				features: [
+					...inherited,
+					{ $type: "space.roomy.richtext.facet#link" as const, uri: url },
+				],
+			});
+			i += url.length;
 			continue;
 		}
 

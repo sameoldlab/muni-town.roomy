@@ -18,9 +18,11 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { closeDb, openDb, openGlobalDb, openReadStateDb, openSpaceDb } from "../db/db.ts";
+import { StreamDid, UserDid } from "@roomy-space/sdk";
+import { closeDb, openDb, openReadStateDb, openSpaceDb } from "../db/db.ts";
 import type { DbLike } from "../db/types.ts";
 import { selectActivityFeed } from "./activityFeed.ts";
+import { setUserSpaceMembership } from "./userSpaceMembership.ts";
 
 const SPACE = "did:web:space.example";
 const OTHER_SPACE = "did:web:other-space.example";
@@ -60,7 +62,6 @@ function ulidForTimestamp(ts: number): string {
  */
 function setup(): { readState: DbLike } {
   closeDb();
-  process.env.READSTATE_DB_PATH = ":memory:";
   openDb({ path: ":memory:" });
   const readState = openReadStateDb();
   return { readState };
@@ -88,11 +89,14 @@ async function seedUser(spaceId: string, did: string) {
 }
 
 async function seedJoinedSpace(userDid: string, spaceId: string) {
-  const db = openGlobalDb();
-  await db.run("insert into edges (head, tail, label) values (?, ?, 'joinedSpace')", [
-    userDid,
-    spaceId,
-  ]);
+  await setUserSpaceMembership(
+    openReadStateDb(),
+    userDid as UserDid,
+    spaceId as StreamDid,
+    "joined",
+    "test",
+    "01TEST0000000000000000000000",
+  );
 }
 
 async function seedRoom(

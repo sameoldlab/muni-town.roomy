@@ -74,10 +74,6 @@ beforeEach(async () => {
   _resetHydrationInflight();
   _resetEmbedSweeper();
 
-  // Use a unique events DB path per test so events don't leak between tests.
-  const testId = Math.random().toString(36).slice(2, 8);
-  process.env.EVENTS_DB_PATH = `/tmp/roomy-events-${testId}.sqlite`;
-
   // Open the singleton event-log DB in-memory so handlers' internal
   // openDb() resolves. Materialised rows live in the per-space DB.
   const db = openDb({ path: ":memory:" });
@@ -135,7 +131,6 @@ afterEach(async () => {
   closeDb();
   _resetHydrationInflight();
   _resetEmbedSweeper();
-  delete process.env.EVENTS_DB_PATH;
 });
 
 describe("space.roomy.space.sendEvents", () => {
