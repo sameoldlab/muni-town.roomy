@@ -13,6 +13,7 @@ export const Params = type({ spaceId: "string" });
 
 export const Federation = type({
   originSpaceDid: "string",
+  "originSpaceName?": "string",
   status: "'pending' | 'active' | 'rejected' | 'removed'",
   requestedByDid: "string",
   requestedAt: "number",

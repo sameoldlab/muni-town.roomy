@@ -23,7 +23,7 @@
       case "permissions":
         return "Permissions";
       case "federations":
-        return "Federations";
+        return "Federation";
       case "members":
         return "Members";
       case "invites":

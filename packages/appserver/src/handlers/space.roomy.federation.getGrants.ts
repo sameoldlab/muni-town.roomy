@@ -16,17 +16,19 @@
  * inert and would only confuse the admin UI).
  */
 
-import { requireFederationAdmin } from "./federationAdmin.ts";
+import { requireFederationAdmin, resolveSpaceName } from "./federationAdmin.ts";
 import type { AuthCtx, QueryHandler, QueryParams } from "../xrpc/types.ts";
 
 interface OriginGrant {
   federatingSpaceDid: string;
+  federatingSpaceName?: string;
   roomId: string;
   permission: "read" | "readwrite";
 }
 
 interface ReceiverGrant {
   originSpaceId: string;
+  originSpaceName?: string;
   roomId: string;
   grantee: string;
   kind: "user" | "role";
@@ -85,17 +87,27 @@ export const getFederationGrantsHandler: QueryHandler<
     }>(spaceId);
 
   return {
-    originGrants: originRows.map((r) => ({
-      federatingSpaceDid: r.federating_space_did,
-      roomId: r.room_id,
-      permission: r.permission,
-    })),
-    receiverGrants: receiverRows.map((r) => ({
-      originSpaceId: r.space_id,
-      roomId: r.room_id,
-      grantee: r.grantee,
-      kind: r.kind,
-      permission: r.permission,
-    })),
+    originGrants: await Promise.all(
+      originRows.map(async (r) => ({
+        federatingSpaceDid: r.federating_space_did,
+        ...(await resolveSpaceName(r.federating_space_did).then(
+          (name) => (name ? { federatingSpaceName: name } : {}),
+        )),
+        roomId: r.room_id,
+        permission: r.permission,
+      })),
+    ),
+    receiverGrants: await Promise.all(
+      receiverRows.map(async (r) => ({
+        originSpaceId: r.space_id,
+        ...(await resolveSpaceName(r.space_id).then((name) =>
+          name ? { originSpaceName: name } : {},
+        )),
+        roomId: r.room_id,
+        grantee: r.grantee,
+        kind: r.kind,
+        permission: r.permission,
+      })),
+    ),
   };
 };

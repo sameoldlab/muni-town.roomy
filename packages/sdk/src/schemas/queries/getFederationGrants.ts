@@ -14,12 +14,14 @@ export const Params = type({ spaceId: "string" });
 
 export const OriginGrant = type({
   federatingSpaceDid: "string",
+  "federatingSpaceName?": "string",
   roomId: "string",
   permission: "'read' | 'readwrite'",
 });
 
 export const ReceiverGrant = type({
   originSpaceId: "string",
+  "originSpaceName?": "string",
   roomId: "string",
   grantee: "string",
   kind: "'user' | 'role'",

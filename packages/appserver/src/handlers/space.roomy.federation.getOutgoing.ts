@@ -7,11 +7,12 @@
  * grants.
  */
 
-import { requireFederationAdmin } from "./federationAdmin.ts";
+import { requireFederationAdmin, resolveSpaceName } from "./federationAdmin.ts";
 import type { AuthCtx, QueryHandler, QueryParams } from "../xrpc/types.ts";
 
 interface FederationRow {
   federatingSpaceDid: string;
+  federatingSpaceName?: string;
   status: string;
   requestedByDid: string;
   requestedAt: number;
@@ -52,14 +53,19 @@ export const getFederationOutgoingHandler: QueryHandler<
     }>(spaceId);
 
   return {
-    federations: rows.map((r) => ({
-      federatingSpaceDid: r.federating_space_did,
-      status: r.status,
-      requestedByDid: r.requested_by_did,
-      requestedAt: r.requested_at,
-      ...(r.decided_by_did ? { decidedByDid: r.decided_by_did } : {}),
-      ...(r.decided_at !== null ? { decidedAt: r.decided_at } : {}),
-      ...(r.message ? { message: r.message } : {}),
-    })),
+    federations: await Promise.all(
+      rows.map(async (r) => ({
+        federatingSpaceDid: r.federating_space_did,
+        ...(await resolveSpaceName(r.federating_space_did).then(
+          (name) => (name ? { federatingSpaceName: name } : {}),
+        )),
+        status: r.status,
+        requestedByDid: r.requested_by_did,
+        requestedAt: r.requested_at,
+        ...(r.decided_by_did ? { decidedByDid: r.decided_by_did } : {}),
+        ...(r.decided_at !== null ? { decidedAt: r.decided_at } : {}),
+        ...(r.message ? { message: r.message } : {}),
+      })),
+    ),
   };
 };

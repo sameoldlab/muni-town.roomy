@@ -5,11 +5,12 @@
  * only to that space's admins, who use it to approve or reject requests.
  */
 
-import { requireFederationAdmin } from "./federationAdmin.ts";
+import { requireFederationAdmin, resolveSpaceName } from "./federationAdmin.ts";
 import type { AuthCtx, QueryHandler, QueryParams } from "../xrpc/types.ts";
 
 interface RequestRow {
   federatingSpaceDid: string;
+  federatingSpaceName?: string;
   requestedByDid: string;
   requestedAt: number;
   message?: string;
@@ -43,11 +44,16 @@ export const getFederationRequestsHandler: QueryHandler<
     }>(spaceId);
 
   return {
-    requests: rows.map((r) => ({
-      federatingSpaceDid: r.federating_space_did,
-      requestedByDid: r.requested_by_did,
-      requestedAt: r.requested_at,
-      ...(r.message ? { message: r.message } : {}),
-    })),
+    requests: await Promise.all(
+      rows.map(async (r) => ({
+        federatingSpaceDid: r.federating_space_did,
+        ...(await resolveSpaceName(r.federating_space_did).then(
+          (name) => (name ? { federatingSpaceName: name } : {}),
+        )),
+        requestedByDid: r.requested_by_did,
+        requestedAt: r.requested_at,
+        ...(r.message ? { message: r.message } : {}),
+      })),
+    ),
   };
 };

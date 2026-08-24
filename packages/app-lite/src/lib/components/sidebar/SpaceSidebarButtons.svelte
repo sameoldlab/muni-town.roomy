@@ -128,19 +128,21 @@
       data-current={settingsBar.expanded}
       onclick={toggleSettings}
     >
-      {#if settingsBar.expanded}
-        <IconX />
-      {:else}
-        <IconSettings />
-      {/if}
-    </Button>
-    {#if !settingsBar.expanded && pendingRequestCount > 0}
-      <span
-        class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-accent-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none"
-        title={`${pendingRequestCount} pending federation ${pendingRequestCount === 1 ? "request" : "requests"}`}
-      >
-        {pendingRequestCount}
+      <span class="relative inline-flex">
+        {#if settingsBar.expanded}
+          <IconX />
+        {:else}
+          <IconSettings />
+        {/if}
+        {#if !settingsBar.expanded && pendingRequestCount > 0}
+          <span
+            class="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-accent-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none"
+            title={`${pendingRequestCount} pending federation ${pendingRequestCount === 1 ? "request" : "requests"}`}
+          >
+            {pendingRequestCount}
+          </span>
+        {/if}
       </span>
-    {/if}
+    </Button>
   </div>
 </div>

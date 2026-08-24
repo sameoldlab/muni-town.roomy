@@ -5,12 +5,12 @@
  * receiving/federating space. Visible to B's admins so they can see which
  * origin spaces expose channels to B and their status.
  */
-
-import { requireFederationAdmin } from "./federationAdmin.ts";
+import { requireFederationAdmin, resolveSpaceName } from "./federationAdmin.ts";
 import type { AuthCtx, QueryHandler, QueryParams } from "../xrpc/types.ts";
 
 interface FederationRow {
   originSpaceDid: string;
+  originSpaceName?: string;
   status: string;
   requestedByDid: string;
   requestedAt: number;
@@ -49,13 +49,18 @@ export const getFederationIncomingHandler: QueryHandler<
     }>(spaceId);
 
   return {
-    federations: rows.map((r) => ({
-      originSpaceDid: r.space_id,
-      status: r.status,
-      requestedByDid: r.requested_by_did,
-      requestedAt: r.requested_at,
-      ...(r.decided_by_did ? { decidedByDid: r.decided_by_did } : {}),
-      ...(r.decided_at !== null ? { decidedAt: r.decided_at } : {}),
-    })),
+    federations: await Promise.all(
+      rows.map(async (r) => ({
+        originSpaceDid: r.space_id,
+        ...(await resolveSpaceName(r.space_id).then((name) =>
+          name ? { originSpaceName: name } : {},
+        )),
+        status: r.status,
+        requestedByDid: r.requested_by_did,
+        requestedAt: r.requested_at,
+        ...(r.decided_by_did ? { decidedByDid: r.decided_by_did } : {}),
+        ...(r.decided_at !== null ? { decidedAt: r.decided_at } : {}),
+      })),
+    ),
   };
 };

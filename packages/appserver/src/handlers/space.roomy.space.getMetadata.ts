@@ -43,6 +43,8 @@ interface SidebarChannel {
   /** Set for channels federated INTO this space from another (origin) space. */
   federated?: {
     originSpaceId: string;
+    originSpaceName?: string;
+    originSpaceAvatar?: string;
     permission: "read" | "readwrite";
   };
 }
@@ -381,10 +383,15 @@ async function buildFederatedSidebarChannels(
     list.push({ roomId: r.room_id, permission: r.permission });
     byOrigin.set(r.origin, list);
   }
-
   const out: SidebarChannel[] = [];
   for (const [origin, grants] of byOrigin) {
     const originDb = openSpaceDb(origin);
+    // Origin space display info (name + avatar) for the sidebar decoration
+    // and navbar. comp_info may be absent if the origin isn't materialised
+    // locally, so both stay optional.
+    const originInfo = await originDb
+      .query("select name, avatar from comp_info where entity = ?")
+      .get<{ name: string | null; avatar: string | null }>([origin]);
     const ids = grants.map((g) => g.roomId);
     const placeholders = ids.map(() => "?").join(", ");
     const infoRows = await originDb
@@ -422,7 +429,12 @@ async function buildFederatedSidebarChannels(
         canRead: true,
         canWrite: fed.canWrite,
         unreadCount: 0,
-        federated: { originSpaceId: origin, permission: g.permission },
+        federated: {
+          originSpaceId: origin,
+          ...(originInfo?.name ? { originSpaceName: originInfo.name } : {}),
+          ...(originInfo?.avatar ? { originSpaceAvatar: originInfo.avatar } : {}),
+          permission: g.permission,
+        },
       }) as SidebarChannel);
     }
   }

@@ -35,6 +35,9 @@
         "decidedByDid": {
           "type": "string"
         },
+        "federatingSpaceName": {
+          "type": "string"
+        },
         "message": {
           "type": "string"
         }

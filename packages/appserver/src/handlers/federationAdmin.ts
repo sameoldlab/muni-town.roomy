@@ -53,3 +53,16 @@ export async function requireFederationAdmin(
 
   return { userDid, spaceId, spaceDb, db: openGlobalDb() };
 }
+
+/**
+ * Resolve a space's display name from its own per-space DB
+ * (`comp_info.name`). Returns null when the space isn't materialised
+ * locally (a space can be joined before its own stream materialises a
+ * comp_info row), so callers fall back to the DID.
+ */
+export async function resolveSpaceName(spaceDid: string): Promise<string | null> {
+  const info = await openSpaceDb(spaceDid)
+    .query("select name from comp_info where entity = ?")
+    .get<{ name: string | null }>([spaceDid]);
+  return info?.name ?? null;
+}

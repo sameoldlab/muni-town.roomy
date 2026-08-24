@@ -73,6 +73,12 @@
     lastRead?: string | null;
     parentChannelId?: string;
     parentChannelName?: string;
+    federated?: {
+      originSpaceId: string;
+      originSpaceName?: string;
+      originSpaceAvatar?: string;
+      permission: "read" | "readwrite";
+    };
   } | null>(() => {
     const meta = spaceMetaQuery.data;
     if (!meta) return null;
@@ -136,6 +142,15 @@
         kind: kind === "thread" ? "thread" : "channel",
         parentChannelId: parentId,
         parentChannelName: parentName,
+        ...(sidebarRoomInfo?.federated
+          ? {
+              federatedOrigin: {
+                id: sidebarRoomInfo.federated.originSpaceId,
+                name: sidebarRoomInfo.federated.originSpaceName,
+                avatar: sidebarRoomInfo.federated.originSpaceAvatar,
+              },
+            }
+          : {}),
       });
     });
   });

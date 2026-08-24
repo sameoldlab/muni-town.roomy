@@ -36,6 +36,8 @@ export const ActiveSidebarThread = type({
 
 export const FederatedChannel = type({
   originSpaceId: "string",
+  "originSpaceName?": "string",
+  "originSpaceAvatar?": "string",
   permission: "'read' | 'readwrite'",
 });
 

@@ -13,6 +13,7 @@ export const Params = type({ spaceId: "string" });
 
 export const FederationRequest = type({
   federatingSpaceDid: "string",
+  "federatingSpaceName?": "string",
   requestedByDid: "string",
   requestedAt: "number",
   "message?": "string",

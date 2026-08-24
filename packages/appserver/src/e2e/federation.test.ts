@@ -93,8 +93,10 @@ describe("channel federation — full HTTP E2E chain", () => {
     );
     expect(res.status).toBe(200);
     let body = await res.json();
-    expect(body.requests).toHaveLength(1);
     expect(body.requests[0].federatingSpaceDid).toBe(B);
+    // The counterpart space's display name is resolved from B's per-space DB.
+    expect(body.requests[0].federatingSpaceName).toBe("Test Space");
+
 
     // 3. ADMIN_A approves.
     res = await send(ADMIN_A, A, {
@@ -130,8 +132,29 @@ describe("channel federation — full HTTP E2E chain", () => {
     );
     body = await res.json();
     expect(body.originGrants).toEqual([
-      { federatingSpaceDid: B, roomId: CHANNEL, permission: "readwrite" },
+      {
+        federatingSpaceDid: B,
+        federatingSpaceName: "Test Space",
+        roomId: CHANNEL,
+        permission: "readwrite",
+      },
     ]);
+
+    // The federated channel appears in B's sidebar decorated with the
+    // origin space's display info (name + avatar from A's comp_info).
+    res = await ctx.authedFetch(ADMIN_B)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=${B}`,
+    );
+    expect(res.status).toBe(200);
+    body = await res.json();
+    const fedChannel = (body.sidebar.orphans ?? []).find(
+      (ch: { id: string }) => ch.id === CHANNEL,
+    );
+    expect(fedChannel?.federated).toEqual({
+      originSpaceId: A,
+      originSpaceName: "Test Space",
+      permission: "readwrite",
+    });
 
     // 6. ADMIN_B configures a receiver grant for MEMBER_B (on B's stream).
     res = await send(ADMIN_B, B, {
@@ -153,6 +176,7 @@ describe("channel federation — full HTTP E2E chain", () => {
     expect(body.receiverGrants).toEqual([
       {
         originSpaceId: A,
+        originSpaceName: "Test Space",
         roomId: CHANNEL,
         grantee: MEMBER_B,
         kind: "user",

@@ -22,6 +22,9 @@
         },
         "roomId": {
           "type": "string"
+        },
+        "federatingSpaceName": {
+          "type": "string"
         }
       }
     },
@@ -56,6 +59,9 @@
           ]
         },
         "roomId": {
+          "type": "string"
+        },
+        "originSpaceName": {
           "type": "string"
         }
       }
