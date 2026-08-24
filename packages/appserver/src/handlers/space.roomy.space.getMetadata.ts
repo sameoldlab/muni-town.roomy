@@ -388,10 +388,16 @@ async function buildFederatedSidebarChannels(
     const originDb = openSpaceDb(origin);
     // Origin space display info (name + avatar) for the sidebar decoration
     // and navbar. comp_info may be absent if the origin isn't materialised
-    // locally, so both stay optional.
-    const originInfo = await originDb
-      .query("select name, avatar from comp_info where entity = ?")
-      .get<{ name: string | null; avatar: string | null }>([origin]);
+    // locally or its DB is on a stale schema — a decoration lookup must
+    // never take down the whole sidebar, so both stay optional.
+    let originInfo: { name: string | null; avatar: string | null } | null = null;
+    try {
+      originInfo = await originDb
+        .query("select name, avatar from comp_info where entity = ?")
+        .get<{ name: string | null; avatar: string | null }>([origin]);
+    } catch {
+      originInfo = null;
+    }
     const ids = grants.map((g) => g.roomId);
     const placeholders = ids.map(() => "?").join(", ");
     const infoRows = await originDb

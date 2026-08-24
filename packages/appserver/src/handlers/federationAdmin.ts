@@ -58,11 +58,18 @@ export async function requireFederationAdmin(
  * Resolve a space's display name from its own per-space DB
  * (`comp_info.name`). Returns null when the space isn't materialised
  * locally (a space can be joined before its own stream materialises a
- * comp_info row), so callers fall back to the DID.
+ * comp_info row), or when the counterpart's DB is on a stale schema that
+ * predates `comp_info` (blue-green serves the old file until rebuilt) —
+ * a name lookup must never take down the whole federation list, so
+ * callers fall back to the DID.
  */
 export async function resolveSpaceName(spaceDid: string): Promise<string | null> {
-  const info = await openSpaceDb(spaceDid)
-    .query("select name from comp_info where entity = ?")
-    .get<{ name: string | null }>([spaceDid]);
-  return info?.name ?? null;
+  try {
+    const info = await openSpaceDb(spaceDid)
+      .query("select name from comp_info where entity = ?")
+      .get<{ name: string | null }>([spaceDid]);
+    return info?.name ?? null;
+  } catch {
+    return null;
+  }
 }

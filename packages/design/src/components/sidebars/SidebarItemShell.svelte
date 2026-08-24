@@ -67,13 +67,13 @@
         {/if}
         <span
           class={[
-            "truncate whitespace-nowrap overflow-hidden min-w-0",
+            "truncate whitespace-nowrap overflow-hidden min-w-0 flex-1",
             hasUnread || active ? "font-semibold" : "font-normal",
             !hasUnread && !active && "text-base-500 dark:text-base-500",
           ]}>{name}</span
         >
+        {#if trailing}{@render trailing()}{/if}
       </Button>
-      {#if trailing}{@render trailing()}{/if}
     </div>
 
     {#if children}

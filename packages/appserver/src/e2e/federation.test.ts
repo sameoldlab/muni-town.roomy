@@ -279,4 +279,43 @@ describe("channel federation — full HTTP E2E chain", () => {
     const body = await res.json();
     expect(body.originGrants).toHaveLength(0);
   });
+
+  test("getOutgoing survives a counterpart space on a stale schema (no comp_info)", async () => {
+    // Establish an active federation with an origin grant (A → B).
+    await send(ADMIN_B, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.request.v0",
+      federatingSpaceDid: B,
+    });
+    await send(ADMIN_A, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.respond.v0",
+      federatingSpaceDid: B,
+      approve: true,
+    });
+    await send(ADMIN_A, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.setRoomPermission.v0",
+      federatingSpaceDid: B,
+      roomId: CHANNEL,
+      permission: "readwrite",
+    });
+
+    // Simulate B's per-space DB being on a stale schema that predates
+    // comp_info (blue-green serves the old file until rebuilt): drop the
+    // table so the name lookup throws. The handler must degrade to the DID
+    // instead of 500ing the whole outgoing list.
+    (ctx.db as any).forSpace(B).run("drop table comp_info");
+
+    const res = await ctx.authedFetch(ADMIN_A)(
+      `${ctx.baseUrl}/xrpc/space.roomy.federation.getOutgoing?spaceId=${A}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const fed = body.federations.find(
+      (f: { federatingSpaceDid: string }) => f.federatingSpaceDid === B,
+    );
+    expect(fed).toBeDefined();
+    expect(fed.federatingSpaceName).toBeUndefined();
+  });
 });

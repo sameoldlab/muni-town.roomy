@@ -28,7 +28,7 @@
     IconHome,
     IconPencil,
     IconPlus,
-    IconShare,
+    IconGlobe,
     IconTrash,
   } from "@roomy/design/icons";
   import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
@@ -829,14 +829,14 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
     >
       {#snippet icon()}
         {#if isFederated}
-          <IconShare class="shrink-0 size-3.5 text-base-500" aria-label="Federated from another space" />
+          <IconGlobe class="shrink-0 size-3.5 text-base-500" aria-label="Federated from another space" />
         {:else}
           <IconHashtag class="shrink-0 text-base-500" />
         {/if}
       {/snippet}
       {#snippet trailing()}
         {#if isFederated}
-          <span class="shrink-0 mr-1" title={channel.federated?.originSpaceName ?? channel.federated?.originSpaceId}>
+          <span class="shrink-0" title={channel.federated?.originSpaceName ?? channel.federated?.originSpaceId}>
             <SpaceAvatar
               src={resolveBlobUrl(channel.federated?.originSpaceAvatar)}
               id={channel.federated?.originSpaceId}
