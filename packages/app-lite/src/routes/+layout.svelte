@@ -6,6 +6,7 @@
   import { queryClient } from "$lib/client";
   import { auth, init, updateProfile } from "$lib/auth.svelte";
   import { installPushDebug } from "$lib/push-debug";
+  import { preloadSpaceSidebars } from "$lib/preload";
   import {
     installNotificationNavigateListener,
     installPushSubscriptionChangeListener,
@@ -56,6 +57,16 @@
     installNotificationNavigateListener();
     restoreScrollPositionsFromStorage();
 
+    // Background data preloading: once auth settles, prefetch the sidebar
+    // for every joined space so opening a space renders instantly. The
+    // preload is idempotent (ensureQueryData) and best-effort.
+    const preloadTimer = setInterval(() => {
+      if (!auth.initializing && auth.authenticated) {
+        clearInterval(preloadTimer);
+        void preloadSpaceSidebars();
+      }
+    }, 250);
+
     // Save scroll positions before page unload
     const handleBeforeUnload = () => {
       saveScrollPositionsToStorage();
@@ -70,6 +81,7 @@
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       clearInterval(saveInterval);
+      clearInterval(preloadTimer);
       saveScrollPositionsToStorage();
     };
   });
