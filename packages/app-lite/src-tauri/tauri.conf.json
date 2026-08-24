@@ -4,7 +4,7 @@
   "version": "1.0.4",
   "identifier": "space.roomy",
   "build": {
-    "frontendDist": "../build",
+    "frontendDist": "../build-staging/",
     "devUrl": "http://localhost:5180"
   },
   "app": {
