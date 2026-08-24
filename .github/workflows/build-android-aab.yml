@@ -51,7 +51,7 @@ jobs:
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r26d
+          ndk-version: r28c
           local-cache: false
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -104,7 +104,7 @@ jobs:
           serviceAccountJson: ${{ steps.auth.outputs.credentials_file_path }}
           packageName: space.roomy
           releaseFiles: ${{ github.workspace }}/packages/app-lite/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
-          tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'closed' || 'closed' }}
+          tracks: ${{ startsWith(github.ref, 'refs/tags/v') && 'alpha' || 'alpha' }}
           inAppUpdatePriority: 1
           status: completed
           # whatsNewDirectory:  github.workspace }}/packages/app-lite/src-tauri/android/app/src/main/listings/en-US/whatsnew
