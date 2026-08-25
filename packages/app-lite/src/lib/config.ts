@@ -24,6 +24,7 @@ const APPSERVER_RPCS = [
   "space.roomy.space.joinSpace",
   "space.roomy.space.leaveSpace",
   "space.roomy.space.setHandle",
+  "space.roomy.space.updatePolicy",
   "space.roomy.space.getCalendarLink",
   "space.roomy.space.getCalendarEvents",
   "space.roomy.space.getActivityFeed",

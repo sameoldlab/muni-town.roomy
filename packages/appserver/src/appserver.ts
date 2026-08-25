@@ -64,6 +64,7 @@ import { createSpaceHandler } from "./handlers/space.roomy.space.createSpace.ts"
 import { joinSpaceHandler } from "./handlers/space.roomy.space.joinSpace.ts";
 import { leaveSpaceHandler } from "./handlers/space.roomy.space.leaveSpace.ts";
 import { setHandleHandler } from "./handlers/space.roomy.space.setHandle.ts";
+import { updatePolicyHandler } from "./handlers/space.roomy.space.updatePolicy.ts";
 import { getActivityFeedHandler } from "./handlers/space.roomy.space.getActivityFeed.ts";
 import { getUserAccessHandler } from "./handlers/space.roomy.space.getUserAccess.ts";
 import { getVapidPublicKeyHandler } from "./handlers/space.roomy.push.getVapidPublicKey.ts";
@@ -183,6 +184,11 @@ export function buildRouter(
     .procedure("space.roomy.space.setHandle", {
       handler: setHandleHandler,
       inputSchema: schemas.procedures.setHandle.Input,
+      // No outputSchema: void return; short-circuits to 200 with empty body.
+    })
+    .procedure("space.roomy.space.updatePolicy", {
+      handler: updatePolicyHandler,
+      inputSchema: schemas.procedures.updatePolicy.Input,
       // No outputSchema: void return; short-circuits to 200 with empty body.
     })
     // Admin routes (connectSpace, materializeSpace) intentionally have no
