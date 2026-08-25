@@ -1,4 +1,5 @@
 import type { Agent } from "@atproto/api";
+import { ArbiterProxyError } from "../transport/errors";
 
 /**
  * Arbiter (leaf-0.4) client for acting on a space's stewarded account.
@@ -157,9 +158,27 @@ export class ArbiterClient {
       },
     );
     if (!res.ok) {
-      throw new Error(`Arbiter proxy failed (${res.status}) for ${op.nsid}`);
+      // The arbiter relays the upstream XRPC error verbatim: status + body
+      // `{ $type, error: "<name>" }` (see leaf-0.4 `xrpc_result_to_response`).
+      let errorName: string | null = null;
+      try {
+        const body = (await res.json()) as { error?: unknown };
+        if (typeof body?.error === "string") errorName = body.error;
+      } catch {
+        // Non-JSON error body; fall through with no error name.
+      }
+      throw new ArbiterProxyError(
+        res.status,
+        `Arbiter proxy failed (${res.status}) for ${op.nsid}`,
+        errorName,
+      );
     }
-    return (await res.json()) as Record<string, unknown>;
+    // Success. Some proxied procedures (e.g. com.atproto.identity.updateHandle)
+    // are void and return 200 with an empty body — don't try to parse JSON.
+    if (res.status === 204) return {};
+    const text = await res.text();
+    if (!text) return {};
+    return JSON.parse(text) as Record<string, unknown>;
   }
 
   /** Decode the `exp` claim from a serviceAuth JWT. */

@@ -24,3 +24,9 @@ export {
   putProfileRecord,
   type ProfileRecord,
 } from "./bluesky-profile";
+
+export {
+  getSpaceHandleDomains,
+  getSpaceHandle,
+  setSpaceHandle,
+} from "./space-handle";
