@@ -12,3 +12,15 @@ export {
   uploadBlob,
   type StreamHandleConfig,
 } from "./records";
+
+export {
+  ArbiterClient,
+  type ProxyOperation,
+  type ResolvedArbiter,
+} from "./arbiter";
+
+export {
+  getSpaceProfileRecord,
+  putProfileRecord,
+  type ProfileRecord,
+} from "./bluesky-profile";
