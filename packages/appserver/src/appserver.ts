@@ -65,6 +65,7 @@ import { joinSpaceHandler } from "./handlers/space.roomy.space.joinSpace.ts";
 import { leaveSpaceHandler } from "./handlers/space.roomy.space.leaveSpace.ts";
 import { setHandleHandler } from "./handlers/space.roomy.space.setHandle.ts";
 import { getActivityFeedHandler } from "./handlers/space.roomy.space.getActivityFeed.ts";
+import { getUserAccessHandler } from "./handlers/space.roomy.space.getUserAccess.ts";
 import { getVapidPublicKeyHandler } from "./handlers/space.roomy.push.getVapidPublicKey.ts";
 import { getPreferencesHandler } from "./handlers/space.roomy.push.getPreferences.ts";
 import { registerSubscriptionHandler } from "./handlers/space.roomy.push.registerSubscription.ts";
@@ -268,6 +269,11 @@ export function buildRouter(
       handler: getInvitesHandler,
       paramsSchema: schemas.queries.getInvites.Params,
       outputSchema: schemas.queries.getInvites.Response,
+    })
+    .query("space.roomy.space.getUserAccess", {
+      handler: getUserAccessHandler,
+      paramsSchema: schemas.queries.getUserAccess.Params,
+      outputSchema: schemas.queries.getUserAccess.Response,
     })
     .query("space.roomy.federation.getRequests", {
       handler: getFederationRequestsHandler,
