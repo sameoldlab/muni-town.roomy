@@ -97,9 +97,29 @@ export const QUERY_SCHEMAS = {
     params: queries.getMentions.Params,
     response: queries.getMentions.Response,
   },
+  "space.roomy.search.messages": {
+    params: queries.searchMessages.Params,
+    response: queries.searchMessages.Response,
+  },
   "space.roomy.embed.getLinkMetadata": {
     params: queries.getLinkMetadata.Params,
     response: queries.getLinkMetadata.Response,
+  },
+  "space.roomy.federation.getRequests": {
+    params: queries.getFederationRequests.Params,
+    response: queries.getFederationRequests.Response,
+  },
+  "space.roomy.federation.getIncoming": {
+    params: queries.getFederationIncoming.Params,
+    response: queries.getFederationIncoming.Response,
+  },
+  "space.roomy.federation.getOutgoing": {
+    params: queries.getFederationOutgoing.Params,
+    response: queries.getFederationOutgoing.Response,
+  },
+  "space.roomy.federation.getGrants": {
+    params: queries.getFederationGrants.Params,
+    response: queries.getFederationGrants.Response,
   },
 } as const;
 
@@ -131,6 +151,10 @@ export const PROCEDURE_SCHEMAS = {
   "space.roomy.space.setHandle": {
     input: procedures.setHandle.Input,
     output: procedures.setHandle.Output,
+  },
+  "space.roomy.space.updatePolicy": {
+    input: procedures.updatePolicy.Input,
+    output: procedures.updatePolicy.Output,
   },
   "space.roomy.push.registerSubscription": {
     input: procedures.registerPushSubscription.Input,

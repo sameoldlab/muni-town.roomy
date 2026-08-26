@@ -25,6 +25,7 @@ import type {
   QueryNsid,
 } from "../invalidation/types.ts";
 import { messageFrame } from "../xrpc/frame.ts";
+import { log } from "../log.ts";
 
 // ─── Topic helpers ───────────────────────────────────────────────────────
 
@@ -57,6 +58,10 @@ function topicsForSignal(signal: InvalidationEvent["signal"]): Topic[] {
       case "space.roomy.space.getMembers":
       case "space.roomy.space.getInvites":
       case "space.roomy.space.getActivityFeed":
+      case "space.roomy.federation.getRequests":
+      case "space.roomy.federation.getIncoming":
+      case "space.roomy.federation.getOutgoing":
+      case "space.roomy.federation.getGrants":
         return qi.params["spaceId"]
           ? [topicKey("space", qi.params["spaceId"])]
           : [];
@@ -327,19 +332,29 @@ export class SyncManager {
       seq: number;
       delta: number;
       users: ReadonlyArray<string>;
+      parentChannelId?: string;
+      roomUnreadDeltas?: ReadonlyMap<string, number>;
+      threadUnreadDeltas?: ReadonlyMap<string, number>;
     },
   ): void {
     // Per-user: the frame carries a delta (the same for every user), but
     // we still send one frame per user rather than broadcasting — only
     // users with a read_positions row for this room should see the unread
     // bump. A user may have multiple connections open (multiple tabs).
-    const frame = messageFrame("#roomMetadataDiff", {
-      spaceId: signal.spaceId,
-      roomId: signal.roomId,
-      delta: signal.delta,
-      seq: signal.seq,
-    });
     for (const user of signal.users) {
+      const frame = messageFrame("#roomMetadataDiff", {
+        spaceId: signal.spaceId,
+        roomId: signal.roomId,
+        delta: signal.delta,
+        seq: signal.seq,
+        ...(signal.parentChannelId ? { parentChannelId: signal.parentChannelId } : {}),
+        ...(signal.roomUnreadDeltas?.get(user)
+          ? { roomUnreadDelta: signal.roomUnreadDeltas.get(user) }
+          : {}),
+        ...(signal.threadUnreadDeltas?.get(user)
+          ? { threadUnreadDelta: signal.threadUnreadDeltas.get(user) }
+          : {}),
+      });
       for (const conn of this.#connections.values()) {
         if (!conn.isOpen) continue;
         if (conn.did !== user) continue;
@@ -534,7 +549,7 @@ export class SyncManager {
     // delivered once the cursor catches up.
     if (!alreadyBackfilling) {
       this.#backfillStream(state, streamDid).catch((err) => {
-        console.error(
+        log.error(
           `Stream backfill failed for ${streamDid}: ${err instanceof Error ? err.message : String(err)}`,
         );
       });

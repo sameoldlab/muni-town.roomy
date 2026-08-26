@@ -32,6 +32,12 @@ SCOPE+=" repo:space.roomy.user.profile"
 
 # ── Service auth (for direct/non-proxied XRPC calls) ───────────────────
 SCOPE+=" rpc:com.atproto.server.getServiceAuth?aud=${VITE_APPSERVER_DID:-did:web:api.roomy.space}"
+# getServiceAuth for ANY aud (arbiter DID is discovered per space and unknown
+# at build time) — matches OAUTH_SCOPE in config.ts.
+SCOPE+=" rpc:com.atproto.server.getServiceAuth?aud=*"
+# The proxied method the arbiter token is minted for; aud=* because the arbiter
+# DID is discovered per space.
+SCOPE+=" rpc:town.muni.arbiter.proxy?aud=*"
 
 # ── Appserver RPCs (must match APPSERVER_RPCS in config.ts) ──────────────
 SCOPE+=" rpc:space.roomy.space.getSpaces?aud=*"
@@ -55,11 +61,18 @@ SCOPE+=" rpc:space.roomy.space.createSpace?aud=*"
 SCOPE+=" rpc:space.roomy.space.joinSpace?aud=*"
 SCOPE+=" rpc:space.roomy.space.leaveSpace?aud=*"
 SCOPE+=" rpc:space.roomy.space.setHandle?aud=*"
+SCOPE+=" rpc:space.roomy.space.updatePolicy?aud=*"
 SCOPE+=" rpc:space.roomy.space.getCalendarLink?aud=*"
 SCOPE+=" rpc:space.roomy.space.getCalendarEvents?aud=*"
 SCOPE+=" rpc:space.roomy.space.getActivityFeed?aud=*"
 SCOPE+=" rpc:space.roomy.user.getProfile?aud=*"
 SCOPE+=" rpc:space.roomy.embed.getLinkMetadata?aud=*"
+
+# ── Channel federation ───────────────────────────────────────────────────
+SCOPE+=" rpc:space.roomy.federation.getRequests?aud=*"
+SCOPE+=" rpc:space.roomy.federation.getIncoming?aud=*"
+SCOPE+=" rpc:space.roomy.federation.getOutgoing?aud=*"
+SCOPE+=" rpc:space.roomy.federation.getGrants?aud=*"
 
 # ── Web push notification endpoints ──────────────────────────────────────
 SCOPE+=" rpc:space.roomy.push.getVapidPublicKey?aud=*"

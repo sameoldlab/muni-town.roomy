@@ -31,6 +31,10 @@ export type QueryNsid =
   | "space.roomy.room.getMessages"
   | "space.roomy.room.getThreads"
   | "space.roomy.message.getMessage"
+  | "space.roomy.federation.getRequests"
+  | "space.roomy.federation.getIncoming"
+  | "space.roomy.federation.getOutgoing"
+  | "space.roomy.federation.getGrants"
   | "space.roomy.sync.getEvents"
 
 // ─── Signals ────────────────────────────────────────────────────────────
@@ -106,6 +110,23 @@ export interface RoomMetadataDiff {
    * one `#roomMetadataDiff` frame per user in this list.
    */
   users: ReadonlyArray<UserDid>;
+  /**
+   * The thread's parent channel id (thread messages only). The client uses
+   * it to patch the parent channel's `unreadThreadCount` in
+   * `room.getMetadata` and the matching active-thread entry in the sidebar.
+   */
+  parentChannelId?: string;
+  /**
+   * Per-user room-count deltas: `+1` for each user whose channel became
+   * newly-unread (their `unread_count` went 0 → 1). Keyed by user DID; the
+   * SyncManager picks each user's delta when building its frame.
+   */
+  roomUnreadDeltas?: ReadonlyMap<UserDid, number>;
+  /**
+   * Per-user room-count deltas for engaged threads: `+1` for each user
+   * whose engaged thread became newly-unread. Keyed by user DID.
+   */
+  threadUnreadDeltas?: ReadonlyMap<UserDid, number>;
 }
 
 

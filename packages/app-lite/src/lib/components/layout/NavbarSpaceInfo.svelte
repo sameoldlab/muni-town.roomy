@@ -43,6 +43,21 @@
           </a>
         {/if}
         <IconNeedleThread class="size-4 shrink-0 text-base-500" />
+      {:else if currentRoom.federatedOrigin}
+        <!-- Federated channel: origin space avatar + name, then the channel -->
+        <span class="shrink-0" title={currentRoom.federatedOrigin.name ?? currentRoom.federatedOrigin.id}>
+          <SpaceAvatar
+            src={resolveBlobUrl(currentRoom.federatedOrigin.avatar)}
+            id={currentRoom.federatedOrigin.id}
+            name={currentRoom.federatedOrigin.name ?? undefined}
+            size={16}
+          />
+        </span>
+        <span class="text-sm font-medium text-base-500 dark:text-base-400 truncate">
+          {currentRoom.federatedOrigin.name ?? currentRoom.federatedOrigin.id}
+        </span>
+        <IconChevronRight class="size-3 shrink-0 text-base-500" />
+        <IconHashtag class="size-4 shrink-0 text-base-500" />
       {:else}
         <IconHashtag class="size-4 shrink-0 text-base-500" />
       {/if}

@@ -34,6 +34,13 @@ export const ActiveSidebarThread = type({
   "lastRead?": "string | null",
 });
 
+export const FederatedChannel = type({
+  originSpaceId: "string",
+  "originSpaceName?": "string",
+  "originSpaceAvatar?": "string",
+  permission: "'read' | 'readwrite'",
+});
+
 export const SidebarChannel = type({
   id: "string",
   "name?": "string",
@@ -43,6 +50,7 @@ export const SidebarChannel = type({
   unreadCount: "number",
   "lastRead?": "string",
   "activeThreads?": ActiveSidebarThread.array(),
+  "federated?": FederatedChannel,
 });
 
 export const SidebarCategory = type({
@@ -65,6 +73,10 @@ export const Response = type({
   joinPolicy: JoinPolicy,
   isMember: "boolean",
   isAdmin: "boolean",
+  /** Number of channels with unread messages (sidebar-visible rooms only). */
+  unreadRoomCount: "number",
+  /** Number of engaged threads with unread messages. */
+  unreadThreadCount: "number",
   sidebar: {
     categories: SidebarCategory.array(),
     orphans: SidebarChannel.array(),

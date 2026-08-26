@@ -24,6 +24,7 @@ import { decodeTime } from "ulidx";
 import { createStreamDid } from "./did.ts";
 import { provisionSpace } from "../arbiter/provision.ts";
 import type { ArbiterConfig } from "../arbiter/config.ts";
+import { log } from "../log.ts";
 
 /**
  * Singleton StreamManager — writes events directly to the events DB,
@@ -99,6 +100,16 @@ export class StreamManager {
     this.#ownDid = opts.ownDid ?? "";
   }
 
+  /** The appserver's own DID (the arbiter recovery admin / policy owner). */
+  get ownDid(): string {
+    return this.#ownDid;
+  }
+
+  /** The arbiter config, or null when arbiter provisioning is disabled. */
+  get arbiter(): ArbiterConfig | null {
+    return this.#arbiter;
+  }
+
   /**
    * Run `fn` strictly after any prior serialized work for the same stream.
    * Uses a chain-of-promises mutex keyed by streamDid so different streams
@@ -112,11 +123,14 @@ export class StreamManager {
     const prev = this.#streamQueues.get(streamDid) ?? Promise.resolve();
     const next = prev.then(fn, fn); // run even if prev rejected
     this.#streamQueues.set(streamDid, next);
-    next.finally(() => {
+    // The finally-derived promise rejects when `next` rejects; the caller
+    // observes the original rejection via `return next`, so swallow the
+    // derived one to avoid an unhandled rejection (bun exits 1 on those).
+    void next.finally(() => {
       if (this.#streamQueues.get(streamDid) === next) {
         this.#streamQueues.delete(streamDid);
       }
-    });
+    }).catch(() => {});
     return next;
   }
 
@@ -268,7 +282,7 @@ export class StreamManager {
           try {
             listener(streamDid, decodedEvents);
           } catch (err) {
-            console.error(
+            log.error(
               `StreamEventListener threw for ${streamDid}: ${err instanceof Error ? err.message : String(err)}`,
             );
           }

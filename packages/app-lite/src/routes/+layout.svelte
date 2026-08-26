@@ -6,7 +6,11 @@
   import { queryClient } from "$lib/client";
   import { auth, init, updateProfile } from "$lib/auth.svelte";
   import { installPushDebug } from "$lib/push-debug";
-  import { installPushSubscriptionChangeListener } from "$lib/push.svelte";
+  import { preloadSpaceSidebars } from "$lib/preload";
+  import {
+    installNotificationNavigateListener,
+    installPushSubscriptionChangeListener,
+  } from "$lib/push.svelte";
   import { startSync, stopSync } from "$lib/sync.svelte";
   import { restoreScrollPositionsFromStorage, saveScrollPositionsToStorage } from "$lib/components/chat/scroll-position.svelte";
   import {
@@ -50,7 +54,18 @@
     init();
     installPushDebug();
     installPushSubscriptionChangeListener();
+    installNotificationNavigateListener();
     restoreScrollPositionsFromStorage();
+
+    // Background data preloading: once auth settles, prefetch the sidebar
+    // for every joined space so opening a space renders instantly. The
+    // preload is idempotent (ensureQueryData) and best-effort.
+    const preloadTimer = setInterval(() => {
+      if (!auth.initializing && auth.authenticated) {
+        clearInterval(preloadTimer);
+        void preloadSpaceSidebars();
+      }
+    }, 250);
 
     // Save scroll positions before page unload
     const handleBeforeUnload = () => {
@@ -66,6 +81,7 @@
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       clearInterval(saveInterval);
+      clearInterval(preloadTimer);
       saveScrollPositionsToStorage();
     };
   });

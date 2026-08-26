@@ -73,6 +73,12 @@
     lastRead?: string | null;
     parentChannelId?: string;
     parentChannelName?: string;
+    federated?: {
+      originSpaceId: string;
+      originSpaceName?: string;
+      originSpaceAvatar?: string;
+      permission: "read" | "readwrite";
+    };
   } | null>(() => {
     const meta = spaceMetaQuery.data;
     if (!meta) return null;
@@ -107,6 +113,9 @@
   const roomUnreadCount = $derived(
     sidebarRoomInfo?.unreadCount ?? roomQuery.data?.unreadCount ?? 0,
   );
+  const roomUnreadThreadCount = $derived(
+    roomQuery.data?.unreadThreadCount ?? 0,
+  );
   const roomKind = $derived(
     sidebarRoomInfo?.kind ?? roomQuery.data?.kind,
   );
@@ -133,6 +142,15 @@
         kind: kind === "thread" ? "thread" : "channel",
         parentChannelId: parentId,
         parentChannelName: parentName,
+        ...(sidebarRoomInfo?.federated
+          ? {
+              federatedOrigin: {
+                id: sidebarRoomInfo.federated.originSpaceId,
+                name: sidebarRoomInfo.federated.originSpaceName,
+                avatar: sidebarRoomInfo.federated.originSpaceAvatar,
+              },
+            }
+          : {}),
       });
     });
   });
@@ -178,6 +196,9 @@
 
   // Only show chat input area in chat view and when not a thread
   let showChatInput = $derived(roomKind === "channel" && channelActiveTab === "Chat");
+
+  /** Computes the original space ID if the channel was federated, otherwise it's just the current space ID. */
+  let effectiveSpaceId = $derived(sidebarRoomInfo?.federated?.originSpaceId || spaceId);
 </script>
 
 <SeoMeta
@@ -204,6 +225,7 @@
           items={channelTabList.map((x) => ({
             name: x,
             href: `#${x.toLowerCase()}`,
+            badge: x === "Threads" ? roomUnreadThreadCount : undefined,
           }))}
           active={channelActiveTab}
         />
@@ -218,7 +240,7 @@
     <div class="relative flex-1 min-h-0">
       <!-- Chat view - always rendered but visibility toggled -->
       <div class="absolute inset-0 flex flex-col" class:hidden={channelActiveTab !== "Chat"}>
-        <ChatArea {spaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
+        <ChatArea spaceId={effectiveSpaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
       </div>
 
       <!-- Threads view - always rendered but visibility toggled -->
@@ -229,11 +251,11 @@
 
     <!-- Chat input area - only shown in chat view -->
     {#if showChatInput}
-      <ChatInputArea {spaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
+      <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
     {/if}
   {:else}
     <!-- Thread rooms only have chat view -->
-    <ChatArea {spaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
-    <ChatInputArea {spaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
+    <ChatArea spaceId={effectiveSpaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
+    <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
   {/if}
 </div>

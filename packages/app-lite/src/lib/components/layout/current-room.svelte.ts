@@ -9,6 +9,12 @@ export interface CurrentRoomInfo {
   /** The channel this thread belongs to (only for threads). */
   parentChannelId?: string;
   parentChannelName?: string;
+  /** Set for channels federated into this space from another (origin) space. */
+  federatedOrigin?: {
+    id: string;
+    name?: string;
+    avatar?: string;
+  };
 }
 
 let currentRoom = $state<CurrentRoomInfo | null>(null);

@@ -45,6 +45,10 @@ import { getSpaceSummaryHandler } from "./handlers/space.roomy.space.getSpaceSum
 import { getSpaceThreadsHandler } from "./handlers/space.roomy.space.getThreads.ts";
 import { getRolesHandler } from "./handlers/space.roomy.space.getRoles.ts";
 import { getInvitesHandler } from "./handlers/space.roomy.space.getInvites.ts";
+import { getFederationRequestsHandler } from "./handlers/space.roomy.federation.getRequests.ts";
+import { getFederationIncomingHandler } from "./handlers/space.roomy.federation.getIncoming.ts";
+import { getFederationOutgoingHandler } from "./handlers/space.roomy.federation.getOutgoing.ts";
+import { getFederationGrantsHandler } from "./handlers/space.roomy.federation.getGrants.ts";
 import { getRoomMetadataHandler } from "./handlers/space.roomy.room.getMetadata.ts";
 import { getRoomSummaryHandler } from "./handlers/space.roomy.room.getRoomSummary.ts";
 import { getRoomThreadsHandler } from "./handlers/space.roomy.room.getThreads.ts";
@@ -53,6 +57,7 @@ import { getMessageHandler } from "./handlers/space.roomy.message.getMessage.ts"
 import { getReactionsHandler } from "./handlers/space.roomy.message.getReactions.ts";
 import { getProfileHandler } from "./handlers/space.roomy.user.getProfile.ts";
 import { getMentionsHandler } from "./handlers/space.roomy.mention.getMentions.ts";
+import { searchMessagesHandler } from "./handlers/space.roomy.search.messages.ts";
 import { getLinkMetadataHandler } from "./handlers/space.roomy.embed.getLinkMetadata.ts";
 import { updateSeenHandler } from "./handlers/space.roomy.room.updateSeen.ts";
 import { sendEventsHandler } from "./handlers/space.roomy.space.sendEvents.ts";
@@ -60,7 +65,9 @@ import { createSpaceHandler } from "./handlers/space.roomy.space.createSpace.ts"
 import { joinSpaceHandler } from "./handlers/space.roomy.space.joinSpace.ts";
 import { leaveSpaceHandler } from "./handlers/space.roomy.space.leaveSpace.ts";
 import { setHandleHandler } from "./handlers/space.roomy.space.setHandle.ts";
+import { updatePolicyHandler } from "./handlers/space.roomy.space.updatePolicy.ts";
 import { getActivityFeedHandler } from "./handlers/space.roomy.space.getActivityFeed.ts";
+import { getUserAccessHandler } from "./handlers/space.roomy.space.getUserAccess.ts";
 import { getVapidPublicKeyHandler } from "./handlers/space.roomy.push.getVapidPublicKey.ts";
 import { getPreferencesHandler } from "./handlers/space.roomy.push.getPreferences.ts";
 import { registerSubscriptionHandler } from "./handlers/space.roomy.push.registerSubscription.ts";
@@ -70,8 +77,11 @@ import { startPushDispatcher, pushDispatcherStats, _resetPushDispatcher } from "
 import { schemas } from "@roomy-space/sdk";
 import { initHappyView, type HappyViewConfig } from "./happyview.ts";
 import { getArbiterConfig, type ArbiterConfig } from "./arbiter/config.ts";
+import type { GetProfilesFn } from "./materialization/profiles.ts";
 
 import { proxyBlob } from "./blob.ts";
+import { log } from "./log.ts";
+import { resolveBuildId } from "./telemetry/build.ts";
 import {
   CACHEABLE_NSIDS,
   createQueryCacheFromEnv,
@@ -97,7 +107,7 @@ export interface AppserverOptions {
   dbPath?: string;
   /** Read-state DB path. Defaults to `dbPath("roomy-readstate.sqlite")` (under `DATA_DIR`). */
   readStateDbPath?: string;
-  /** Suppress the per-request console.log. Tests set this to quiet output. */
+  /** Suppress the per-request log.info lines. Tests set this to quiet output. */
   quiet?: boolean;
   /** Disable the background embed enrichment sweeper. Useful for tests that don't exercise embeds. */
   disableEmbedSweeper?: boolean;
@@ -109,6 +119,10 @@ export interface AppserverOptions {
    *  (`HAPPYVIEW_ENDPOINT` / `HAPPYVIEW_DID`). When `null`, HappyView is
    *  disabled and profile fetching uses Bluesky only. */
   happyView?: HappyViewConfig | null;
+  /** Custom profile fetcher for materialization. When set, replaces the
+   *  HappyView-first / Bluesky fallback pipeline entirely. Tests pass a
+   *  no-op stub to keep E2E runs hermetic (no api.bsky.app calls). */
+  getProfiles?: GetProfilesFn;
   /** Arbiter server config. When unset, reads from env (`ARBITER_URL` /
    *  `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
    *  self-provisioned (legacy did:plc path). */
@@ -178,6 +192,11 @@ export function buildRouter(
     .procedure("space.roomy.space.setHandle", {
       handler: setHandleHandler,
       inputSchema: schemas.procedures.setHandle.Input,
+      // No outputSchema: void return; short-circuits to 200 with empty body.
+    })
+    .procedure("space.roomy.space.updatePolicy", {
+      handler: updatePolicyHandler,
+      inputSchema: schemas.procedures.updatePolicy.Input,
       // No outputSchema: void return; short-circuits to 200 with empty body.
     })
     // Admin routes (connectSpace, materializeSpace) intentionally have no
@@ -265,6 +284,31 @@ export function buildRouter(
       paramsSchema: schemas.queries.getInvites.Params,
       outputSchema: schemas.queries.getInvites.Response,
     })
+    .query("space.roomy.space.getUserAccess", {
+      handler: getUserAccessHandler,
+      paramsSchema: schemas.queries.getUserAccess.Params,
+      outputSchema: schemas.queries.getUserAccess.Response,
+    })
+    .query("space.roomy.federation.getRequests", {
+      handler: getFederationRequestsHandler,
+      paramsSchema: schemas.queries.getFederationRequests.Params,
+      outputSchema: schemas.queries.getFederationRequests.Response,
+    })
+    .query("space.roomy.federation.getIncoming", {
+      handler: getFederationIncomingHandler,
+      paramsSchema: schemas.queries.getFederationIncoming.Params,
+      outputSchema: schemas.queries.getFederationIncoming.Response,
+    })
+    .query("space.roomy.federation.getOutgoing", {
+      handler: getFederationOutgoingHandler,
+      paramsSchema: schemas.queries.getFederationOutgoing.Params,
+      outputSchema: schemas.queries.getFederationOutgoing.Response,
+    })
+    .query("space.roomy.federation.getGrants", {
+      handler: getFederationGrantsHandler,
+      paramsSchema: schemas.queries.getFederationGrants.Params,
+      outputSchema: schemas.queries.getFederationGrants.Response,
+    })
     .query("space.roomy.room.getMetadata", {
       handler: getRoomMetadataHandler,
       paramsSchema: schemas.queries.getRoomMetadata.Params,
@@ -302,6 +346,11 @@ export function buildRouter(
       handler: getMentionsHandler,
       paramsSchema: schemas.queries.getMentions.Params,
       outputSchema: schemas.queries.getMentions.Response,
+    })
+    .query("space.roomy.search.messages", {
+      handler: searchMessagesHandler,
+      paramsSchema: schemas.queries.searchMessages.Params,
+      outputSchema: schemas.queries.searchMessages.Response,
     })
     .query("space.roomy.embed.getLinkMetadata", {
       handler: getLinkMetadataHandler,
@@ -411,7 +460,7 @@ export async function createAppserver(
     const cutoff = Date.now() - ACTIVE_WINDOW_MS;
     const purged = await purgeStaleThreadActivity(openReadStateDb(), cutoff);
     if (purged > 0) {
-      console.log(`[maintenance] purged ${purged} stale user_thread_activity rows`);
+      log.info(`[maintenance] purged ${purged} stale user_thread_activity rows`);
     }
   }, 60 * 60 * 1000);
   maintenanceTimer.unref();
@@ -427,6 +476,7 @@ export async function createAppserver(
     invalidationRouter,
     appserverUrl: serviceEndpoint,
     happyView,
+    getProfiles: opts.getProfiles,
     arbiter,
     ownDid,
   });
@@ -470,11 +520,26 @@ export async function createAppserver(
     port,
     idleTimeout: 255,
     fetch: async (req, server) => {
-      if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders });
+      try {
+        return await handleFetch(req, server);
+      } catch (err) {
+        // During teardown (tests) the DB workers are terminated while
+        // requests are in flight; the rejection is expected and must not
+        // surface as an unhandled error (bun exits 1 on those). The server
+        // is being stopped anyway.
+        if (!quiet) log.info(`${req.method} ${new URL(req.url).pathname} → error during teardown: ${err instanceof Error ? err.message : String(err)}`);
+        return new Response("Service shutting down", { status: 503 });
       }
+    },
+    websocket: router.websocket,
+  });
 
-      const url = new URL(req.url);
+  async function handleFetch(req: Request, server: Server<WsData>): Promise<Response | undefined> {
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    const url = new URL(req.url);
 
       if (url.pathname === "/.well-known/did.json") {
         return new Response(JSON.stringify(DID_DOCUMENT), {
@@ -489,6 +554,7 @@ export async function createAppserver(
             uptime: process.uptime(),
             did: ownDid,
             port,
+            build_id: resolveBuildId(),
           }),
           { headers: { "content-type": "application/json", ...corsHeaders } },
         );
@@ -542,7 +608,7 @@ export async function createAppserver(
         const did = decodeURIComponent(blobMatch[1]!);
         const cid = decodeURIComponent(blobMatch[2]!);
         const res = await proxyBlob(did, cid, req);
-        if (!quiet) console.log(`${req.method} ${url.pathname} → ${res.status}`);
+        if (!quiet) log.info(`${req.method} ${url.pathname} → ${res.status}`);
         for (const [k, v] of Object.entries(corsHeaders)) {
           res.headers.set(k, v);
         }
@@ -551,19 +617,17 @@ export async function createAppserver(
 
       const res = await router.fetch(req, server);
       if (res === undefined) {
-        if (!quiet) console.log(`${req.method} ${url.pathname} → [ws upgrade]`);
+        if (!quiet) log.info(`${req.method} ${url.pathname} → [ws upgrade]`);
         return undefined;
       }
-      if (!quiet) console.log(`${req.method} ${url.pathname} → ${res.status}`);
+      if (!quiet) log.info(`${req.method} ${url.pathname} → ${res.status}`);
       for (const [k, v] of Object.entries(corsHeaders)) {
         res.headers.set(k, v);
       }
       return res;
-    },
-    websocket: router.websocket,
-  });
+  }
 
-  if (!quiet) console.log(`Appserver listening on port ${port} (DID: ${ownDid})`);
+  if (!quiet) log.info(`Appserver listening on port ${port} (DID: ${ownDid})`);
 
   return {
     server,
@@ -572,37 +636,41 @@ export async function createAppserver(
     queryCache,
     close(): Promise<void> {
       return stopEmbedSweeper().finally(() => {
+        // Graceful stop: wait for in-flight requests to complete so their
+        // DB awaits resolve (or reject into the fetch guard's catch) before
+        // the workers are terminated. A forced stop kills the handlers
+        // mid-await, leaving their rejections unhandled (bun exits 1).
         try {
-          server.stop(true);
+          server.stop();
         } catch (e) {
-          console.error("appserver close: server.stop failed", e);
+          log.error("appserver close: server.stop failed", e);
         }
         try {
           clearInterval(maintenanceTimer);
           closeDb();
         } catch (e) {
-          console.error("appserver close: closeDb failed", e);
+          log.error("appserver close: closeDb failed", e);
         }
         try {
           _resetStreamManager();
         } catch (e) {
-          console.error("appserver close: _resetStreamManager failed", e);
+          log.error("appserver close: _resetStreamManager failed", e);
         }
         try {
           _resetPushDispatcher();
         } catch (e) {
-          console.error("appserver close: _resetPushDispatcher failed", e);
+          log.error("appserver close: _resetPushDispatcher failed", e);
         }
         try {
           if (cacheUnsub) cacheUnsub();
           if (queryCache) queryCache.clear();
         } catch (e) {
-          console.error("appserver close: query cache cleanup failed", e);
+          log.error("appserver close: query cache cleanup failed", e);
         }
         try {
           InvalidationRouter.resetInstance();
         } catch (e) {
-          console.error("appserver close: resetInvalidationRouter failed", e);
+          log.error("appserver close: resetInvalidationRouter failed", e);
         }
       });
     },

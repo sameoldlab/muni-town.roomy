@@ -193,6 +193,11 @@ describe("inferSignals: message events", () => {
       expect(roomDiff!.signal.delta).toBe(1);
       expect(roomDiff!.signal.users).toHaveLength(1);
       expect(roomDiff!.signal.users[0]).toBe(USER_DID);
+      // The seeded read_positions row has unread_count = 1 (the +1 bump
+      // already applied), so the user became newly-unread: the channel
+      // room-count delta is +1 for them.
+      expect(roomDiff!.signal.roomUnreadDeltas?.get(USER_DID)).toBe(1);
+      expect(roomDiff!.signal.threadUnreadDeltas).toBeUndefined();
     }
 
     // Still invalidates room metadata (recentThreads) and space metadata
@@ -786,6 +791,112 @@ describe("inferSignals: link events", () => {
     expect(nsids).toContain("space.roomy.room.getMetadata");
     expect(nsids).toContain("space.roomy.space.getMetadata");
     expect(nsids).toContain("space.roomy.space.getThreads");
+  });
+});
+
+// ─── Federation events ──────────────────────────────────────────────────
+
+describe("inferSignals: federation events", () => {
+  const B = "did:web:space-b.example";
+
+  /** Collect query-invalidation signals for a specific nsid (incl. params). */
+  function signalsFor(signals: InvalidationEvent[], nsid: QueryNsid) {
+    return signals
+      .filter(
+        (s): s is { kind: "queryInvalidation"; signal: QueryInvalidation } =>
+          s.kind === "queryInvalidation" && s.signal.nsid === nsid,
+      )
+      .map((s) => s.signal.params);
+  }
+
+  it("request invalidates A's request + outgoing views", async () => {
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.federation.request.v0",
+        details: { federatingSpaceDid: B },
+      }),
+    );
+    expect(signalsFor(signals, "space.roomy.federation.getRequests")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.federation.getOutgoing")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+  });
+
+  it("respond (approve) invalidates A views and B's sidebar/incoming", async () => {
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.federation.respond.v0",
+        details: { federatingSpaceDid: B },
+      }),
+    );
+    expect(signalsFor(signals, "space.roomy.federation.getRequests")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.federation.getOutgoing")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.federation.getIncoming")).toEqual([
+      { spaceId: B },
+    ]);
+    expect(signalsFor(signals, "space.roomy.space.getMetadata")).toEqual([
+      { spaceId: B },
+    ]);
+    expect(signalsFor(signals, "space.roomy.space.getSpaces")).toEqual([{}]);
+  });
+
+  it("remove invalidates A's outgoing/grants and B's incoming/sidebar", async () => {
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.federation.remove.v0",
+        details: { federatingSpaceDid: B },
+      }),
+    );
+    expect(signalsFor(signals, "space.roomy.federation.getOutgoing")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.federation.getGrants")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.space.getMetadata")).toEqual([
+      { spaceId: B },
+    ]);
+  });
+
+  it("setRoomPermission invalidates A grants/outgoing and B's sidebar", async () => {
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.federation.setRoomPermission.v0",
+        details: { federatingSpaceDid: B, roomId: ROOM_ID },
+      }),
+    );
+    expect(signalsFor(signals, "space.roomy.federation.getGrants")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.federation.getOutgoing")).toEqual([
+      { spaceId: STREAM_DID },
+    ]);
+    expect(signalsFor(signals, "space.roomy.space.getMetadata")).toEqual([
+      { spaceId: B },
+    ]);
+  });
+
+  it("setReceiverPermission invalidates B's grants + sidebar", async () => {
+    // Receiver grants are authored on B's stream, so streamDid === B here.
+    const signals = await inferSignals(
+      makeEvent({
+        streamDid: B as unknown as StreamDid,
+        type: "space.roomy.federation.setReceiverPermission.v0",
+        details: { originSpaceId: STREAM_DID, roomId: ROOM_ID },
+      }),
+    );
+    expect(signalsFor(signals, "space.roomy.federation.getGrants")).toEqual([
+      { spaceId: B },
+    ]);
+    expect(signalsFor(signals, "space.roomy.space.getMetadata")).toEqual([
+      { spaceId: B },
+    ]);
   });
 });
 
