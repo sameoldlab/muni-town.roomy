@@ -216,12 +216,28 @@ export const getMetadataHandler: QueryHandler<
       }) as SidebarChannel;
     };
 
+    // ── Federated channels (Phase 2) ─────────────────────────────────
+    // Channels of OTHER spaces (origins) that are federated INTO this space
+    // with an origin grant. They appear in B's sidebar, decorated with their
+    // origin space. B admins see all federated channels; B members see only
+    // those they have a receiver grant for (see plan §5.5 / Phase 3).
+    // Resolved BEFORE the category loop so federated channels referenced in
+    // the sidebar config (placed there by drag-and-drop reorder) render in
+    // their configured category/position instead of always falling back to
+    // orphans.
+    const federatedChannels = await buildFederatedSidebarChannels(spaceId, userDid, fedMemo, memo);
+    const federatedById = new Map(federatedChannels.map((ch) => [ch.id, ch]));
+
     const referencedIds = new Set<string>();
     categories = await Promise.all(config.categories.map(async (cat, idx) => {
       const channels: SidebarChannel[] = [];
       for (const childId of cat.children ?? []) {
         referencedIds.add(childId);
-        const ch = await buildChannel(childId);
+        // Native channel → build from this space's DB; federated channel →
+        // reuse the access-checked federated entry; unknown ID → drop.
+        const ch = channelById.has(childId)
+          ? await buildChannel(childId)
+          : (federatedById.get(childId) ?? null);
         if (ch) channels.push(ch);
       }
       return stripNulls({
@@ -238,13 +254,11 @@ export const getMetadataHandler: QueryHandler<
       if (ch) orphans.push(ch);
     }
 
-    // ── Federated channels (Phase 2) ─────────────────────────────────
-    // Channels of OTHER spaces (origins) that are federated INTO this space
-    // with an origin grant. They appear in B's sidebar, decorated with their
-    // origin space. B admins see all federated channels; B members see only
-    // those they have a receiver grant for (see plan §5.5 / Phase 3).
-    const federatedChannels = await buildFederatedSidebarChannels(spaceId, userDid, fedMemo, memo);
-    if (federatedChannels.length > 0) orphans.push(...federatedChannels);
+    // Federated channels not placed in any category stay in orphans (spaces
+    // whose config predates federated placement keep seeing them).
+    for (const ch of federatedChannels) {
+      if (!referencedIds.has(ch.id)) orphans.push(ch);
+    }
 
     // ── Active threads ────────────────────────────────────────────────
     // Fetch up to 8 threads the user has recently interacted with and

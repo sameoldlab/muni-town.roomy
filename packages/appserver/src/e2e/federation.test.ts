@@ -228,6 +228,60 @@ describe("channel federation — full HTTP E2E chain", () => {
     expect(body.messages.length).toBeGreaterThanOrEqual(1);
   });
 
+  test("a federated channel placed in a category by reorder stays there", async () => {
+    // Establish request → approve → origin grant.
+    await send(ADMIN_B, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.request.v0",
+      federatingSpaceDid: B,
+    });
+    await send(ADMIN_A, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.respond.v0",
+      federatingSpaceDid: B,
+      approve: true,
+    });
+    await send(ADMIN_A, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.setRoomPermission.v0",
+      federatingSpaceDid: B,
+      roomId: CHANNEL,
+      permission: "readwrite",
+    });
+
+    // ADMIN_B drags the federated channel into a category (what the sidebar
+    // edit mode writes on reorder).
+    const categoryId = newUlid();
+    let res = await send(ADMIN_B, B, {
+      id: newUlid(),
+      $type: "space.roomy.space.updateSidebar.v1",
+      categories: [
+        { id: categoryId, name: "Shared", children: [CHANNEL] },
+      ],
+    });
+    expect(res.status).toBe(200);
+
+    // The channel renders inside the category, not in orphans.
+    res = await ctx.authedFetch(ADMIN_B)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=${B}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const cat = (body.sidebar.categories ?? []).find(
+      (c: { id: string }) => c.id === categoryId,
+    );
+    expect(cat).toBeDefined();
+    expect(cat.channels.map((ch: { id: string }) => ch.id)).toEqual([CHANNEL]);
+    expect(cat.channels[0].federated).toEqual({
+      originSpaceId: A,
+      originSpaceName: "Test Space",
+      permission: "readwrite",
+    });
+    expect(
+      (body.sidebar.orphans ?? []).some((ch: { id: string }) => ch.id === CHANNEL),
+    ).toBe(false);
+  });
+
   test("a B member without a receiver grant is denied federated read", async () => {
     // Establish request → approve → origin grant (but no receiver grant for
     // MEMBER_C).

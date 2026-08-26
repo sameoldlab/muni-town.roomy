@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-19
 **Commit (baseline):** `dc29633f`
-**Status:** Phases 1-4 **shipped** (backend relationship lifecycle, origin + receiver grants, federated read/write, flag-gated frontend). Phase 5 hardening **shipped** (revoke cleanup, B-side removal, double-request guard, banned-member denial, invalidation on grant changes, deleted-channel sidebar skip).
+**Status:** Phases 1-4 **shipped** (backend relationship lifecycle, origin + receiver grants, federated read/write, flag-gated frontend). Phase 5 hardening **shipped** (revoke cleanup, B-side removal, double-request guard, banned-member denial, invalidation on grant changes, deleted-channel sidebar skip). **Sidebar reorder fix shipped**: federated channels placed in a category via drag-and-drop reorder now stay there (see §0).
 **Gated by:** frontend feature flag `channel-federation` (registered; no Phase-1 UI to gate yet).
 
 ## 0. Implementation status
@@ -16,6 +16,7 @@
 - **Decisions confirmed:** mutual A↔B federation is in scope and trivial (independent relationships); transitive re-federation is out of scope. Storage is the **global-DB registry** (chosen over the virtual-role-in-`roles` alternative).
 - **Global schema version is NOT bumped**: `initializeVersionedSchema` re-applies the DDL idempotently when the version matches, so adding `space_federations` heals existing DBs without wiping the global DB (which would also discard externally-fetched `profiles`).
 - **Feature flag registered**: `channel-federation` added to `FEATURE_FLAGS` (`featureFlags.ts`); returned by `space.roomy.getFlags`. Server-side write gate for the events is deferred to a later phase (the backend events are functional; only frontend UI is gated).
+- **Sidebar reorder fix shipped:** federated channels are injected into B's sidebar as orphans, so drag-and-drop reorder (which writes the channel ID into a category via `updateSidebar.v1`) was silently discarded — `getMetadata`'s category loop only resolved IDs from B's own DB, and the federated channel fell back to orphans in grant order. `getMetadata` now resolves federated channels *before* the category loop and falls back to the access-checked federated entry for any config child that isn't a native channel; unplaced federated channels still land in orphans. Regression test: `src/e2e/federation.test.ts` "a federated channel placed in a category by reorder stays there".
 
 ## 1. Goal
 
