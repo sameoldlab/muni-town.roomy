@@ -24,6 +24,7 @@ import { selectJoinedSpaceDids } from "../queries/userSpaceMembership.ts";
 import { selectMessages } from "../queries/selectMessages.ts";
 import { encodeSparse } from "../search/bm25.ts";
 import { getQdrantClient, searchMessages } from "../search/qdrantSearch.ts";
+import { getQdrant } from "../qdrant.ts";
 import { parseUserDid, requireSpaceRead } from "../xrpc/authGuards.ts";
 import { XrpcError } from "../xrpc/errors.ts";
 import { optionalInt, optionalString, requireString } from "../xrpc/params.ts";
@@ -70,7 +71,6 @@ export const searchMessagesHandler: QueryHandler<
   if (userDid !== null) {
     await hydrateUserMembership(userDid);
   }
-
   // Resolve the caller's readable space set. With spaceId the filter narrows
   // to that space (requireSpaceRead below enforces access); without it we
   // filter to the spaces the caller has joined.
@@ -88,20 +88,41 @@ export const searchMessagesHandler: QueryHandler<
     return { messages: [] };
   }
 
+  const window = limit * OVERFETCH;
   const offset = cursor !== null ? Number(cursor) : 0;
   const sparse = encodeSparse(q);
-  const hits = await searchMessages(client, {
-    sparse,
-    spaceDids,
-    limit: limit * OVERFETCH,
-    offset,
-  });
+  let hits;
+  try {
+    hits = await searchMessages(client, {
+      sparse,
+      spaceDids,
+      limit: window,
+    });
+  } catch (err) {
+    // Surface the configured endpoint so a misconfigured QDRANT_URL is
+    // diagnosable from the response (Bun's "Unable to connect" is generic —
+    // it covers refused, TLS mismatch, and DNS failures alike).
+    const config = getQdrant();
+    const target = config ? `${config.url}${config.port !== undefined ? `:${config.port}` : ""}` : "unset";
+    throw new XrpcError(
+      500,
+      "InternalServerError",
+      `Qdrant search failed (target ${target}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // Slice the window by cursor. Qdrant's sparse search returns points in an
+  // undefined order among equal scores, so offset-based pagination repeats
+  // points (offset=1 can return the same point as offset=0). Fetching one
+  // window from offset 0 and slicing here is deterministic; pages beyond the
+  // window return fewer results and the cursor stops once it is exhausted.
+  const windowHits = hits.slice(offset, offset + window);
 
   // Hydrate per-space, keeping the hits' rank order. Qdrant returns ids;
   // SQLite provides the full message DTOs.
   const ranked: Array<{ message: MessageDto; roomId: string; spaceDid: string }> = [];
   const bySpace = new Map<string, string[]>();
-  for (const h of hits) {
+  for (const h of windowHits) {
     const arr = bySpace.get(h.payload.spaceDid) ?? [];
     arr.push(h.messageId);
     bySpace.set(h.payload.spaceDid, arr);
@@ -137,9 +158,10 @@ export const searchMessagesHandler: QueryHandler<
   }
 
   const result: SearchMessagesResult = { messages: results };
-  // Cursor semantics: offset + limit. Emit when more ranked hits survived
-  // than this page shows, or the over-fetch was exhausted (more may exist).
-  if (ranked.length > limit || hits.length === limit * OVERFETCH) {
+  // Cursor semantics: offset + limit. Emit when this page didn't exhaust
+  // the window (more results remain in it), or the window itself was full
+  // (more may exist beyond it).
+  if (offset + limit < windowHits.length || windowHits.length === window) {
     result.cursor = String(offset + limit);
   }
   return stripNulls(result as unknown as Record<string, unknown>) as SearchMessagesResult;

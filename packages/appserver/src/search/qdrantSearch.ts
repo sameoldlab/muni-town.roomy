@@ -21,6 +21,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { createHash } from "node:crypto";
 import { getQdrant } from "../qdrant.ts";
 import type { SparseVector } from "./bm25.ts";
+import { log } from "../log.ts";
 
 /** Collection name for the global message index. */
 export const MESSAGES_COLLECTION = "messages";
@@ -95,6 +96,9 @@ let clientInstance: QdrantClientLike | null | undefined;
  * Get the process-wide Qdrant client, or `null` when Qdrant is not
  * configured (or was explicitly disabled via `_setQdrantClientForTest(null)`).
  * Constructs the real client lazily from the config singleton on first use.
+ * A config that fails to construct (e.g. a malformed URL) is treated as
+ * disabled: the constructor throw is caught, logged, and cached as null so
+ * the request path 503s instead of 500ing on every call.
  */
 export function getQdrantClient(): QdrantClientLike | null {
   if (clientInstance !== undefined) return clientInstance;
@@ -103,7 +107,16 @@ export function getQdrantClient(): QdrantClientLike | null {
     clientInstance = null;
     return null;
   }
-  clientInstance = new QdrantClient({ url: config.url, apiKey: config.apiKey });
+  try {
+    clientInstance = new QdrantClient({
+      url: config.url,
+      ...(config.port !== undefined ? { port: config.port } : {}),
+      apiKey: config.apiKey,
+    });
+  } catch (err) {
+    log.warn(`[qdrant] failed to construct client (${err instanceof Error ? err.message : String(err)}) — message search disabled`);
+    clientInstance = null;
+  }
   return clientInstance;
 }
 
@@ -205,16 +218,22 @@ export interface SearchMessagesOptions {
   sparse: SparseVector;
   /** Space DIDs the caller can read; results are restricted to these. */
   spaceDids: string[];
-  /** Over-fetch page size (the caller post-filters by room access). */
+  /**
+   * Window size to fetch. The handler over-fetches (limit×3) and slices by
+   * cursor itself: Qdrant's sparse search returns points in an undefined
+   * order among equal scores, so offset-based pagination can repeat points
+   * (offset=1 may return the same point as offset=0). Fetching one window
+   * from offset 0 and slicing in the appserver is deterministic.
+   */
   limit: number;
-  /** Offset for cursor pagination. */
-  offset: number;
 }
 
 /**
  * Run a sparse BM25 query over `messages`, payload-filtered to the given
  * spaces, ranked by score desc. Returns hits with their payloads (roomId +
- * spaceDid drive the read-access post-filter).
+ * spaceDid drive the read-access post-filter). Always fetches from offset 0
+ * — see {@link SearchMessagesOptions.limit} for why pagination is sliced
+ * by the caller.
  */
 export async function searchMessages(
   client: QdrantClientLike,
@@ -234,7 +253,6 @@ export async function searchMessages(
       ],
     },
     limit: opts.limit,
-    offset: opts.offset,
     with_payload: true,
   });
 
