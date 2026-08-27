@@ -91,6 +91,7 @@
       bind:value={query}
       placeholder="Search rooms…"
       aria-label="Search rooms"
+      class="w-full min-w-0"
     />
 
     {#if errorMessage}
