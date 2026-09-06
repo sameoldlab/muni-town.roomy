@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onNavigate } from "$app/navigation";
   import { page } from "$app/state";
+  import { goto } from "$app/navigation";
   import { currentRoomState } from "./current-room.svelte";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { IconSearch, IconX } from "@roomy/design/icons";
@@ -12,12 +13,20 @@
     flagsQuery.data?.flags.includes("search") ?? false,
   );
 
-  // Context the search will be scoped to by default (placeholder display for
-  // now — the actual scoped search + results UI ships next).
+  // Context the search will be scoped to: inside a room the search is
+  // room-scoped, on a space page space-scoped (the room name only applies
+  // when [room] is actually in the URL), and away from spaces it searches
+  // across every joined space (the directory).
+  const scope = $derived.by(() => {
+    const params = page.params as { space?: string; room?: string };
+    if (params.space && params.room) return "room";
+    if (params.space) return "space";
+    return "directory";
+  });
+
   const scopeLabel = $derived.by(() => {
     const params = page.params as { space?: string };
     if (params.space) return currentRoomState.value?.name ?? "This space";
-    // The directory (homepage / space-less routes) searches across spaces.
     return "All spaces";
   });
 
@@ -48,6 +57,26 @@
     expanded = false;
     searchInput?.blur();
   }
+
+  // Submit navigates to the search page for the current scope with the term
+  // as `?q=` — the pages read the query string as their source of truth, so
+  // the typed value is preserved serverlessly and back/forward works.
+  function submit(e: SubmitEvent | KeyboardEvent) {
+    e.preventDefault();
+    const term = query.trim();
+    if (!term) return;
+
+    const params = page.params as { space?: string; room?: string };
+    const path =
+      scope === "room"
+        ? `/${params.space}/${params.room}/search`
+        : scope === "space"
+          ? `/${params.space}/search`
+          : "/search";
+    const target = `${path}?q=${encodeURIComponent(term)}`;
+    expanded = false;
+    goto(target);
+  }
 </script>
 
 {#if searchEnabled}
@@ -74,12 +103,12 @@
     <!-- Mobile expanded searchbar: takes up the whole navbar, so MainLayout
          hides the page-provided navbar content while it is open. -->
     <div class="sm:hidden flex items-center w-full" class:hidden={!expanded}>
-      <div class="relative w-full">
+      <form class="relative w-full" onsubmit={submit}>
         <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
         <input
           bind:this={searchInput}
           bind:value={query}
-          type="text"
+          type="search"
           placeholder={"Search " + scopeLabel}
           aria-label="Search"
           class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-xl pl-8 pr-8 py-1.5 text-sm outline-none border-0 transition-colors"
@@ -92,22 +121,22 @@
         >
           <IconX class="size-4" />
         </button>
-      </div>
+      </form>
     </div>
 
     <!-- Desktop: fixed-width searchbar on the right side of the navbar -->
     <div class="hidden sm:block">
-      <div class="relative w-56">
+      <form class="relative w-56" onsubmit={submit}>
         <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
         <input
           bind:this={searchInput}
           bind:value={query}
-          type="text"
+          type="search"
           placeholder={"Search " + scopeLabel}
           aria-label="Search"
           class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-xl pl-8 pr-3 py-1.5 text-sm outline-none border-0 transition-colors"
         />
-      </div>
+      </form>
     </div>
   </div>
 {/if}

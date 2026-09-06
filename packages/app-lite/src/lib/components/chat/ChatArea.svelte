@@ -31,9 +31,12 @@
     spaceId: string;
     roomId: string;
     onSeen?: () => void;
+    /** Search deep-link target (`?message=`): scroll to and briefly highlight
+     *  this message on land, suppressing the normal scroll-position restore. */
+    highlightMessage?: string;
   };
   
-  let { spaceId, roomId, onSeen }: Props = $props();
+  let { spaceId, roomId, onSeen, highlightMessage }: Props = $props();
 
   const messagesQuery = createMessagesQuery(() => roomId);
 
@@ -283,6 +286,25 @@
     ) {
       const savedPosition = scrollPositionState.get(currentRoomId);
 
+      // Search deep-link land (`?message=`): scroll to the hit directly and
+      // skip the saved-position restore so the target message is the anchor.
+      if (highlightMessage && timeline.some((m) => m.id === highlightMessage)) {
+        // Mark that we're attempting to land for this roomId BEFORE the
+        // timeout, mirroring the restore path below.
+        lastRestoredRoomId = currentRoomId;
+        isRestoring = true; // Block auto-scroll during landing
+        setTimeout(() => {
+          if (lastRestoredRoomId !== currentRoomId) {
+            isRestoring = false;
+            return;
+          }
+          const idx = timeline.findIndex((m) => m.id === highlightMessage);
+          if (idx >= 0) virtualizer?.scrollToIndex(idx);
+          isRestoring = false;
+        }, 200);
+        return; // Skip the normal restore path
+      }
+
       // Mark that we're attempting to restore for this roomId BEFORE the timeout
       lastRestoredRoomId = currentRoomId;
       isRestoring = true; // Block auto-scroll during restoration
@@ -376,6 +398,24 @@
       loadOlderMessages();
     }
   }
+
+  // Transient deep-link highlight: seeded from the `highlightMessage` prop
+  // and auto-cleared after a beat so the accent doesn't linger. The prop
+  // itself stays constant while this room is mounted, so clearing is local
+  // state — no URL rewrite.
+  let highlightedId = $state(highlightMessage);
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    highlightedId = highlightMessage;
+    if (!highlightMessage) return;
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      highlightedId = undefined;
+    }, 4000);
+    return () => {
+      if (highlightTimer) clearTimeout(highlightTimer);
+    };
+  });
 </script>
 
 <div class="grow min-h-0 relative">
@@ -439,6 +479,7 @@
                       {spaceId}
                       {roomId}
                       message={message}
+                      highlighted={highlightedId === message.id}
                       currentUserDid={currentUserDid}
                       {isAdmin}
                       editingMessageId={editingMessageId}

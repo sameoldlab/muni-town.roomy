@@ -41,6 +41,9 @@
     /** Requests the delete confirmation for this message (raised to ChatArea). */
     onRequestDelete: (message: Message) => void;
     onForward: (message: Message) => void;
+    /** Temporary visual emphasis for a search deep-link land; OR-ed into
+     *  the selection styling and cleared by the caller after a beat. */
+    highlighted?: boolean;
     mergeWithPrevious?: boolean;
   };
 
@@ -56,9 +59,9 @@
     onOpenMobileMenu,
     onRequestDelete,
     onForward,
+    highlighted = false,
     mergeWithPrevious = false,
   }: Props = $props();
-
   let hovered = $state(false);
   let keepToolbarOpen = $state(false);
   let isEditing = $derived(editingMessageId === message.id);
@@ -174,9 +177,11 @@
       return url;
     }
   }
-  let isMobile = new MediaQuery("(pointer: coarse)")
+  let isMobile = new MediaQuery("(pointer: coarse)");
   let isThreading = $derived(messagingState.current.kind === "threading");
+
   let isSelected = $derived.by(() => {
+    if (highlighted) return true;
     const cur = messagingState.current;
     return cur.kind === "threading" && cur.selectedMessages.some((m) => m.id === message.id);
   });

@@ -20,6 +20,11 @@
 
   const spaceId = $derived(page.params.space!);
   const roomId = $derived(page.params.room!);
+  // Search deep-link target (`?message=`), e.g. from search results or a
+  // forward context link — ChatArea scrolls to and briefly highlights it.
+  const highlightMessage = $derived(
+    page.url.searchParams.get("message") ?? undefined,
+  );
 
   useTopicSubscription(
     () => sync_.ctx?.topicManager ?? null,
@@ -236,7 +241,7 @@
     <div class="relative flex-1 min-h-0">
       <!-- Chat view - always rendered but visibility toggled -->
       <div class="absolute inset-0 flex flex-col" class:hidden={channelActiveTab !== "Chat"}>
-        <ChatArea spaceId={effectiveSpaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
+        <ChatArea spaceId={effectiveSpaceId} {roomId} {highlightMessage} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
       </div>
 
       <!-- Threads view - always rendered but visibility toggled -->
@@ -251,7 +256,7 @@
     {/if}
   {:else}
     <!-- Thread rooms only have chat view -->
-    <ChatArea spaceId={effectiveSpaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
+    <ChatArea spaceId={effectiveSpaceId} {roomId} {highlightMessage} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
     <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
   {/if}
 </div>
