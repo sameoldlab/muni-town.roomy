@@ -24,6 +24,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -53,6 +54,12 @@
       "desktop": {
         "schemes": ["space.roomy", "roomy"]
       }
+    },
+    "updater": {
+      "pubkey": "PUBKEY",
+      "endpoints": [
+        "https://github.com/muni-town/roomy/latest/download/latest.json"
+      ]
     }
   }
 }
