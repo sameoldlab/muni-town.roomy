@@ -11,13 +11,38 @@ function persistedBool(key: string, defaultValue = false) {
     }
   };
 }
-export const enableAutoupdate = persistedBool('autoUpdate')
+export const enableAutoupdate = persistedBool('autoUpdate', true)
+
+/** Run update in background if autoUpdate is enabled*/
+export const runUpdate = async () => {
+  if (!('__TAURI__' in window)) return
+  if (enableAutoupdate.value !== true) return
+  const update = await checkUpdate()
+  if (!update) return
+
+  let contentLength = 0
+  let downloaded = 0
+  await update.download((event) => {
+    switch (event.event) {
+      case 'Started':
+        contentLength = event.data.contentLength ?? 0
+        console.debug(`starting update download: ${event.data.contentLength} bytes`);
+        break;
+      case 'Progress':
+        downloaded += event.data.chunkLength
+        console.debug(` ${downloaded} /  ${contentLength} complete`);
+        break;
+      case 'Finished':
+        console.log('update download finished');
+        break;
+    }
+  });
+}
 
 export const checkUpdate = async () => {
   if (!('__TAURI__' in window)) return null
   const { check } = await import('@tauri-apps/plugin-updater');
 
-  const update = check();
-  console.log(update)
-  return update
+  return check();
 }
+

@@ -4,7 +4,7 @@
 
 	let {
 		class: className,
-		checked = $bindable(true),
+		checked = $bindable(),
 		...rest
 	}: SwitchRootProps = $props();
 </script>
