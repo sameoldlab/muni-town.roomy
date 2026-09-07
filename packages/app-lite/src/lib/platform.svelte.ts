@@ -1,5 +1,3 @@
-import type { Update } from '@tauri-apps/plugin-updater';
-
 function persistedBool(key: string, defaultValue = false) {
   let value = $state(localStorage.getItem(key) === null ? defaultValue : localStorage.getItem(key) === 'true');
 

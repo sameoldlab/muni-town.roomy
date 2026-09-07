@@ -9,10 +9,7 @@
   import { resolveBlobUrl } from "$lib/utils";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import Switch from "@roomy/design/components/ui/toggle/Toggle.svelte";
-  import {
-    checkUpdate,
-    enableAutoupdate,
-  } from "$lib/platform.svelte";
+  import { checkUpdate, enableAutoupdate } from "$lib/platform.svelte";
   import type { Update as TauriUpdate } from "@tauri-apps/plugin-updater";
 
   const spacesQuery = createSpacesQuery({ includeLeft: true });
@@ -41,21 +38,25 @@
     "updater" in window.__TAURI__ &&
     !DISABLE_AUTO_UPDATE;
   let update: TauriUpdate | null | undefined = $state(undefined);
-  let updateDownloadProgress = $state(0);
-  let updateDowloadSize = $state(0);
+  let updateProgress = $state(0);
+  let updateTotal = $state(0);
+
+  let percent = $derived(
+    Math.min(100, Math.max(0, (updateProgress / updateTotal) * 100)),
+  );
 
   const downloadUpdate = async () => {
-  	if (!update) return
+    if (!update) return;
     await update.downloadAndInstall((event) => {
       switch (event.event) {
         case "Started":
-          updateDowloadSize = event.data.contentLength ?? 0;
+          updateTotal = event.data.contentLength ?? 0;
           break;
         case "Progress":
-          updateDownloadProgress += event.data.chunkLength;
+          updateProgress += event.data.chunkLength;
           break;
         case "Finished":
-        	update = undefined;
+          update = undefined;
           break;
       }
     });
@@ -152,6 +153,18 @@
             {/if}
           </Button>
         </div>
+
+        {#if updateTotal > 0}
+          <div
+          	in:slide={{duration: 200}}
+            class="w-full h-2 rounded-full bg-base-200 dark:bg-base-800 overflow-hidden"
+          >
+            <div
+              class="h-full rounded-full bg-accent-500 transition-[width] duration-300 ease-out"
+              style:width="{percent}%"
+            ></div>
+          </div>
+        {/if}
         <div class="flex items-center justify-between py-2 pr-0 5">
           <div>
             <p>Enable Autoupdate</p>
