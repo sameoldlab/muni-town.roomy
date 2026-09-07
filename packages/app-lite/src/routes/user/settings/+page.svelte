@@ -8,6 +8,9 @@
   import { cache } from "@roomy-space/sdk";
   import { resolveBlobUrl } from "$lib/utils";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
+  import Switch from "@roomy/design/components/ui/toggle/Toggle.svelte";
+  import { checkUpdate, enableAutoupdate } from "$lib/platform.svelte";
+  import type { Update as TauriUpdate } from "@tauri-apps/plugin-updater";
 
   const spacesQuery = createSpacesQuery({ includeLeft: true });
 
@@ -26,6 +29,15 @@
       rejoining = null;
     }
   }
+  // TODO: expose this as an env flag during build,
+  //       for package managers handling updates externally.
+  const DISABLE_AUTO_UPDATE = false;
+  const desktopUpdatesEnabled =
+    "__TAURI__" in window &&
+    window.__TAURI__ &&
+    "updater" in window.__TAURI__ &&
+    !DISABLE_AUTO_UPDATE;
+  let update: TauriUpdate | null = $state(null);
 </script>
 
 <div class="flex flex-col gap-10">
@@ -83,4 +95,39 @@
       {/if}
     {/if}
   </section>
+  <!-- Updates section -->
+  {#if true || desktopUpdatesEnabled}
+    <section>
+      <h2 class="text-base font-semibold mb-4 text-base-900 dark:text-base-100">
+        App Updates
+      </h2>
+
+      <div class="flex flex-col w-full text-base-700 dark:text-base-300">
+        <div class="flex items-center justify-between py-2 pr-0.5">
+          <p>
+            <span class="text-sm font-medium">
+              {#await window.__TAURI__.app?.getVersion() then version}
+                Currently on Roomy v{version}
+              {/await}
+              {#if update}
+                Found update {update.version} from {update.date} with notes {update.body}.
+              {/if}
+            </span>
+          </p>
+          <Button onclick={() => checkUpdate().then((u) => (update = u))}
+            >Check for Updates</Button
+          >
+        </div>
+        <div class="flex items-center justify-between py-2 pr-0 5">
+          <div>
+            <p>Enable Autoupdate</p>
+            <p class="text-base-400">
+              Download and install new versions in the background
+            </p>
+          </div>
+          <Switch checked={enableAutoupdate.value} />
+        </div>
+      </div>
+    </section>
+  {/if}
 </div>
