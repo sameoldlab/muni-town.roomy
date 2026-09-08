@@ -4,12 +4,12 @@
   import { setNavbar } from "$lib/components/layout/navbar.svelte";
   import { setSidebarContent } from "$lib/components/layout/sidebar.svelte";
   import { setWideSidebar } from "$lib/components/layout/wide-sidebar.svelte";
+  import { searchTerm } from "$lib/components/layout/search-term.svelte";
   import SpaceSidebar from "$lib/components/sidebar/SpaceSidebar.svelte";
   import SearchResultsList from "$lib/components/search/SearchResultsList.svelte";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import type { SearchMessage } from "$lib/queries/search";
   import SeoMeta from "$lib/components/seo/SeoMeta.svelte";
-  import { IconSearch } from "@roomy/design/icons";
 
   // Search feature flag: gates the page (direct navigation lands here even
   // when the flag is off, showing the disabled state).
@@ -22,8 +22,23 @@
   // navigates here); changing it re-seeds the results list.
   const query = $derived(page.url.searchParams.get("q") ?? "");
 
+  // The navbar searchbar owns the input on this page; the page title
+  // ("Search") becomes its placeholder. Re-seed the shared term from the
+  // URL `?q=` so back/forward and deep links keep working — but only when
+  // the URL query actually changes, so navigation never clobbers the
+  // user's in-progress typing.
+  let lastSyncedQuery = $state<string | null>(null);
+  $effect(() => {
+    if (query === lastSyncedQuery) return;
+    lastSyncedQuery = query;
+    searchTerm.input = query;
+  });
+  $effect(() => {
+    searchTerm.placeholder = "Search";
+  });
+
   onMount(() => {
-    setNavbar(searchNavbar);
+    setNavbar(undefined);
     setSidebarContent(homeSidebar);
     setWideSidebar(true);
     return () => {
@@ -40,13 +55,6 @@
   <SpaceSidebar />
 {/snippet}
 
-{#snippet searchNavbar()}
-  <div class="flex w-full items-center gap-2 px-2 min-w-0 grow">
-    <IconSearch class="size-4 shrink-0 text-base-400" />
-    <span class="text-sm font-semibold truncate">Search</span>
-  </div>
-{/snippet}
-
 <div class="h-full dark:bg-base-900/20 text-base-800 dark:text-base-200">
   {#if !searchEnabled}
     <div class="h-full flex items-center justify-center">
@@ -58,7 +66,6 @@
     <SearchResultsList
       {query}
       scopeLabel="all your spaces"
-      placeholder="Search messages across all your spaces…"
       showSpaceInfo
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />

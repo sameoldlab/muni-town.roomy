@@ -6,13 +6,13 @@
     type SearchMessage,
     type SearchScope,
   } from "$lib/queries/search";
-  import {
-    createSearchRoomsQuery,
-    type RoomSearchResult,
-  } from "$lib/queries/search-rooms";
+  import { createSearchRoomsQuery } from "$lib/queries/search-rooms";
   import { resolveBlobUrl } from "$lib/utils";
+  import { searchTerm } from "$lib/components/layout/search-term.svelte";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import MessageBubble from "@roomy/design/components/content/thread/message/MessageBubble.svelte";
+  import BoardViewItem from "@roomy/design/components/content/thread/boardView/BoardViewItem.svelte";
+  import type { ThreadInfo } from "@roomy/design/components/content/thread/boardView/types.ts";
   import SpaceAvatar from "@roomy/design/components/spaces/SpaceAvatar.svelte";
   import UserAvatar from "@roomy/design/components/user/UserAvatar.svelte";
   import MessageContent from "../chat/MessageContent.svelte";
@@ -22,17 +22,14 @@
   import LinkCard from "../chat/embeds/LinkCard.svelte";
   import { messageContentToPlaintext } from "../chat/messagePreview";
   import {
-    IconSearch,
     IconChevronRight,
     IconNeedleThread,
     IconForward,
-    IconHashtag,
     IconReplyLine,
   } from "@roomy/design/icons";
 
   let {
     query,
-    placeholder,
     scopeLabel,
     showSpaceInfo = false,
     spaceId,
@@ -43,7 +40,6 @@
   }: {
     /** Initial search term (e.g. the URL `?q=` param). */
     query: string;
-    placeholder: string;
     /** Natural-language search scope for the hint, e.g. "all your spaces". */
     scopeLabel: string;
     /** Render the space + room context line above each result run (directory search). */
@@ -63,12 +59,11 @@
   } = $props();
 
   // ── Term state ────────────────────────────────────────────────────────
-  // `input` is bound to the text field; `term` is what the query watches.
-  let input = $state(query);
+  // The navbar searchbar owns the input on the search pages; this component
+  // watches the shared term and debounces it into the query. The URL `?q=`
+  // is the seed — the pages re-seed `searchTerm` from it, and this effect
+  // keeps `term` in sync with both.
   let term = $state(query);
-  // Last query prop the local state was synced from (the prop itself is
-  // stable across renders, so this guards against re-clobbering the user's
-  // in-progress typing).
   let lastSyncedQuery = $state(query);
 
   // External ?q= changes (navbar search submit) resync immediately — no
@@ -76,15 +71,14 @@
   $effect(() => {
     if (query === lastSyncedQuery) return;
     lastSyncedQuery = query;
-    input = query;
     term = query;
   });
 
   // Debounced typing: 200ms matches the room/thread search-input debounce.
-  // NOTE: the input value must be read synchronously inside the effect —
-  // Svelte 5 effects only track reads that happen during the effect run.
+  // NOTE: the shared input value must be read synchronously inside the
+  // effect — Svelte 5 effects only track reads that happen during the run.
   $effect(() => {
-    const value = input;
+    const value = searchTerm.input;
     const timer = setTimeout(() => {
       const next = value.trim();
       if (next !== term) {
@@ -121,12 +115,47 @@
   );
   const rooms = $derived(roomsQuery.data?.rooms ?? []);
 
+  // Room/thread results render as BoardViewItems. The search endpoint
+  // returns the same activity/unread shape as `space.getThreads`, so the
+  // rows match the board views (avatars, latest message, date, unread).
+  const roomItems = $derived<ThreadInfo[]>(
+    rooms.map((r) => ({
+      id: r.id,
+      name: r.name,
+      kind: r.kind === "channel" ? "space.roomy.channel" : "space.roomy.thread",
+      canonicalParent: r.channelId,
+      // Channels have no parent channel; show their own name in the right
+      // column too so the board reads consistently (duplicated — intended,
+      // same as ThreadsTab).
+      channelName: r.channelName ?? (r.kind === "channel" ? r.name : undefined),
+      unread: r.unread ?? false,
+      unreadDot: (r.unreadCount ?? 0) > 0,
+      activity: {
+        members: (r.activity?.latestMembers ?? []).map((m) => ({
+          id: m.did,
+          name: m.name ?? null,
+          avatar: resolveBlobUrl(m.avatar ?? undefined) ?? null,
+        })),
+        latestTimestamp: r.activity?.latestTimestamp
+          ? new Date(r.activity.latestTimestamp).getTime()
+          : 0,
+        ...(r.activity?.latestMessage
+          ? {
+              latestMessage: {
+                id: r.activity.latestMessage.id,
+                text: r.activity.latestMessage.content,
+              },
+            }
+          : {}),
+      },
+    })),
+  );
+
   // Deep-link for a room/thread result. Threads link with their canonical
   // parent channel as `?parent=` (the room page's thread breadcrumb), the
   // same convention the board views use.
-  function roomHrefFor(r: RoomSearchResult): string {
-    const parentParam =
-      r.kind === "thread" && r.channelId ? `?parent=${r.channelId}` : "";
+  function roomHrefFor(r: ThreadInfo): string {
+    const parentParam = r.canonicalParent ? `?parent=${r.canonicalParent}` : "";
     return `/${spaceId!}/${r.id}${parentParam}`;
   }
   // ids of messages that begin a contiguous run in their space+room — the
@@ -207,19 +236,8 @@
 {/snippet}
 
 <main class="h-full overflow-y-auto text-base-950 dark:text-base-50">
-  <div class="flex flex-col items-center py-8 px-4">
-    <div class="w-full max-w-2xl flex flex-col gap-4">
-      <div class="relative">
-        <IconSearch class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-base-400" />
-        <input
-          type="text"
-          bind:value={input}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-2xl pl-9 pr-3 py-2 text-sm font-medium outline-none border-0 transition-colors"
-        />
-      </div>
-
+  <div class="flex flex-col py-8 px-4">
+    <div class="w-full flex flex-col gap-4">
       {#if term.length >= 3 && rooms.length > 0}
         <section class="flex flex-col gap-2">
           <div class="flex items-center justify-between gap-2 pl-2">
@@ -230,28 +248,14 @@
               {rooms.length} {rooms.length === 1 ? "result" : "results"}
             </span>
           </div>
-          <ul class="flex flex-col gap-1">
-            {#each rooms as r (r.id)}
-              <li>
-                <a
-                  href={roomHrefFor(r)}
-                  class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-base-800 dark:text-base-200 hover:bg-base-100/70 dark:hover:bg-base-400/10"
-                >
-                  {#if r.kind === "thread"}
-                    <IconNeedleThread class="size-4 shrink-0 text-base-400" />
-                  {:else}
-                    <IconHashtag class="size-4 shrink-0 text-base-400" />
-                  {/if}
-                  <span class="truncate">{r.name}</span>
-                  {#if r.kind === "thread" && r.channelName}
-                    <span class="text-xs text-base-400 shrink-0">
-                      in {r.channelName}
-                    </span>
-                  {/if}
-                </a>
-              </li>
+          <!-- @container so BoardViewItem's @[40rem]: responsive columns
+               (avatar, channel, date) kick in — BoardView normally provides
+               the container, but here the rows render standalone. -->
+          <div class="@container">
+            {#each roomItems as item (item.id)}
+              <BoardViewItem thread={item} href={roomHrefFor(item)} />
             {/each}
-          </ul>
+          </div>
         </section>
       {/if}
 
