@@ -9,8 +9,9 @@
   import { resolveBlobUrl } from "$lib/utils";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import Switch from "@roomy/design/components/ui/toggle/Toggle.svelte";
-  import { checkUpdate, enableAutoupdate } from "$lib/nativeUpdate.svelte";
+  import { checkUpdate, desktopUpdatesEnabled, enableAutoupdate } from "$lib/nativeUpdate.svelte";
   import type { Update as TauriUpdate } from "@tauri-apps/plugin-updater";
+  import { slide } from 'svelte/transition'
 
   const spacesQuery = createSpacesQuery({ includeLeft: true });
 
@@ -29,14 +30,6 @@
       rejoining = null;
     }
   }
-  // TODO: expose this as an env flag during build,
-  //       for package managers handling updates externally.
-  const DISABLE_AUTO_UPDATE = false;
-  const desktopUpdatesEnabled =
-    "__TAURI__" in window &&
-    window.__TAURI__ &&
-    "updater" in window.__TAURI__ &&
-    !DISABLE_AUTO_UPDATE;
   let update: TauriUpdate | null | undefined = $state(undefined);
   let updateProgress = $state(0);
   let updateTotal = $state(0);
@@ -131,7 +124,7 @@
         <div class="flex items-center justify-between py-2 pr-0.5">
           <div class="flex flex-col">
             <p class="text-sm font-medium">
-              Currently on Roomy v{#await window.__TAURI__.app?.getVersion() then version}
+              Currently on Roomy v{#await window.__TAURI__?.app.getVersion() then version}
                 {version}
               {/await}
             </p>

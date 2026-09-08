@@ -39,9 +39,18 @@ export const tryUpdate = async () => {
   });
 }
 
+// TODO: expose this as an env flag during build,
+//       for package managers handling updates externally.
+const DISABLE_INTERNAL_UPDATE = false;
+export const desktopUpdatesEnabled =
+    "__TAURI__" in window &&
+    typeof window.__TAURI__ === 'object' &&
+    "updater" in window.__TAURI__ &&
+    !DISABLE_INTERNAL_UPDATE;
+
 export const checkUpdate = async () => {
-  if (!('__TAURI__' in window) || !('updater' in window.__TAURI__)) return null
-  const { check, } = await import('@tauri-apps/plugin-updater');
+  if (!desktopUpdatesEnabled) return null
+  const { check } = await import('@tauri-apps/plugin-updater');
 
   return check();
 }
