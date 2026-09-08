@@ -320,6 +320,7 @@
         {#if message.forwardedFrom}
           <ForwardContext
             name={message.authorName}
+            handle={message.authorHandle}
             did={message.authorDid}
             avatar={message.authorAvatar}
             timestamp={new Date(message.timestamp)}

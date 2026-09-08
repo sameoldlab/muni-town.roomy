@@ -338,6 +338,7 @@
                       {#if m.forwardedFrom}
                         <ForwardContext
                           name={m.authorName}
+                          handle={m.authorHandle}
                           did={m.authorDid}
                           avatar={m.authorAvatar}
                           timestamp={new Date(m.timestamp)}
