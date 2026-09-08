@@ -21,6 +21,7 @@
   );
 
   const roomId = $derived(page.params.room!);
+  const spaceId = $derived(page.params.space!);
   const query = $derived(page.url.searchParams.get("q") ?? "");
   const currentSpace = $derived(currentSpaceState.value);
 
@@ -61,12 +62,6 @@
     {/if}
     <span class="text-base-300 dark:text-base-700 shrink-0 sm:hidden">/</span>
     <span class="shrink-0 sm:hidden text-base-400">#</span>
-    <IconSearch class="size-4 shrink-0 text-base-500" />
-    <span
-      class="text-sm font-medium text-base-700 dark:text-base-300 truncate"
-    >
-      Search
-    </span>
   </div>
 {/snippet}
 
@@ -89,9 +84,9 @@
   {:else}
     <SearchResultsList
       {query}
+      {spaceId}
       {roomId}
-      scopeLabel={`"${roomName}"`}
-      placeholder={`Search messages in ${roomName}…`}
+      placeholder={`Search rooms and messages in ${roomName}…`}
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />
   {/if}

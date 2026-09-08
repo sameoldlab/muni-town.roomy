@@ -6,6 +6,10 @@
     type SearchMessage,
     type SearchScope,
   } from "$lib/queries/search";
+  import {
+    createSearchRoomsQuery,
+    type RoomSearchResult,
+  } from "$lib/queries/search-rooms";
   import { resolveBlobUrl } from "$lib/utils";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import MessageBubble from "@roomy/design/components/content/thread/message/MessageBubble.svelte";
@@ -22,6 +26,7 @@
     IconChevronRight,
     IconNeedleThread,
     IconForward,
+    IconHashtag,
     IconReplyLine,
   } from "@roomy/design/icons";
 
@@ -65,7 +70,6 @@
     lastSyncedQuery = query;
     input = query;
     term = query;
-    kindFilter = "All";
   });
 
   // Debounced typing: 200ms matches the room/thread search-input debounce.
@@ -77,7 +81,6 @@
       const next = value.trim();
       if (next !== term) {
         term = next;
-        kindFilter = "All";
       }
     }, 200);
     return () => clearTimeout(timer);
@@ -98,30 +101,30 @@
   );
   const hasMore = $derived(searchQuery.hasNextPage ?? false);
 
-  // Room-kind pivot: channel vs thread results, filtered client-side (the
-  // search endpoint has no kind param). Resets on every new search term.
-  const KIND_OPTIONS = ["All", "Channels", "Threads"] as const;
-  type KindFilter = (typeof KIND_OPTIONS)[number];
-  let kindFilter = $state<KindFilter>("All");
-  const hasThreads = $derived(messages.some((m) => m.roomKind === "thread"));
-  const filtered = $derived(
-    kindFilter === "All"
-      ? messages
-      : messages.filter((m) =>
-          kindFilter === "Threads"
-            ? m.roomKind === "thread"
-            : m.roomKind !== "thread",
-        ),
-  );
+  // Room/thread name search (`space.roomy.search.rooms`), scoped to the
+  // space when one is in context. Both endpoints are called for the same
+  // term; the room results render above the message results. The directory
+  // search has no space to scope room results to, so the query stays
+  // disabled there (spaceId is undefined).
+  const roomsQuery = createSearchRoomsQuery(() => spaceId, () => term);
+  const rooms = $derived(roomsQuery.data?.rooms ?? []);
 
+  // Deep-link for a room/thread result. Threads link with their canonical
+  // parent channel as `?parent=` (the room page's thread breadcrumb), the
+  // same convention the board views use.
+  function roomHrefFor(r: RoomSearchResult): string {
+    const parentParam =
+      r.kind === "thread" && r.channelId ? `?parent=${r.channelId}` : "";
+    return `/${spaceId!}/${r.id}${parentParam}`;
+  }
   // ids of messages that begin a contiguous run in their space+room — the
   // location header is only rendered for these, so consecutive hits from the
   // same room share one header.
   const firstInRoom = $derived.by(() => {
     const ids = new Set<string>();
-    for (let i = 0; i < filtered.length; i++) {
-      const cur = filtered[i];
-      const prev = filtered[i - 1];
+    for (let i = 0; i < messages.length; i++) {
+      const cur = messages[i];
+      const prev = messages[i - 1];
       if (!cur) continue;
       const sameRoom =
         prev !== undefined &&
@@ -205,6 +208,36 @@
         />
       </div>
 
+      {#if term.length >= 3 && rooms.length > 0}
+        <section class="flex flex-col gap-2">
+          <h2 class="text-xs font-semibold uppercase tracking-wider text-base-400 dark:text-base-500">
+            Rooms &amp; threads
+          </h2>
+          <ul class="flex flex-col gap-1">
+            {#each rooms as r (r.id)}
+              <li>
+                <a
+                  href={roomHrefFor(r)}
+                  class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-base-800 dark:text-base-200 hover:bg-base-100/70 dark:hover:bg-base-400/10"
+                >
+                  {#if r.kind === "thread"}
+                    <IconNeedleThread class="size-4 shrink-0 text-base-400" />
+                  {:else}
+                    <IconHashtag class="size-4 shrink-0 text-base-400" />
+                  {/if}
+                  <span class="truncate">{r.name}</span>
+                  {#if r.kind === "thread" && r.channelName}
+                    <span class="text-xs text-base-400 shrink-0">
+                      in {r.channelName}
+                    </span>
+                  {/if}
+                </a>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
       {#if term.length === 0}
         <p class="text-sm text-base-400">Type to search {scopeLabel}.</p>
       {:else if term.length < 3}
@@ -216,35 +249,15 @@
       {:else if searchQuery.data}
         {#if messages.length === 0}
           <p class="text-sm text-base-400">No messages found.</p>
-        {:else if filtered.length === 0}
-          <p class="text-sm text-base-400">
-            No {kindFilter === "Threads" ? "threads" : "channels"} in these results.
-          </p>
         {:else}
-          <div class="flex items-center justify-between gap-2">
-            {#if hasThreads}
-              <div class="flex items-center gap-1 rounded-lg bg-base-100 dark:bg-base-800/50 p-0.5 text-xs font-medium">
-                {#each KIND_OPTIONS as k (k)}
-                  <button
-                    type="button"
-                    onclick={() => (kindFilter = k)}
-                    class={[
-                      "px-2.5 py-1 rounded-md cursor-pointer transition-colors",
-                      kindFilter === k
-                        ? "bg-white dark:bg-base-700 text-base-900 dark:text-base-100 shadow-sm"
-                        : "text-base-500 dark:text-base-400 hover:text-base-800 dark:hover:text-base-200",
-                    ].join(" ")}
-                  >{k}</button>
-                {/each}
-              </div>
-            {/if}
-            <span class="text-xs text-base-400 shrink-0 ml-auto">
+          <div class="flex items-center justify-end gap-2">
+            <span class="text-xs text-base-400 shrink-0">
               {messages.length} {messages.length === 1 ? "result" : "results"}
             </span>
           </div>
 
           <ul class="space-y-3">
-            {#each filtered as m (m.id)}
+            {#each messages as m (m.id)}
               {@const isForward = !!m.forwardedFrom}
               {@const original = m.forwardedFrom?.message}
               {@const replyPreview = m.reply?.message}

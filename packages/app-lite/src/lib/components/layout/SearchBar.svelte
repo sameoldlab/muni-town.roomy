@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { currentRoomState } from "./current-room.svelte";
+  import { currentSpaceState } from "./current-space.svelte";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { IconSearch, IconX } from "@roomy/design/icons";
 
@@ -12,7 +13,6 @@
   const searchEnabled = $derived(
     flagsQuery.data?.flags.includes("search") ?? false,
   );
-
   // Context the search will be scoped to: inside a room the search is
   // room-scoped, on a space page space-scoped (the room name only applies
   // when [room] is actually in the URL), and away from spaces it searches
@@ -24,9 +24,21 @@
     return "directory";
   });
 
+  // True on the search result pages themselves: the navbar searchbar is
+  // replaced by a close (X) button that navigates back to the room, the
+  // space index, or the directory — wherever the search was launched from.
+  const onSearchPage = $derived(
+    page.url.pathname.endsWith("/search"),
+  );
+
   const scopeLabel = $derived.by(() => {
-    const params = page.params as { space?: string };
-    if (params.space) return currentRoomState.value?.name ?? "This space";
+    const params = page.params as { space?: string; room?: string };
+    if (params.space && params.room) {
+      return currentRoomState.value?.name ?? "This room";
+    }
+    if (params.space) {
+      return currentSpaceState.value?.name ?? "This space";
+    }
     return "All spaces";
   });
 
@@ -77,66 +89,96 @@
     expanded = false;
     goto(target);
   }
+
+  // Close button on the search result pages: navigate back to the room,
+  // the space index, or the directory — wherever the search was launched
+  // from. The search pages are reached from the navbar searchbar, so the
+  // scope at submit time is the same scope the page is showing.
+  function closeSearch() {
+    const params = page.params as { space?: string; room?: string };
+    const path =
+      scope === "room"
+        ? `/${params.space}/${params.room}`
+        : scope === "space"
+          ? `/${params.space}`
+          : "/";
+    goto(path);
+  }
 </script>
 
 {#if searchEnabled}
-  <!-- Mobile: collapsed search icon (top right) -->
-  <button
-    type="button"
-    class="sm:hidden shrink-0 p-1 cursor-pointer text-base-700 dark:text-base-200 rounded-lg hover:bg-base-200/50 dark:hover:bg-base-900/30"
-    class:hidden={expanded}
-    aria-label="Search"
-    title="Search {scopeLabel}"
-    onclick={() => (expanded = true)}
-  >
-    <IconSearch class="size-5" />
-  </button>
+  {#if onSearchPage}
+    <!-- On the search result pages the searchbar is replaced by a close
+         button that navigates back to the room, the space index, or the
+         directory — wherever the search was launched from. -->
+    <button
+      type="button"
+      class="shrink-0 p-1.5 cursor-pointer text-base-700 dark:text-base-200 rounded-lg hover:bg-base-200/50 dark:hover:bg-base-900/30"
+      aria-label="Close search"
+      title="Close search"
+      onclick={closeSearch}
+    >
+      <IconX class="size-5" />
+    </button>
+  {:else}
+    <!-- Mobile: collapsed search icon (top right) -->
+    <button
+      type="button"
+      class="sm:hidden shrink-0 p-1 cursor-pointer text-base-700 dark:text-base-200 rounded-lg hover:bg-base-200/50 dark:hover:bg-base-900/30"
+      class:hidden={expanded}
+      aria-label="Search"
+      title="Search {scopeLabel}"
+      onclick={() => (expanded = true)}
+    >
+      <IconSearch class="size-5" />
+    </button>
 
-  <!-- Navbar-wide search UI: on mobile the expandable searchbar, on desktop
-       the fixed-width searchbar at the right edge of the navbar -->
-  <div
-    class={[
-      "flex items-center",
-      expanded ? "absolute inset-0 px-2 sm:static" : "hidden sm:flex",
-    ].join(" ")}
-  >
-    <!-- Mobile expanded searchbar: takes up the whole navbar, so MainLayout
-         hides the page-provided navbar content while it is open. -->
-    <div class="sm:hidden flex items-center w-full" class:hidden={!expanded}>
-      <form class="relative w-full" onsubmit={submit}>
-        <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
-        <input
-          bind:this={searchInput}
-          bind:value={query}
-          type="search"
-          placeholder={"Search " + scopeLabel}
-          aria-label="Search"
-          class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-xl pl-8 pr-8 py-1.5 text-sm outline-none border-0 transition-colors"
-        />
-        <button
-          type="button"
-          class="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 cursor-pointer text-base-500 hover:text-base-800 dark:hover:text-base-200 rounded-lg"
-          aria-label="Close search"
-          onclick={collapse}
-        >
-          <IconX class="size-4" />
-        </button>
-      </form>
-    </div>
+    <!-- Navbar-wide search UI: on mobile the expandable searchbar, on desktop
+         the fixed-width searchbar at the right edge of the navbar -->
+    <div
+      class={[
+        "flex items-center",
+        expanded ? "absolute inset-0 px-2 sm:static" : "hidden sm:flex",
+      ].join(" ")}
+    >
+      <!-- Mobile expanded searchbar: takes up the whole navbar, so MainLayout
+           hides the page-provided navbar content while it is open. -->
+      <div class="sm:hidden flex items-center w-full" class:hidden={!expanded}>
+        <form class="relative w-full" onsubmit={submit}>
+          <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
+          <input
+            bind:this={searchInput}
+            bind:value={query}
+            type="search"
+            placeholder={"Search " + scopeLabel}
+            aria-label="Search"
+            class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-xl pl-8 pr-8 py-1.5 text-sm outline-none border-0 transition-colors"
+          />
+          <button
+            type="button"
+            class="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 cursor-pointer text-base-500 hover:text-base-800 dark:hover:text-base-200 rounded-lg"
+            aria-label="Close search"
+            onclick={collapse}
+          >
+            <IconX class="size-4" />
+          </button>
+        </form>
+      </div>
 
-    <!-- Desktop: fixed-width searchbar on the right side of the navbar -->
-    <div class="hidden sm:block">
-      <form class="relative w-56" onsubmit={submit}>
-        <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
-        <input
-          bind:this={searchInput}
-          bind:value={query}
-          type="search"
-          placeholder={"Search " + scopeLabel}
-          aria-label="Search"
-          class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-xl pl-8 pr-3 py-1.5 text-sm outline-none border-0 transition-colors"
-        />
-      </form>
+      <!-- Desktop: fixed-width searchbar on the right side of the navbar -->
+      <div class="hidden sm:block">
+        <form class="relative w-56" onsubmit={submit}>
+          <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
+          <input
+            bind:this={searchInput}
+            bind:value={query}
+            type="search"
+            placeholder={"Search " + scopeLabel}
+            aria-label="Search"
+            class="w-full ring-1 ring-inset ring-base-300 dark:ring-base-700 focus:ring-2 focus:ring-accent-500 bg-base-100 dark:bg-base-800/50 focus:bg-accent-400/5 dark:focus:bg-accent-600/5 text-base-900 dark:text-base-100 placeholder:text-base-400 dark:placeholder:text-base-500 rounded-xl pl-8 pr-3 py-1.5 text-sm outline-none border-0 transition-colors"
+          />
+        </form>
+      </div>
     </div>
-  </div>
+  {/if}
 {/if}

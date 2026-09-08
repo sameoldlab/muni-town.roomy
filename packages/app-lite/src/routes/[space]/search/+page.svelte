@@ -51,12 +51,6 @@
         />
       </span>
     {/if}
-    <IconSearch class="size-4 shrink-0 text-base-500" />
-    <span
-      class="text-sm font-medium text-base-700 dark:text-base-300 truncate"
-    >
-      Search
-    </span>
   </div>
 {/snippet}
 
@@ -81,7 +75,7 @@
       {query}
       {spaceId}
       scopeLabel={`"${currentSpace?.name ?? "this space"}"`}
-      placeholder={`Search messages in ${currentSpace?.name ?? "this space"}…`}
+      placeholder={`Search rooms and messages in ${currentSpace?.name ?? "this space"}…`}
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />
   {/if}
