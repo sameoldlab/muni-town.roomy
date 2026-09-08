@@ -39,6 +39,7 @@
     roomId,
     hrefFor,
     disableRoomsSearch = false,
+    expandScope = null,
   }: {
     /** Initial search term (e.g. the URL `?q=` param). */
     query: string;
@@ -55,6 +56,10 @@
     roomId?: string;
     /** Deep-link builder for a result. */
     hrefFor: (m: SearchMessage) => string;
+    /** Widen-the-search link shown at the bottom of the results; omitted
+     *  for directory searches (already the widest scope). The current term
+     *  is appended as `?q=` by the component. */
+    expandScope?: { label: string; href: string } | null;
   } = $props();
 
   // ── Term state ────────────────────────────────────────────────────────
@@ -217,9 +222,14 @@
 
       {#if term.length >= 3 && rooms.length > 0}
         <section class="flex flex-col gap-2">
-          <h2 class="text-xs font-semibold uppercase tracking-wider text-base-400 dark:text-base-500">
-            Rooms &amp; threads
-          </h2>
+          <div class="flex items-center justify-between gap-2 pl-2">
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-base-400 dark:text-base-500">
+              Channels &amp; threads
+            </h2>
+            <span class="text-xs text-base-400 shrink-0">
+              {rooms.length} {rooms.length === 1 ? "result" : "results"}
+            </span>
+          </div>
           <ul class="flex flex-col gap-1">
             {#each rooms as r (r.id)}
               <li>
@@ -257,7 +267,10 @@
         {#if messages.length === 0}
           <p class="text-sm text-base-400">No messages found.</p>
         {:else}
-          <div class="flex items-center justify-end gap-2">
+          <div class="flex items-center justify-between gap-2 pl-2">
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-base-400 dark:text-base-500">
+              Messages
+            </h2>
             <span class="text-xs text-base-400 shrink-0">
               {messages.length} {messages.length === 1 ? "result" : "results"}
             </span>
@@ -481,6 +494,18 @@
               </div>
             </div>
           {/if}
+        {/if}
+
+        {#if expandScope}
+          <div class="flex justify-center pt-1">
+            <a
+              href={`${expandScope.href}?q=${encodeURIComponent(term)}`}
+              class="inline-flex items-center gap-1 text-sm font-medium text-accent-600 dark:text-accent-400 hover:text-accent-700 dark:hover:text-accent-300 hover:underline"
+            >
+              {expandScope.label}
+              <IconChevronRight class="size-3.5 shrink-0" />
+            </a>
+          </div>
         {/if}
       {/if}
     </div>

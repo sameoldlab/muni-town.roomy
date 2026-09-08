@@ -6,6 +6,7 @@
   import SearchResultsList from "$lib/components/search/SearchResultsList.svelte";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { createRoomMetadataQuery } from "$lib/queries/room-metadata";
+  import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
   import type { SearchMessage } from "$lib/queries/search";
   import { resolveBlobUrl } from "$lib/utils";
   import SpaceAvatar from "@roomy/design/components/spaces/SpaceAvatar.svelte";
@@ -35,6 +36,49 @@
   // a thread-scoped search is the thread alone — no rooms-and-threads
   // name section (the parent channel isn't in scope either).
   const isThread = $derived(roomMetaQuery.data?.kind === "thread");
+
+  // The parent channel of a thread-scoped search, for the widen-search
+  // link. Resolved from the space sidebar (`space.getMetadata`, already
+  // cached by the [space] layout — no extra fetch); an inactive thread
+  // may be missing from the sidebar, so the label then falls back to
+  // the space name and the link to the space search.
+  const spaceMetaQuery = createSpaceMetadataQuery(() => spaceId);
+  const parentChannel = $derived.by<{ id: string; name?: string } | undefined>(() => {
+    const meta = spaceMetaQuery.data;
+    if (!meta || !isThread) return undefined;
+    const find = (channels: typeof meta.sidebar.orphans) => {
+      for (const ch of channels) {
+        if (ch.activeThreads?.some((t) => t.id === roomId)) {
+          return { id: ch.id, name: ch.name };
+        }
+      }
+      return undefined;
+    };
+    for (const cat of meta.sidebar.categories) {
+      const found = find(cat.channels);
+      if (found) return found;
+    }
+    return find(meta.sidebar.orphans);
+  });
+
+  // Widen-the-search link for the bottom of the results. A channel search
+  // widens to the space; a thread search widens to its parent channel
+  // (which also covers the thread itself).
+  const widenScope = $derived(
+    roomMetaQuery.data?.kind === "channel"
+      ? {
+          label: `Search in ${currentSpace?.name ?? "this space"}`,
+          href: `/${spaceId}/search`,
+        }
+      : isThread
+        ? {
+            label: `Search in ${parentChannel?.name ?? currentSpace?.name ?? "this space"}`,
+            href: parentChannel
+              ? `/${spaceId}/${parentChannel.id}/search`
+              : `/${spaceId}/search`,
+          }
+        : null,
+  );
 
   onMount(() => {
     setNavbar(searchNavbar);
@@ -93,7 +137,9 @@
       placeholder={isThread
         ? `Search messages in ${roomName}…`
         : `Search rooms and messages in ${roomName}…`}
+      scopeLabel={`"${roomName}"`}
       disableRoomsSearch={isThread}
+      expandScope={widenScope}
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />
   {/if}

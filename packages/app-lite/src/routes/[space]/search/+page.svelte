@@ -76,6 +76,7 @@
       {spaceId}
       scopeLabel={`"${currentSpace?.name ?? "this space"}"`}
       placeholder={`Search rooms and messages in ${currentSpace?.name ?? "this space"}…`}
+      expandScope={{ label: "Search in all your spaces", href: "/search" }}
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />
   {/if}
