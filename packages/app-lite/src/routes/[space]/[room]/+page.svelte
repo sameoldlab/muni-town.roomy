@@ -218,9 +218,12 @@
     {/if}
 
     {#if roomKind === "channel"}
-      <span class="grow sm:hidden"></span>
+      <!-- On narrow navbar containers the toggle floats right-aligned,
+           immediately left of the search icon; once the container is wide
+           enough for the searchbar it centers in the navbar. -->
+      <span class="grow @min-[40rem]:hidden"></span>
       <div
-        class="sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2"
+        class="@min-[40rem]:absolute @min-[40rem]:left-1/2 @min-[40rem]:top-1/2 @min-[40rem]:-translate-x-1/2 @min-[40rem]:-translate-y-1/2"
       >
         <ToggleTabs
           items={channelTabList.map((x) => ({

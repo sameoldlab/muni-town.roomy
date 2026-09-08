@@ -121,10 +121,13 @@
       <IconX class="size-5" />
     </button>
   {:else}
-    <!-- Mobile: collapsed search icon (top right) -->
+    <!-- Collapsed search icon: shown until the navbar container is wide
+         enough for the searchbar (the sidebar is visible from 640px, so
+         the navbar container only reaches 640px once the viewport is
+         wider than that). -->
     <button
       type="button"
-      class="sm:hidden shrink-0 p-1 cursor-pointer text-base-700 dark:text-base-200 rounded-lg hover:bg-base-200/50 dark:hover:bg-base-900/30"
+      class="@min-[40rem]:hidden shrink-0 p-1 cursor-pointer text-base-700 dark:text-base-200 rounded-lg hover:bg-base-200/50 dark:hover:bg-base-900/30"
       class:hidden={expanded}
       aria-label="Search"
       title="Search {scopeLabel}"
@@ -133,17 +136,20 @@
       <IconSearch class="size-5" />
     </button>
 
-    <!-- Navbar-wide search UI: on mobile the expandable searchbar, on desktop
-         the fixed-width searchbar at the right edge of the navbar -->
+    <!-- Navbar-wide search UI: on narrow containers the expandable
+         searchbar, on wide containers the fixed-width searchbar at the
+         right edge of the navbar. The breakpoint is a container query
+         (40rem = 640px) because the navbar's actual width depends on
+         whether the sidebar is visible, not on the viewport width. -->
     <div
       class={[
         "flex items-center",
-        expanded ? "absolute inset-0 px-2 sm:static" : "hidden sm:flex",
+        expanded ? "absolute inset-0 px-2 @min-[40rem]:static" : "hidden @min-[40rem]:flex",
       ].join(" ")}
     >
-      <!-- Mobile expanded searchbar: takes up the whole navbar, so MainLayout
+      <!-- Expanded searchbar: takes up the whole navbar, so MainLayout
            hides the page-provided navbar content while it is open. -->
-      <div class="sm:hidden flex items-center w-full" class:hidden={!expanded}>
+      <div class="@min-[40rem]:hidden flex items-center w-full" class:hidden={!expanded}>
         <form class="relative w-full" onsubmit={submit}>
           <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
           <input
@@ -165,8 +171,8 @@
         </form>
       </div>
 
-      <!-- Desktop: fixed-width searchbar on the right side of the navbar -->
-      <div class="hidden sm:block">
+      <!-- Wide container: fixed-width searchbar on the right side of the navbar -->
+      <div class="hidden @min-[40rem]:block">
         <form class="relative w-56" onsubmit={submit}>
           <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-base-400" />
           <input
@@ -180,5 +186,6 @@
         </form>
       </div>
     </div>
+
   {/if}
 {/if}
