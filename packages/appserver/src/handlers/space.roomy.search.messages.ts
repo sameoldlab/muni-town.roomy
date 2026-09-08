@@ -6,7 +6,7 @@
  * searched against the global `messages` collection, payload-filtered to
  * the caller's readable spaces (spaceId narrows the filter to one space;
  * roomId narrows it to one room — a channel plus its threads, or a thread
- * plus its parent channel). Results are over-fetched (limit×3), hydrated
+ * plus its parent channel). Results are over-fetched (limit×10), hydrated
  * via selectMessages (`{ kind: "ids" }`), post-filtered by per-room read
  * access, trimmed to `limit`, and returned ranked best-match-first.
  *
@@ -51,7 +51,7 @@ import type { MessageDto } from "../queries/selectMessages.ts";
 import { log } from "../log.ts";
 
 /** Over-fetch factor: Qdrant returns limit×this candidates, we post-filter. */
-const OVERFETCH = 3;
+const OVERFETCH = 10;
 
 type SearchHit = MessageDto & {
   roomId?: string;

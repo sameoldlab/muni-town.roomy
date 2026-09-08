@@ -408,16 +408,16 @@ describe("space.roomy.search.messages (Qdrant)", () => {
     const { roomId } = await materializeSpace(ctx, SPACE, USER, {
       messageText: "alpha page test one",
     });
-    // More matches than the window (limit=2 → window=6): 8 messages. The
-    // window is the searchable cap — only 6 are ever returned.
-    for (let i = 2; i <= 8; i++) {
+    // More matches than the window (limit=2 → window=20): 22 messages. The
+    // window is the searchable cap — only 20 are ever returned.
+    for (let i = 2; i <= 22; i++) {
       await sendMessage(ctx, roomId, `alpha page test message number ${i}`);
     }
 
     const seen: string[] = [];
     let cursor: string | undefined;
     let emptyPages = 0;
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 30; i++) {
       const url = `space.roomy.search.messages?spaceId=${SPACE}&q=page&limit=2${
         cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
       }`;
@@ -438,8 +438,8 @@ describe("space.roomy.search.messages (Qdrant)", () => {
     }
 
     // All window-capped matches walked exactly once, and the walk terminated.
-    expect(seen).toHaveLength(6);
-    expect(new Set(seen).size).toBe(6);
+    expect(seen).toHaveLength(20);
+    expect(new Set(seen).size).toBe(20);
     expect(emptyPages).toBeLessThanOrEqual(1);
   });
 

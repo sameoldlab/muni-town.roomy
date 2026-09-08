@@ -226,7 +226,7 @@ export interface SearchMessagesOptions {
    */
   roomIds?: string[];
   /**
-   * Window size to fetch. The handler over-fetches (limit×3) and slices by
+   * Window size to fetch. The handler over-fetches (limit×10) and slices by
    * cursor itself: Qdrant's sparse search returns points in an undefined
    * order among equal scores, so offset-based pagination can repeat points
    * (offset=1 may return the same point as offset=0). Fetching one window
