@@ -93,7 +93,7 @@
       placeholder={isThread
         ? `Search messages in ${roomName}…`
         : `Search rooms and messages in ${roomName}…`}
-      {disableRoomsSearch: isThread}
+      disableRoomsSearch={isThread}
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />
   {/if}
