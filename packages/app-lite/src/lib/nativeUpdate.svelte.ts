@@ -2,8 +2,12 @@ function persistedBool(key: string, defaultValue = false) {
   let value = $state(localStorage.getItem(key) === null ? defaultValue : localStorage.getItem(key) === 'true');
 
   return {
-    get value() { return value; },
+    get value() {
+      if (!('__TAURI__' in window)) return false;
+      return value;
+    },
     set value(v) {
+      if (!('__TAURI__' in window)) return
       value = v;
       localStorage.setItem(key, String(value));
     }
@@ -12,9 +16,7 @@ function persistedBool(key: string, defaultValue = false) {
 export const enableAutoupdate = persistedBool('autoUpdate', true)
 
 /** Run update in background if autoUpdate is enabled*/
-export const runUpdate = async () => {
-  if (!('__TAURI__' in window)) return
-  if (enableAutoupdate.value !== true) return
+export const tryUpdate = async () => {
   const update = await checkUpdate()
   if (!update) return
 
@@ -38,8 +40,8 @@ export const runUpdate = async () => {
 }
 
 export const checkUpdate = async () => {
-  if (!('__TAURI__' in window)) return null
-  const { check } = await import('@tauri-apps/plugin-updater');
+  if (!('__TAURI__' in window) || !('updater' in window.__TAURI__)) return null
+  const { check, } = await import('@tauri-apps/plugin-updater');
 
   return check();
 }

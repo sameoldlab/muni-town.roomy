@@ -9,7 +9,7 @@
   import { resolveBlobUrl } from "$lib/utils";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import Switch from "@roomy/design/components/ui/toggle/Toggle.svelte";
-  import { checkUpdate, enableAutoupdate } from "$lib/platform.svelte";
+  import { checkUpdate, enableAutoupdate } from "$lib/nativeUpdate.svelte";
   import type { Update as TauriUpdate } from "@tauri-apps/plugin-updater";
 
   const spacesQuery = createSpacesQuery({ includeLeft: true });
