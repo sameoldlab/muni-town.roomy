@@ -334,6 +334,11 @@
                         />
                       {:else if m.replyTo}
                         {#if replyPreview}
+                          <!-- MessageBubble renders the snippet into a plain
+                               block div — the avatar row and the message
+                               snippet are separate divs, so they need an
+                               explicit flex wrapper to sit on one line. -->
+                          <div class="flex gap-1 items-center">
                           <div class="flex gap-1 items-center shrink-0">
                             <IconReplyLine
                               width="28px"
@@ -379,13 +384,14 @@
                               >
                             {/if}
                           </div>
-                          <div class="flex items-center gap-1 italic">
+                          <div class="flex items-center gap-1 italic min-w-0">
                             {#if replyPreview.forwardedFrom}
                               <IconForward class="size-3.5 shrink-0 text-base-500 dark:text-base-400" />
                             {/if}
                             <span class="line-clamp-1 overflow-hidden">
                               {@html messageContentToPlaintext(replyPreviewContent, replyPreviewMime)}
                             </span>
+                          </div>
                           </div>
                         {:else}
                           <span class="italic text-base-400">Reply unavailable</span>
