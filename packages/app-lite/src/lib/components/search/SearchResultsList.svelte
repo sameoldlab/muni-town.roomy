@@ -34,17 +34,21 @@
     query,
     placeholder,
     scopeLabel,
-    disableRoomsSearch = false,
+    showSpaceInfo = false,
     spaceId,
+    roomId,
+    hrefFor,
+    disableRoomsSearch = false,
+  }: {
     /** Initial search term (e.g. the URL `?q=` param). */
     query: string;
     placeholder: string;
     /** Natural-language search scope for the hint, e.g. "all your spaces". */
     scopeLabel: string;
-    /** Skip the rooms-and-threads name section (thread-scoped searches). */
-    disableRoomsSearch?: boolean;
     /** Render the space + room context line above each result run (directory search). */
     showSpaceInfo?: boolean;
+    /** Skip the rooms-and-threads name section (thread-scoped searches). */
+    disableRoomsSearch?: boolean;
     /** Narrow the search to one space (space index search). */
     spaceId?: string;
     /** Narrow the search to one room (room-scoped search). */
