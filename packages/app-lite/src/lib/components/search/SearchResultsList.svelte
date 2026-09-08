@@ -34,16 +34,15 @@
     query,
     placeholder,
     scopeLabel,
-    showSpaceInfo = false,
+    disableRoomsSearch = false,
     spaceId,
-    roomId,
-    hrefFor,
-  }: {
     /** Initial search term (e.g. the URL `?q=` param). */
     query: string;
     placeholder: string;
     /** Natural-language search scope for the hint, e.g. "all your spaces". */
     scopeLabel: string;
+    /** Skip the rooms-and-threads name section (thread-scoped searches). */
+    disableRoomsSearch?: boolean;
     /** Render the space + room context line above each result run (directory search). */
     showSpaceInfo?: boolean;
     /** Narrow the search to one space (space index search). */
@@ -104,9 +103,13 @@
   // Room/thread name search (`space.roomy.search.rooms`), scoped to the
   // space when one is in context. Both endpoints are called for the same
   // term; the room results render above the message results. The directory
-  // search has no space to scope room results to, so the query stays
-  // disabled there (spaceId is undefined).
-  const roomsQuery = createSearchRoomsQuery(() => spaceId, () => term);
+  // search has no space to scope room results to, and a thread-scoped
+  // search is the thread alone (its parent channel isn't searched either),
+  // so the query stays disabled in both cases.
+  const roomsQuery = createSearchRoomsQuery(
+    () => (disableRoomsSearch ? undefined : spaceId),
+    () => term,
+  );
   const rooms = $derived(roomsQuery.data?.rooms ?? []);
 
   // Deep-link for a room/thread result. Threads link with their canonical

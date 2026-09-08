@@ -115,12 +115,13 @@ export const searchMessagesHandler: QueryHandler<
 
   // Room-scoped search (roomId): resolve the room's owning space and the
   // caller's read access up front, and derive the exact set of payload
-  // roomIds to search — a channel includes its linked threads, a thread
-  // includes its parent channel (both directions of the same conversation).
-  // Unlike the space/cross-space paths this never falls back to anonymous
-  // space reads: `requireSpaceRead` is only applied below when the roomId is
-  // scoping *inside* a caller-supplied spaceId. With no spaceId, room access
-  // alone decides (federated channels included).
+  // roomIds to search. A channel scope includes its linked threads; a
+  // thread scope is the thread alone — searching inside a thread must not
+  // surface the parent channel's messages (the "search within this thread"
+  // UI contract). Unlike the space/cross-space paths this never falls back
+  // to anonymous space reads: `requireSpaceRead` is only applied below when
+  // the roomId is scoping *inside* a caller-supplied spaceId. With no
+  // spaceId, room access alone decides (federated channels included).
   let roomScope: { spaceDid: string; roomIds: string[] } | null = null;
   if (roomId !== null) {
     const db = await openSpaceDbForEntity(roomId);
@@ -131,8 +132,6 @@ export const searchMessagesHandler: QueryHandler<
     if (row === null || row.spaceId === null) {
       throw new XrpcError(404, "NotFound", `Room not found: ${roomId}`);
     }
-    // A channel scope includes its linked threads, a thread scope includes
-    // its parent channel — one conversation, searchable from either side.
     // Threads are linked to their channel via a canonical `link` edge.
     const threadRows = await db
       .query(
@@ -165,7 +164,12 @@ export const searchMessagesHandler: QueryHandler<
     }
     roomScope = {
       spaceDid: row.spaceId,
-      roomIds: [roomId, ...(parentChannelId !== null ? [parentChannelId] : []), ...threadIds],
+      // Channel: the channel plus its linked threads (one conversation).
+      // Thread: just the thread — parent channel messages are not in scope.
+      roomIds:
+        parentChannelId !== null
+          ? [roomId]
+          : [roomId, ...threadIds],
     };
   }
 

@@ -31,6 +31,10 @@
   const roomName = $derived(
     roomMetaQuery.data?.name ?? (roomMetaQuery.isSuccess ? "room" : "…"),
   );
+  // `space.roomy.room.getMetadata` reports the kind (`channel`/`thread`):
+  // a thread-scoped search is the thread alone — no rooms-and-threads
+  // name section (the parent channel isn't in scope either).
+  const isThread = $derived(roomMetaQuery.data?.kind === "thread");
 
   onMount(() => {
     setNavbar(searchNavbar);
@@ -86,7 +90,10 @@
       {query}
       {spaceId}
       {roomId}
-      placeholder={`Search rooms and messages in ${roomName}…`}
+      placeholder={isThread
+        ? `Search messages in ${roomName}…`
+        : `Search rooms and messages in ${roomName}…`}
+      {disableRoomsSearch: isThread}
       hrefFor={(m: SearchMessage) => `/${m.spaceId}/${m.roomId}?message=${m.id}`}
     />
   {/if}

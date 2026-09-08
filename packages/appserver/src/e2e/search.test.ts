@@ -562,13 +562,15 @@ describe("space.roomy.search.messages (Qdrant)", () => {
       expect(m.roomId).not.toBe(otherChannel);
     }
 
-    // Searching the linked thread by id finds the channel's message too.
+    // Searching the linked thread by id finds ONLY the thread's own
+    // messages — the parent channel's messages are not in scope for a
+    // thread-scoped search ("search within this thread").
     const threadRes = await get(ctx, `space.roomy.search.messages?roomId=${thread}&q=shared`);
     expect(threadRes.status).toBe(200);
     const threadBody = await threadRes.json();
     const threadRoomIds = new Set((threadBody.messages as Array<{ roomId: string }>).map((m) => m.roomId));
-    expect(threadRoomIds.has(general)).toBe(true);
     expect(threadRoomIds.has(thread)).toBe(true);
+    expect(threadRoomIds.has(general)).toBe(false);
     for (const m of threadBody.messages as Array<{ roomId: string }>) {
       expect(m.roomId).not.toBe(otherChannel);
     }
