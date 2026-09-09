@@ -21,6 +21,9 @@ import {
   seedReaction,
   seedUser,
   seedActivityItem,
+  seedReadPosition,
+  spaceDb,
+  readStateDb,
   type E2eContext,
 } from "./helpers.ts";
 import { _setAdminDids } from "../admin.ts";
@@ -30,6 +33,7 @@ import type { AsyncDatabase } from "../db/asyncDatabase.ts";
 
 const USER = "did:plc:e2e-user";
 const ADMIN = "did:plc:e2e-admin";
+const MENT = "did:plc:e2e-mentioned";
 const SPACE = "did:web:space-e2e.example";
 const ROOM = newUlid();
 const MSG_A = newUlid();
@@ -54,8 +58,8 @@ async function setupBasicSpace(): Promise<E2eContext> {
   seedSpace(db, SPACE, USER);
   seedJoinedSpace(db, USER, SPACE);
   seedRoom(db, ROOM, SPACE);
-  seedMessage(db, MSG_A, ROOM, SPACE, "a");
-  seedMessage(db, MSG_B, ROOM, SPACE, "b");
+  seedMessage(db, MSG_A, ROOM, SPACE, MSG_A);
+  seedMessage(db, MSG_B, ROOM, SPACE, MSG_B);
   return ctx;
 }
 
@@ -119,6 +123,39 @@ describe("space.roomy.space.getSpaces", () => {
     const body = await res.json();
     expect(body.spaces).toEqual([]);
   });
+
+  test("unreadRoomCount counts channels + engaged threads with unreads", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    // Channel with unread messages.
+    const channel = newUlid();
+    seedRoom(db, channel, SPACE);
+    seedReadPosition(db, USER, channel, "0", 3);
+
+    // Engaged thread with unread messages (user_thread_activity + read_positions).
+    const thread = newUlid();
+    seedRoom(db, thread, SPACE, "space.roomy.thread");
+    readStateDb(db).run(
+      `insert into user_thread_activity (user_did, thread_id, space_did, last_active_at, updated_at)
+       values (?, ?, ?, ?, ?)`,
+      [USER, thread, SPACE, Date.now(), Date.now()],
+    );
+    seedReadPosition(db, USER, thread, "0", 1);
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getSpaces?includeLeft=false`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const space = body.spaces.find((s: { id: string }) => s.id === SPACE);
+    expect(space).toBeDefined();
+    // Home cards show the combined rooms-with-unreads count.
+    expect(space.unreadRoomCount).toBe(2);
+    expect(space.unreadCount).toBe(4);
+  });
 });
 
 // ─── space.roomy.space.getMetadata ────────────────────────────────────────
@@ -152,6 +189,47 @@ describe("space.roomy.space.getMetadata", () => {
       `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=${SPACE}`,
     );
     expect(res.status).toBe(404);
+  });
+
+  test("sidebar channels carry activeThreads from user_thread_activity", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    // Channel with an engaged thread (user_thread_activity row + link edge).
+    const channel = newUlid();
+    seedRoom(db, channel, SPACE);
+    const thread = newUlid();
+    seedRoom(db, thread, SPACE, "space.roomy.thread");
+    spaceDb(db, SPACE).run(
+      `insert into comp_info (entity, name) values (?, ?)`,
+      [thread, "Engaged Thread"],
+    );
+    spaceDb(db, SPACE).run(
+      `insert into edges (head, tail, label, payload) values (?, ?, 'link', ?)`,
+      [channel, thread, JSON.stringify({ canonical_parent: 1 })],
+    );
+    readStateDb(db).run(
+      `insert into user_thread_activity (user_did, thread_id, space_did, last_active_at, updated_at)
+       values (?, ?, ?, ?, ?)`,
+      [USER, thread, SPACE, Date.now(), Date.now()],
+    );
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=${SPACE}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const allChannels = [
+      ...(body.sidebar.categories ?? []).flatMap((c: { channels: unknown[] }) => c.channels),
+      ...(body.sidebar.orphans ?? []),
+    ];
+    const ch = allChannels.find((c: { id: string }) => c.id === channel);
+    expect(ch).toBeDefined();
+    expect(ch.activeThreads).toBeDefined();
+    expect(ch.activeThreads).toHaveLength(1);
+    expect(ch.activeThreads[0].id).toBe(thread);
   });
 });
 
@@ -189,8 +267,43 @@ describe("space.roomy.space.getThreads", () => {
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toHaveProperty("threads");
-    expect(Array.isArray(body.threads)).toBe(true);
+    expect(body).toHaveProperty("rooms");
+    expect(Array.isArray(body.rooms)).toBe(true);
+  });
+
+  test("returns channels alongside threads, with kind", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    const channel = newUlid();
+    seedRoom(db, channel, SPACE);
+    spaceDb(db, SPACE).run(
+      "insert into comp_info (entity, name) values (?, ?)",
+      [channel, "general"],
+    );
+    const msgId = newUlid();
+    seedMessage(db, msgId, channel, SPACE, "a");
+    spaceDb(db, SPACE).run(
+      "update comp_content set timestamp = ? where entity = ?",
+      [Date.now(), msgId],
+    );
+    seedActivityItem(db, channel, SPACE, Date.now());
+    seedReadPosition(db, USER, channel, "a", 2);
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getThreads?spaceId=${SPACE}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const room = body.rooms.find((x: { id: string }) => x.id === channel);
+    expect(room).toBeDefined();
+    expect(room.kind).toBe("channel");
+    expect(room.name).toBe("general");
+    expect(room.unreadCount).toBe(2);
+    expect(room.unread).toBe(true);
+    expect(room.channel).toBeUndefined();
   });
 
   test("empty space → empty array", async () => {
@@ -203,7 +316,47 @@ describe("space.roomy.space.getThreads", () => {
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.threads).toEqual([]);
+    expect(body.rooms).toEqual([]);
+  });
+
+  test("threads the user never engaged with read as unread (honest view)", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    // A thread with messages, linked from a channel. The user has NO
+    // user_thread_activity row and NO read_positions row for it.
+    const channel = newUlid();
+    seedRoom(db, channel, SPACE);
+    const thread = newUlid();
+    seedRoom(db, thread, SPACE, "space.roomy.thread");
+    // Canonical parent link (channel → thread).
+    spaceDb(db, SPACE).run(
+      `insert into edges (head, tail, label, payload) values (?, ?, 'link', ?)`,
+      [channel, thread, JSON.stringify({ canonical_parent: 1 })],
+    );
+    const msgId = newUlid();
+    seedMessage(db, msgId, thread, SPACE, "a");
+    // comp_content.timestamp drives latestTimestamp in listThreadActivity;
+    // seedMessage leaves it null, so set it explicitly.
+    spaceDb(db, SPACE).run(
+      "update comp_content set timestamp = ? where entity = ?",
+      [Date.now(), msgId],
+    );
+    seedActivityItem(db, thread, SPACE, Date.now());
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getThreads?spaceId=${SPACE}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const t = body.rooms.find((x: { id: string }) => x.id === thread);
+    expect(t).toBeDefined();
+    expect(t.kind).toBe("thread");
+    // unreadCount is 0 (no read_positions row) but the honest flag is true.
+    expect(t.unreadCount).toBe(0);
+    expect(t.unread).toBe(true);
   });
 });
 
@@ -316,6 +469,41 @@ describe("space.roomy.room.getMetadata", () => {
     );
     expect(res.status).toBe(404);
   });
+
+  test("channel metadata reports engaged threads with unreads (Threads-tab badge)", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    const channel = newUlid();
+    seedRoom(db, channel, SPACE);
+
+    // Two engaged threads in the channel; one has unread messages.
+    const t1 = newUlid();
+    const t2 = newUlid();
+    for (const t of [t1, t2]) {
+      seedRoom(db, t, SPACE, "space.roomy.thread");
+      spaceDb(db, SPACE).run(
+        `insert into edges (head, tail, label, payload) values (?, ?, 'link', ?)`,
+        [channel, t, JSON.stringify({ canonical_parent: 1 })],
+      );
+      readStateDb(db).run(
+        `insert into user_thread_activity (user_did, thread_id, space_did, last_active_at, updated_at)
+         values (?, ?, ?, ?, ?)`,
+        [USER, t, SPACE, Date.now(), Date.now()],
+      );
+    }
+    seedReadPosition(db, USER, t1, "0", 2); // unread
+    seedReadPosition(db, USER, t2, "0", 0); // read
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.room.getMetadata?roomId=${channel}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.unreadThreadCount).toBe(1);
+  });
 });
 
 // ─── space.roomy.room.getThreads ─────────────────────────────────────────
@@ -346,6 +534,129 @@ describe("space.roomy.room.getThreads", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.threads).toEqual([]);
+  });
+});
+
+// ─── space.roomy.search.rooms ───────────────────────────────────────────
+
+describe("space.roomy.search.rooms", () => {
+  test("name search finds channels and threads with parent context", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    // Channels: "lobby", "coordination" (matching "c")
+    const lobby = newUlid();
+    seedRoom(db, lobby, SPACE);
+    spaceDb(db, SPACE).run(
+      `insert into comp_info (entity, name) values (?, ?)`,
+      [lobby, "lobby"],
+    );
+    const coordination = newUlid();
+    seedRoom(db, coordination, SPACE);
+    spaceDb(db, SPACE).run(
+      `insert into comp_info (entity, name) values (?, ?)`,
+      [coordination, "coordination"],
+    );
+
+    // Thread under coordination, named "coordination thread"
+    const thread = newUlid();
+    seedRoom(db, thread, SPACE, "space.roomy.thread");
+    spaceDb(db, SPACE).run(
+      `insert into comp_info (entity, name) values (?, ?)`,
+      [thread, "coordination thread"],
+    );
+    spaceDb(db, SPACE).run(
+      `insert into edges (head, tail, label, payload) values (?, ?, 'link', ?)`,
+      [coordination, thread, JSON.stringify({ canonical_parent: 1 })],
+    );
+
+    // Activity on the channel: a message from USER with a recent timestamp,
+    // plus an unread count so the board row renders unread state.
+    const msgId = newUlid();
+    seedMessage(db, msgId, coordination, SPACE, "a");
+    spaceDb(db, SPACE).run(
+      "update comp_content set timestamp = ? where entity = ?",
+      [Date.now(), msgId],
+    );
+    spaceDb(db, SPACE).run(
+      "insert or ignore into edges (head, tail, label) values (?, ?, 'author')",
+      [msgId, USER],
+    );
+    seedUser(db, USER, "author.test");
+    seedActivityItem(db, coordination, SPACE, Date.now());
+    seedReadPosition(db, USER, coordination, "a", 2);
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.search.rooms?spaceId=${SPACE}&q=coordination`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty("rooms");
+    // Channel first, then thread — both match "coordination".
+    const rooms = body.rooms as Array<{
+      id: string;
+      name: string;
+      kind: string;
+      canWrite: boolean;
+      channelId?: string;
+      channelName?: string;
+      unreadCount?: number;
+      unread?: boolean;
+      activity?: {
+        latestTimestamp?: string;
+        latestMembers: Array<{ did: string; name: string | null; avatar: string | null }>;
+        latestMessage?: { id: string; content: string };
+      };
+    }>;
+    expect(rooms.length).toBeGreaterThanOrEqual(2);
+    const channelHit = rooms.find((r) => r.id === coordination);
+    expect(channelHit).toBeDefined();
+    expect(channelHit!.kind).toBe("channel");
+    const threadHit = rooms.find((r) => r.id === thread);
+    expect(threadHit).toBeDefined();
+    expect(threadHit!.kind).toBe("thread");
+    expect(threadHit!.channelId).toBe(coordination);
+    expect(threadHit!.channelName).toBe("coordination");
+
+    // The channel carries board-style activity + unread state.
+    expect(channelHit!.activity).toBeDefined();
+    expect(channelHit!.activity!.latestTimestamp).toBeDefined();
+    expect(channelHit!.activity!.latestMembers.length).toBeGreaterThanOrEqual(1);
+    expect(channelHit!.activity!.latestMembers[0]!.did).toBe(USER);
+    expect(channelHit!.activity!.latestMessage?.content).toContain("hello");
+    expect(channelHit!.unreadCount).toBe(2);
+    expect(channelHit!.unread).toBe(true);
+
+    // The thread has no messages — empty activity, not unread.
+    expect(threadHit!.activity).toBeDefined();
+    expect(threadHit!.activity!.latestMembers).toEqual([]);
+    expect(threadHit!.activity!.latestTimestamp).toBeUndefined();
+    expect(threadHit!.unread).toBe(false);
+  });
+
+  test("empty query → 400", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.search.rooms?spaceId=${SPACE}&q=`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("non-member of private space → 403", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER, { allowPublicJoin: 0 });
+
+    const res = await ctx.authedFetch("did:plc:e2e-visitor")(
+      `${ctx.baseUrl}/xrpc/space.roomy.search.rooms?spaceId=${SPACE}&q=lobby`,
+    );
+    expect(res.status).toBe(403);
   });
 });
 
@@ -469,6 +780,59 @@ describe("space.roomy.message.getReactions", () => {
   });
 });
 
+// ─── space.roomy.mention.getMentions ─────────────────────────────────────
+
+describe("space.roomy.mention.getMentions", () => {
+  test("mention rows load messages from per-space DBs (no 'entities' table on global DB)", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    const MENTIONED = "did:plc:e2e-mentioned";
+
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+    seedRoom(db, ROOM, SPACE);
+    seedMessage(db, MSG_A, ROOM, SPACE, "a");
+    // Author profile lives in the global store; without it the read path
+    // tries on-demand hydration (network) and falls back to an empty name.
+    seedUser(db, USER, "author.test");
+    // Seed the mention row exactly as materialization dual-writes it.
+    await (ctx.db as unknown as AsyncDatabase)
+      .global()
+      .run(
+        "insert into mentions (did, message_id, space_did, room_id, created_at) values (?, ?, ?, ?, ?)",
+        [MENT, MSG_A, SPACE, ROOM, Date.now()],
+      );
+
+    const res = await ctx.authedFetch(MENT)(
+      `${ctx.baseUrl}/xrpc/space.roomy.mention.getMentions?did=${encodeURIComponent(MENT)}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mentions).toHaveLength(1);
+    expect(body.mentions[0].message.id).toBe(MSG_A);
+    expect(body.mentions[0].spaceId).toBe(SPACE);
+    expect(body.mentions[0].roomId).toBe(ROOM);
+  });
+
+  test("empty mentions → empty", async () => {
+    const ctx = await startAppserver();
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.mention.getMentions?did=${encodeURIComponent(USER)}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mentions).toEqual([]);
+  });
+
+  test("forbidden: querying another user's mentions", async () => {
+    const ctx = await startAppserver();
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.mention.getMentions?did=${encodeURIComponent("did:plc:someone-else")}`,
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
 // ─── space.roomy.room.updateSeen (procedure) ─────────────────────────────
 
 describe("space.roomy.room.updateSeen", () => {
@@ -488,6 +852,21 @@ describe("space.roomy.room.updateSeen", () => {
       .readState()
       .query("select seen_up_to from read_positions where user_did = ? and room_id = ?")
       .get<{ seen_up_to: string }>(USER, ROOM);
+    if (!row) throw new Error("read_positions row not written by updateSeen");
+    // seen_up_to is the last-read message's sort_idx (a ULID).
+    expect(row.seen_up_to.length).toBeGreaterThan(0);
+
+    // The HTTP read path surfaces the watermark as an ISO timestamp: with a
+    // real seen_up_to the sidebar can show "read at X" / unread semantics.
+    // (Regression guard for getReadPosition returning lastRead: null
+    // unconditionally — the field was write-only.)
+    const metaRes = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.room.getMetadata?roomId=${ROOM}`,
+    );
+    expect(metaRes.status).toBe(200);
+    const metaBody = await metaRes.json();
+    expect(metaBody.lastRead).toBeTypeOf("string");
+    expect(Number.isNaN(Date.parse(metaBody.lastRead))).toBe(false);
   });
 
   test("anonymous → 401", async () => {
@@ -644,6 +1023,86 @@ describe("space.roomy.space.leaveSpace", () => {
       {
         method: "POST",
         body: JSON.stringify({ spaceId: SPACE }),
+      },
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+// ─── space.roomy.space.reorderSpaces (procedure) ────────────────────────
+
+describe("space.roomy.space.reorderSpaces", () => {
+  test("authenticated → persists order and getSpaces reflects it", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    const SPACE2 = "did:web:space-two.example";
+    seedSpace(db, SPACE, USER);
+    seedSpace(db, SPACE2, USER);
+    seedJoinedSpace(db, USER, SPACE);
+    seedJoinedSpace(db, USER, SPACE2);
+
+    // Default order: most recently joined first. Seed distinct updated_at
+    // values so the tie-break is deterministic (SPACE2 joined after SPACE).
+    readStateDb(db).run(
+      "update user_space_membership set updated_at = ? where user_did = ? and space_did = ?",
+      [1000, USER, SPACE],
+    );
+    readStateDb(db).run(
+      "update user_space_membership set updated_at = ? where user_did = ? and space_did = ?",
+      [2000, USER, SPACE2],
+    );
+
+    const before = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getSpaces?includeLeft=false`,
+    );
+    const beforeBody = await before.json();
+    expect(beforeBody.spaces.map((s: { id: string }) => s.id)).toEqual([
+      SPACE2,
+      SPACE,
+    ]);
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.reorderSpaces`,
+      {
+        method: "POST",
+        body: JSON.stringify({ spaceIds: [SPACE, SPACE2] }),
+      },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getSpaces?includeLeft=false`,
+    );
+    const afterBody = await after.json();
+    expect(afterBody.spaces.map((s: { id: string }) => s.id)).toEqual([
+      SPACE,
+      SPACE2,
+    ]);
+  });
+
+  test("rejects a space the caller has not joined", async () => {
+    const ctx = await startAppserver();
+    const { db } = ctx;
+    seedSpace(db, SPACE, USER);
+    seedJoinedSpace(db, USER, SPACE);
+
+    const res = await ctx.authedFetch(USER)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.reorderSpaces`,
+      {
+        method: "POST",
+        body: JSON.stringify({ spaceIds: [SPACE, "did:web:not-joined.example"] }),
+      },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("anonymous → 401", async () => {
+    const ctx = await startAppserver();
+    const res = await ctx.anonFetch(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.reorderSpaces`,
+      {
+        method: "POST",
+        body: JSON.stringify({ spaceIds: [] }),
       },
     );
     expect(res.status).toBe(401);

@@ -15,6 +15,7 @@ const APPSERVER_RPCS = [
   "space.roomy.message.getMessage",
   "space.roomy.message.getReactions",
   "space.roomy.user.getProfile",
+  "space.roomy.user.getMembershipStatus",
   "space.roomy.embed.getLinkMetadata",
   "space.roomy.auth.getConnectionTicket",
   "space.roomy.getFlags",
@@ -23,10 +24,19 @@ const APPSERVER_RPCS = [
   "space.roomy.space.createSpace",
   "space.roomy.space.joinSpace",
   "space.roomy.space.leaveSpace",
+  "space.roomy.space.reorderSpaces",
   "space.roomy.space.setHandle",
+  "space.roomy.space.updatePolicy",
   "space.roomy.space.getCalendarLink",
   "space.roomy.space.getCalendarEvents",
   "space.roomy.space.getActivityFeed",
+  "space.roomy.search.messages",
+  "space.roomy.search.rooms",
+  // Channel federation
+  "space.roomy.federation.getRequests",
+  "space.roomy.federation.getIncoming",
+  "space.roomy.federation.getOutgoing",
+  "space.roomy.federation.getGrants",
   // Web push notification endpoints
   "space.roomy.push.getVapidPublicKey",
   "space.roomy.push.getPreferences",
@@ -62,6 +72,21 @@ export const CONFIG = {
   /** Test-mode app-password credentials (bake into env for headless E2E). */
   testIdentifier: dynamicEnv.PUBLIC_TEST_IDENTIFIER || null,
   testAppPassword: dynamicEnv.PUBLIC_TEST_APP_PASSWORD || null,
+  /**
+   * Grafana Faro endpoint for browser telemetry (frontend log collection).
+   * Points at an Alloy `faro.receiver` (dev compose: http://127.0.0.1:12345,
+   * prod: the deploy/alloy collector). When unset the Faro SDK is never
+   * loaded/initialized — dev/build default is disabled.
+   */
+  faroUrl: dynamicEnv.PUBLIC_FARO_URL || null,
+  /**
+   * Faro API key sent as `x-api-key` with each telemetry POST. The dev
+   * compose `faro.receiver` requires the placeholder "bad_api_key"; prod
+   * defaults to no key (FARO_API_KEY unset on the collector). Note: a key
+   * baked into a static client bundle is readable by anyone — it only gates
+   * random browsers from writing to the collector, it is not a secret.
+   */
+  faroApiKey: dynamicEnv.PUBLIC_FARO_API_KEY || null,
 };
 
 export const OAUTH_SCOPE = [
@@ -79,5 +104,13 @@ export const OAUTH_SCOPE = [
   // Allow calling getServiceAuth on the appserver's PDS to obtain
   // service auth tokens for direct (non-proxied) XRPC calls.
   `rpc:com.atproto.server.getServiceAuth?aud=${CONFIG.appserverDid}`,
+  // Allow obtaining serviceAuth tokens targeted at any arbiter server (the
+  // arbiter DID is discovered per space from its service record), so the
+  // client can call `town.muni.arbiter.proxy` directly (acting on a space's
+  // stewarded account). aud=* because the arbiter DID is per-space.
+  `rpc:com.atproto.server.getServiceAuth?aud=*`,
+  // The actual proxied method the token is minted for. aud=* because the
+  // arbiter DID (and thus the token's aud) is discovered per space.
+  `rpc:town.muni.arbiter.proxy?aud=*`,
   ...APPSERVER_RPCS.map((nsid) => `rpc:${nsid}?aud=*`),
 ].join(" ");

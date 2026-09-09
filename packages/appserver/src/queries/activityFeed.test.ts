@@ -22,6 +22,7 @@ import { StreamDid, UserDid } from "@roomy-space/sdk";
 import { closeDb, openDb, openReadStateDb, openSpaceDb } from "../db/db.ts";
 import type { DbLike } from "../db/types.ts";
 import { selectActivityFeed } from "./activityFeed.ts";
+import { _setTestGetProfiles } from "./profileStore.ts";
 import { setUserSpaceMembership } from "./userSpaceMembership.ts";
 
 const SPACE = "did:web:space.example";
@@ -63,6 +64,9 @@ function ulidForTimestamp(ts: number): string {
 function setup(): { readState: DbLike } {
   closeDb();
   openDb({ path: ":memory:" });
+  // Hermetic: without a stub, on-demand profile hydration in
+  // selectActivityFeed hits live api.bsky.app fetches.
+  _setTestGetProfiles(async () => []);
   const readState = openReadStateDb();
   return { readState };
 }
@@ -560,6 +564,56 @@ describe("selectActivityFeed", () => {
       expect(feed).toHaveLength(1);
       expect(feed[0]!.messages).toHaveLength(0);
     });
+
+    test("orders messages by canonical ts in {id, ts} entries", async () => {
+      // Regression: recent_message_ids now stores { id, ts } objects so the
+      // window orders by canonical message time (timestampOverride for
+      // bridged messages), not ULID time. The reader must assemble the feed
+      // in the stored order.
+      const { readState } = setup();
+      await seedSpace(SPACE);
+      await seedUser(SPACE, USER);
+      await seedJoinedSpace(USER, SPACE);
+      await seedRoom(SPACE, CHANNEL, "space.roomy.channel", "general");
+
+      // ULID times: msg1 ingested AFTER msg2 (bridge processed msg2 first).
+      const ingestTs1 = 1_717_536_100_000;
+      const ingestTs2 = 1_717_536_000_000;
+      // Discord times: msg1 is OLDER than msg2.
+      const discordTs1 = 1_700_000_000_000;
+      const discordTs2 = 1_700_000_100_000;
+      const msg1 = await postMessage(SPACE, CHANNEL, USER, ingestTs1, "older discord msg");
+      const msg2 = await postMessage(SPACE, CHANNEL, USER, ingestTs2, "newer discord msg");
+
+      const db = openSpaceDb(SPACE);
+      await db.run(
+        `insert into activity_item
+           (room_id, space_id, is_thread, parent_channel_id, parent_channel_name,
+            last_activity_at, recent_message_ids,
+            room_name, space_name, space_avatar,
+            created_at, updated_at)
+         values (?, ?, 0, null, null, ?, ?, 'general', 'Test Space', null,
+                 (unixepoch() * 1000), (unixepoch() * 1000))`,
+        [
+          CHANNEL,
+          SPACE,
+          discordTs2,
+          JSON.stringify([
+            { id: msg2, ts: discordTs2 },
+            { id: msg1, ts: discordTs1 },
+          ]),
+        ],
+      );
+
+      const { feed } = await selectActivityFeed(readState, USER, {
+        limit: 50,
+        cursor: null,
+      });
+
+      expect(feed).toHaveLength(1);
+      expect(feed[0]!.messages.map((m) => m.id)).toEqual([msg2, msg1]);
+      expect(feed[0]!.lastActivityAt).toBe(new Date(discordTs2).toISOString());
+    });
   });
 
   describe("unread counts", () => {
@@ -648,5 +702,6 @@ describe("selectActivityFeed", () => {
 });
 
 afterEach(() => {
+  _setTestGetProfiles(null);
   closeDb();
 });

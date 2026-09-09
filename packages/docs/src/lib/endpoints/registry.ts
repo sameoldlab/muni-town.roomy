@@ -142,24 +142,27 @@ export const endpoints: EndpointGroup[] = [
         nsid: "space.roomy.space.getThreads",
         kind: "query",
         description:
-          "Returns all threads in a space for the board/index view, with latest activity metadata. Supports cursor-based pagination. Threads are hidden when their parent channel is unreadable to the caller.",
+          "Returns all rooms (channels + threads) in a space for the index board, ordered by latest activity, with per-room activity metadata. Supports cursor-based pagination. Rooms are hidden when unreadable to the caller (threads inherit visibility from their canonical parent channel).",
         sourceFile: "space.roomy.space.getThreads.ts",
         auth: "Caller must be a member OR admin of the space.",
         params: [
           { name: "spaceId", type: "string", required: true, description: "DID of the space stream." },
           { name: "limit", type: "int", required: false, default: "50", description: "Items per page (1-100)." },
           { name: "cursor", type: "string", required: false, description: "Opaque cursor from previous response for pagination." },
+          { name: "search", type: "string", required: false, description: "Case-insensitive substring filter on room name." },
         ],
         outputSchema: {
           type: "object",
           properties: {
-            threads: { type: "Array<ThreadRow>", description: "List of threads. Each has: id, name, channel, channelName, unreadCount, activity (latestTimestamp, latestMembers)." },
+            rooms: { type: "Array<RoomRow>", description: "List of rooms. Each has: id, kind ('thread' | 'channel'), name, channel, channelName (threads), unreadCount, unread, activity (latestTimestamp, latestMembers, latestMessage)." },
             cursor: { type: "string | undefined", description: "Present when more pages are available." },
           },
         },
         notes: [
-          "Uses a per-request access memo to avoid re-querying space-level membership for each thread.",
-          "Batch-fetches read positions and channel names for all threads in one query each.",
+          "Despite the NSID this endpoint returns channels AND threads; the name is historical.",
+          "Uses a per-request access memo to avoid re-querying space-level membership for each room.",
+          "Batch-fetches read positions and channel names for all rooms in one query each.",
+          "Invalidated on message create/edit/delete (board reorder + preview) and on updateSeen (unread dots, caller-scoped).",
         ],
       },
       {
@@ -458,7 +461,7 @@ export const endpoints: EndpointGroup[] = [
         outputSchema: {
           type: "object",
           properties: {
-            messages: { type: "Array<MessageDto>", description: "Messages. Each has: id, content, authorDid, authorName, authorAvatar, timestamp, replyTo, forwardedFrom, reactions, media, tags." },
+            messages: { type: "Array<MessageDto>", description: "Messages. Each has: id, content, authorDid, authorName, authorAvatar, timestamp, replyTo, forwardedFrom (with nested denormalised message), reactions, media, tags." },
             cursor: { type: "string | null", description: "Next page cursor, null if no more pages." },
           },
         },
@@ -537,7 +540,7 @@ export const endpoints: EndpointGroup[] = [
             authorAvatar: { type: "string | null", description: "Avatar URL of the author." },
             timestamp: { type: "string", description: "ISO timestamp." },
             replyTo: { type: "string | null", description: "Parent message ID." },
-            forwardedFrom: { type: "{ name: string; roomId: string } | null", description: "Original source if forwarded." },
+            forwardedFrom: { type: "{ messageId: string; name: string; roomId: string; message?: MessageDto } | null", description: "Original source if forwarded; message carries the fully denormalised original." },
             reactions: { type: "Array<{ emoji: string; dids: string[] }>", description: "Reactions grouped by emoji." },
             media: { type: "Array<{ url: string; type: string; alt: string | null }>", description: "Attached media." },
             tags: { type: "string[]", description: "Message tags." },

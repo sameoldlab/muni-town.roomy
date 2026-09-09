@@ -42,6 +42,7 @@ describe("createAppserver factory", () => {
       quiet: true,
       ownDid: "did:web:test.example",
       serviceEndpoint: "http://test.example",
+      disableBackgroundWorkers: true,
     });
 
     const base = `http://localhost:${handle.port}`;
@@ -69,6 +70,45 @@ describe("createAppserver factory", () => {
 
   });
 
+  test("/metrics exposes Prometheus text format with core families", async () => {
+    handle = await createAppserver({
+      port: ephemeralPort(),
+      authVerifier: testAuthVerifier,
+      dbPath: ":memory:",
+      readStateDbPath: ":memory:",
+      quiet: true,
+      ownDid: "did:web:test.example",
+      serviceEndpoint: "http://test.example",
+      disableBackgroundWorkers: true,
+    });
+
+    const base = `http://localhost:${handle.port}`;
+
+    // Hit a real endpoint so the request counter/histogram have a sample.
+    await fetch(`${base}/health`);
+
+    const res = await fetch(`${base}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const body = await res.text();
+
+    // Core families present in Prometheus text exposition format.
+    for (const name of [
+      "roomy_xrpc_requests_total",
+      "roomy_xrpc_request_duration_seconds",
+      "roomy_pool_size",
+      "roomy_pool_worker_pending",
+      "roomy_cache_hits_total",
+      "roomy_embed_pending",
+      "roomy_db_timeouts_total",
+    ]) {
+      expect(body).toContain(`# TYPE ${name}`);
+    }
+    // The /health hit should have been recorded as a request.
+    expect(body).toContain('endpoint="/health"');
+    expect(body).toContain('method="GET"');
+  });
+
   test("getConnectionTicket works with test auth header", async () => {
     handle = await createAppserver({
       port: ephemeralPort(),
@@ -76,7 +116,7 @@ describe("createAppserver factory", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
 
     const base = `http://localhost:${handle.port}`;
@@ -110,7 +150,7 @@ describe("createAppserver factory", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
 
     const base = `http://localhost:${handle.port}`;
@@ -134,7 +174,7 @@ describe("createAppserver factory", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
       corsOrigin: "https://app.test",
     });
 
@@ -161,7 +201,7 @@ describe("createAppserver factory", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
 
     const base = `http://localhost:${handle.port}`;
@@ -217,7 +257,7 @@ describe("query response cache", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
     seedMinimalSpace("did:web:cache-test.space", "did:plc:user1");
     const base = `http://localhost:${handle.port}`;
@@ -269,7 +309,7 @@ describe("query response cache", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
     seedMinimalSpace("did:web:cache-test.space", "did:plc:user1");
     // Also seed user2's entity (the space entity already exists).
@@ -283,9 +323,16 @@ describe("query response cache", () => {
     const url = `${base}/xrpc/space.roomy.space.getMetadata?spaceId=did:web:cache-test.space`;
     const cache = handle.queryCache!;
 
-    // Two users fetch the same space.
-    await fetch(url, { headers: { "X-Test-Did": "did:plc:user1" } });
-    await fetch(url, { headers: { "X-Test-Did": "did:plc:user2" } });
+    // Two users fetch the same space. Check the requests actually succeeded
+    // before asserting cache state — a transient handler failure would
+    // otherwise surface as a confusing size mismatch instead of a 500.
+    const r1 = await fetch(url, { headers: { "X-Test-Did": "did:plc:user1" } });
+    expect(r1.status).toBe(200);
+    const r2 = await fetch(url, { headers: { "X-Test-Did": "did:plc:user2" } });
+    expect(r2.status).toBe(200);
+    // Per-user keys: each user's first fetch is a miss and both entries are
+    // stored (user1's entry does not satisfy user2's request).
+    expect(cache.stats.misses).toBe(2);
     expect(cache.stats.size).toBe(2);
 
     // Per-user invalidation for user1 only.
@@ -323,7 +370,7 @@ describe("query response cache", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
       disableQueryCache: true,
     });
     seedMinimalSpace("did:web:cache-test.space", "did:plc:user1");
@@ -349,7 +396,7 @@ describe("query response cache", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
     seedMinimalSpace("did:web:cache-test.space", "did:plc:user1");
 
@@ -376,7 +423,7 @@ describe("query response cache", () => {
       dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
-      disableEmbedSweeper: true,
+      disableBackgroundWorkers: true,
     });
 
     const base = `http://localhost:${handle.port}`;
@@ -387,6 +434,11 @@ describe("query response cache", () => {
     expect(body.size).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(body.spaceWorkers)).toBe(true);
     expect(body.spaceWorkers.length).toBe(body.size);
-    expect(body.systemWorker).toBeDefined();
+    expect(body.globalWorker).toBeDefined();
+    expect(typeof body.globalWorker.pending).toBe("number");
+    expect(body.readStateWorker).toBeDefined();
+    expect(typeof body.readStateWorker.pending).toBe("number");
+    expect(body.eventsWorker).toBeDefined();
+    expect(typeof body.eventsWorker.pending).toBe("number");
   });
 });

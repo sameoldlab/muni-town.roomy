@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import { ulid } from "ulidx";
 import {
@@ -148,6 +148,53 @@ describe("applyBatch", () => {
       .query("select backfilled_to from comp_space where entity = ?")
       .get<{ backfilled_to: number }>(STREAM);
     expect(cursor?.backfilled_to).toBe(5);
+  })
+
+  test("emits structured materialization progress + done telemetry", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpace(db, STREAM);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    let lines: string[] = [];
+    try {
+      // 1500 events → chunked at 500, so the ~10% interval log fires for
+      // the first two chunks and the done line always fires.
+      const events: DecodedStreamEvent[] = [];
+      for (let i = 0; i < 1500; i++) {
+        events.push(decoded(createRoomEvent(`room-${i}`), i));
+      }
+      await applyBatch(asyncDb, STREAM, events, { isBackfill: true });
+      // Snapshot the captured lines BEFORE restore — mockRestore() wipes
+      // the recorded calls.
+      lines = infoSpy.mock.calls
+        .map((c) => c[0] as string)
+        .filter((l) => typeof l === "string" && l.includes('"scope":"materialize"'));
+    } finally {
+      infoSpy.mockRestore();
+    }
+
+    const doneLine = lines
+      .map((l) => JSON.parse(l))
+      .find((p) => p.msg.includes("done"));
+    const progressLine = lines
+      .map((l) => JSON.parse(l))
+      .find((p) => p.msg.includes("progress"));
+
+    // Progress fires while the batch is mid-flight (done < total).
+    expect(progressLine).toBeDefined();
+    expect(typeof progressLine.streamId).toBe("string");
+    expect(progressLine.total).toBe(1500);
+    expect(progressLine.applied).toBeGreaterThan(0);
+    expect(typeof progressLine.pct).toBe("number");
+    expect(typeof progressLine.isBackfill).toBe("boolean");
+
+    // Done fires once with the final count.
+    expect(doneLine).toBeDefined();
+    expect(doneLine.streamId).toBe(STREAM);
+    expect(doneLine.total).toBe(1500);
+    expect(doneLine.applied).toBe(1500);
+    expect(doneLine.materializerErrors).toBe(0);
+    expect(doneLine.applyErrors).toBe(0);
   })
 
   test("counts materialiser errors without aborting the batch", async () => {
@@ -578,14 +625,14 @@ function forwardMessageEvent(
 }
 
 describe("forwardMessages sort order", () => {
-  // Regression: forward-reference entities got no sort_idx, so selectMessages
-  // fell back to ordering by the forward event's own ULID. A thread-creation
-  // batch forwards several messages within the same millisecond, so those
-  // ULIDs differ only in their random suffixes and the original chronological
-  // order of the forwarded messages was scrambled (older forwarded messages
-  // could appear after newer ones). The fix copies the original message's
-  // sort_idx onto the forward-reference entity.
-  test("forwarded messages sort by the original's timestamp, not the forward event's", async () => {
+  // Regression: forward-reference entities copied the ORIGINAL message's
+  // sort_idx, so a forward of an old message was buried deep in the
+  // destination room's timeline — outside the first getMessages page (the
+  // room query returns the newest `limit` rows). The forward flashed in via
+  // the WS diff and vanished on the next refetch. The fix sorts the forward
+  // by the forward event's OWN time, so it appears at the top of the
+  // destination room, matching the modern forward-as-embed representation.
+  test("forwarded messages sort by the forward event's time, not the original's", async () => {
     const { db, asyncDb } = freshDb();
     seedSpace(db, STREAM);
 
@@ -600,12 +647,12 @@ describe("forwardMessages sort order", () => {
     const msgOld = createMessageEvent(channelId, msgOldId, "old msg");
     const msgNew = createMessageEvent(channelId, msgNewId, "new msg");
 
-    // Forward both into the thread. To reproduce the pre-fix scramble
-    // deterministically, give the NEWER original's forward an EARLIER forward
-    // event id than the OLDER original's forward. Before the fix the forward
-    // references sorted by event id, so the newer-original forward would come
-    // first (older-after-newer). After the fix they sort by the originals'
-    // sort_idx, restoring chronological order.
+    // Forward both into the thread. The forward events are created AFTER the
+    // originals (T_fwd > T_new), so both forwards sort above both originals
+    // in the thread. Give the NEWER original's forward an EARLIER forward
+    // event id than the OLDER original's forward: the forwards must order by
+    // their own event times (fwdNew first), NOT by the originals' times
+    // (which would put fwdOld first).
     const T_fwd = T_new + 120_000;
     const fwdNewId = ulid(T_fwd); // newer original, earlier forward id
     const fwdOldId = ulid(T_fwd + 5_000); // older original, later forward id
@@ -631,12 +678,87 @@ describe("forwardMessages sort order", () => {
       cursor: null,
     });
 
-    // Ascending: the older original's forward first, then the newer's.
+    // Ascending: the earlier forward event first, then the later one —
+    // regardless of the originals' timestamps. Legacy forward references
+    // carry no own content — the original is nested under
+    // `forwardedFrom.message` (never substituted into the row).
     expect(messages).toHaveLength(2);
-    expect(messages[0]?.id).toBe(fwdOldId);
-    expect(messages[0]?.content).toBe("old msg");
-    expect(messages[1]?.id).toBe(fwdNewId);
-    expect(messages[1]?.content).toBe("new msg");
+    expect(messages[0]?.id).toBe(fwdNewId);
+    expect(messages[0]?.content).toBe("");
+    expect(messages[0]?.forwardedFrom?.message?.id).toBe(msgNewId);
+    expect(messages[0]?.forwardedFrom?.message?.content).toBe("new msg");
+    expect(messages[1]?.id).toBe(fwdOldId);
+    expect(messages[1]?.content).toBe("");
+    expect(messages[1]?.forwardedFrom?.message?.id).toBe(msgOldId);
+    expect(messages[1]?.forwardedFrom?.message?.content).toBe("old msg");
+  });
+})
+
+describe("forward-as-embed (createMessage + forward attachment)", () => {
+  // The modern representation of a forward: a `createMessage` event carrying
+  // a `space.roomy.attachment.forward.v0` attachment creates a real message in
+  // the destination room (with the forwarder's own body) plus a `forward`
+  // edge to the original. selectMessages keeps the forwarder's own content
+  // and surfaces `forwardedFrom` for the embed.
+  test("creates a real message with its own content and a forward edge", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpace(db, STREAM);
+
+    const channelId = newUlid();
+    const threadId = newUlid();
+    seedChannelAndThread(db, channelId, threadId);
+
+    const originalId = ulid(1_700_000_000_000);
+    const original = createMessageEvent(channelId, originalId, "original text");
+
+    const fwdId = ulid(1_700_000_100_000);
+    const fwd: Event = {
+      $type: "space.roomy.message.createMessage.v0",
+      id: fwdId,
+      room: threadId,
+      body: {
+        mimeType: "text/markdown",
+        data: { buf: new TextEncoder().encode("my take on this") },
+      },
+      extensions: {
+        "space.roomy.extension.attachments.v0": {
+          $type: "space.roomy.extension.attachments.v0",
+          attachments: [
+            {
+              $type: "space.roomy.attachment.forward.v0",
+              target: originalId,
+              fromRoomId: channelId,
+            },
+          ],
+        },
+      },
+    } as unknown as Event;
+
+    await applyBatch(
+      asyncDb,
+      STREAM,
+      [decoded(original, 1), decoded(fwd, 2)],
+      { isBackfill: true },
+    );
+
+    // The forward message keeps its own content and author, and carries a
+    // forward edge to the original.
+    const edge = await asyncDb
+      .query("select tail from edges where head = ? and label = 'forward'")
+      .get<{ tail: string }>(fwdId);
+    expect(edge?.tail).toBe(originalId);
+
+    const { messages } = await selectMessages(asyncDb, {
+      kind: "room",
+      roomId: threadId,
+      limit: 100,
+      cursor: null,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.id).toBe(fwdId);
+    expect(messages[0]?.content).toBe("my take on this");
+    expect(messages[0]?.forwardedFrom?.messageId).toBe(originalId);
+    expect(messages[0]?.forwardedFrom?.roomId).toBe(channelId);
   });
 })
 
@@ -805,7 +927,7 @@ describe("applyBatch concurrency", () => {
       "create table if not exists readstate.read_positions (user_did text not null, room_id text not null, seen_up_to text not null, unread_count integer not null default 0, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, room_id)) strict",
     );
     db.exec(
-      "create table if not exists readstate.user_thread_activity (user_did text not null, thread_id text not null, last_active_at integer not null, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, thread_id)) strict",
+      "create table if not exists readstate.user_thread_activity (user_did text not null, thread_id text not null, space_did text not null default '', last_active_at integer not null, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, thread_id)) strict",
     );
     db.exec(
       "create table if not exists readstate.user_room_participation (user_did text not null, room_id text not null, last_message_at integer not null, updated_at integer not null default (unixepoch() * 1000), primary key (user_did, room_id)) strict",
@@ -1123,5 +1245,78 @@ describe("applyBatch — link embed dismissal via editMessage", () => {
     expect(msg?.linkEmbeds.map((l) => l.url)).not.toContain(url);
     // …but the image attachment is preserved.
     expect(msg?.media.map((m) => m.url)).toContain(imgUri + "?message=" + msgId);
+  });
+});
+
+describe("applyBatch — activity item canonical timestamps", () => {
+  // Regression: bridged messages carry a timestampOverride extension (the
+  // original Discord send time), but their ULIDs encode bridge-ingestion
+  // time. The activity_item upsert used the ULID time, so getThreads /
+  // getActivityFeed ordered bridged threads by ingestion order — which for a
+  // backfill is reverse Discord-chronological (rooms created in backfill
+  // order, messages ingested oldest-first per channel). The upsert must use
+  // the canonical timestamp for last_activity_at and the window entries.
+  test("bridged messages order activity by Discord time, not ULID time", async () => {
+    const { db, asyncDb } = freshDb();
+    seedSpace(db, STREAM);
+
+    const channelId = newUlid();
+    db.run("insert into entities (id, stream_id) values (?, ?)", [channelId, STREAM]);
+    db.run(
+      "insert into comp_room (entity, label, default_access) values (?, 'space.roomy.channel', 'readwrite')",
+      [channelId],
+    );
+
+    // ULID times: msg1 ingested AFTER msg2 (bridge processed msg2 first).
+    const ingestTs1 = 1_717_536_100_000;
+    const ingestTs2 = 1_717_536_000_000;
+    // Discord times: msg1 is OLDER than msg2.
+    const discordTs1 = 1_700_000_000_000;
+    const discordTs2 = 1_700_000_100_000;
+
+    const bridgedMessage = (id: string, discordTs: number, text: string): Event =>
+      ({
+        $type: "space.roomy.message.createMessage.v0",
+        id,
+        room: channelId,
+        body: {
+          mimeType: "text/markdown",
+          data: { buf: new TextEncoder().encode(text) },
+        },
+        extensions: {
+          "space.roomy.extension.timestampOverride.v0": {
+            $type: "space.roomy.extension.timestampOverride.v0",
+            timestamp: discordTs,
+          },
+        },
+      }) as unknown as Event;
+
+    const msg1 = ulid(ingestTs1);
+    const msg2 = ulid(ingestTs2);
+
+    await applyBatch(
+      asyncDb,
+      STREAM,
+      [
+        decoded(bridgedMessage(msg1, discordTs1, "older discord msg"), 1),
+        decoded(bridgedMessage(msg2, discordTs2, "newer discord msg"), 2),
+      ],
+      { isBackfill: true },
+    );
+
+    const row = await asyncDb
+      .query("select last_activity_at, recent_message_ids from activity_item where room_id = ?")
+      .get<{ last_activity_at: number; recent_message_ids: string }>(channelId);
+
+    expect(row).not.toBeNull();
+    // last_activity_at is the newest DISCORD time, not the newest ULID time.
+    expect(row!.last_activity_at).toBe(discordTs2);
+    const stored: Array<{ id: string; ts: number }> = JSON.parse(row!.recent_message_ids);
+    // Newest by canonical time first — msg2 (newer Discord time) ahead of
+    // msg1 even though msg1 was ingested later.
+    expect(stored[0]!.id).toBe(msg2);
+    expect(stored[0]!.ts).toBe(discordTs2);
+    expect(stored[1]!.id).toBe(msg1);
+    expect(stored[1]!.ts).toBe(discordTs1);
   });
 });

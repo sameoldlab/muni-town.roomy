@@ -25,7 +25,10 @@ import { closeDb, openDb } from "../db/db.ts";
 import { _resetRateLimit } from "../xrpc/rateLimit.ts";
 import { _resetHydrationInflight } from "../hydration/userHydration.ts";
 import { _resetEmbedSweeper, stopEmbedSweeper } from "../embed/sweeper.ts";
-import { _resetProfileStoreCache } from "../queries/profileStore.ts";
+import { stopSearchIndexer, _resetSearchIndexer } from "../search/indexer.ts";
+import { stopSearchBackfill, _resetSearchBackfill } from "../search/backfill.ts";
+import { _resetQdrantClient, _resetMessagesCollection } from "../search/qdrantSearch.ts";
+import { _resetProfileStoreCache, _setTestGetProfiles } from "../queries/profileStore.ts";
 import { newUlid } from "@roomy-space/sdk";
 import type { Database } from "bun:sqlite";
 
@@ -55,13 +58,24 @@ export interface E2eContext {
  * Call this inside `beforeEach` or at the top of a `describe` block.
  */
 export async function startAppserver(): Promise<E2eContext> {
-  // Stop any running background sweeper loop before resetting state.
+  // Stop any running background sweeper/indexer loops before resetting state.
   await stopEmbedSweeper();
+  await stopSearchIndexer();
+  await stopSearchBackfill();
   closeDb();
   _resetRateLimit();
   _resetHydrationInflight();
   _resetEmbedSweeper();
+  _resetSearchIndexer();
+  _resetSearchBackfill();
+  _resetQdrantClient();
+  _resetMessagesCollection();
   _resetProfileStoreCache();
+  // Hermetic: without stubs, profile hydration falls back to live
+  // api.bsky.app fetches, which pile up under parallel load and blow the
+  // 5s per-test timeout. Tests don't assert on profile materialization, so
+  // no-op fetchers are safe.
+  _setTestGetProfiles(async () => []);
 
   // Open the singleton DB in-memory so handlers' internal openDb() resolves.
   const db = openDb({ path: ":memory:" }) as unknown as Database;
@@ -72,6 +86,18 @@ export async function startAppserver(): Promise<E2eContext> {
     dbPath: ":memory:",
     readStateDbPath: ":memory:",
     quiet: true,
+    // No detached background loops (embed sweeper, search indexer/backfill,
+    // push dispatcher) in tests: request handling is what these tests
+    // exercise, and a loop that wakes against a closed DB after teardown is
+    // the #1 CI flake source (unhandled "Database is closed" rejections).
+    // Tests that exercise the loops start them explicitly (e.g.
+    // search.test.ts starts the backfill sweeper itself).
+    disableBackgroundWorkers: true,
+    // Keep E2E runs hermetic: without a stub, materialization falls back to
+    // live api.bsky.app profile fetches, which pile up under parallel load
+    // and blow the 5s per-test timeout. Tests don't assert on profile
+    // materialization, so a no-op fetcher is safe.
+    getProfiles: async () => [],
   });
 
   const baseUrl = `http://localhost:${handle.port}`;
@@ -102,7 +128,12 @@ export async function startAppserver(): Promise<E2eContext> {
     await handle.close();
     _resetHydrationInflight();
     _resetEmbedSweeper();
+    _resetSearchIndexer();
+    _resetSearchBackfill();
+    _resetQdrantClient();
+    _resetMessagesCollection();
     _resetProfileStoreCache();
+    _setTestGetProfiles(null);
   });
 
   return { handle, baseUrl, authedFetch, anonFetch, db };
@@ -420,16 +451,38 @@ type AsyncLike = {
   run(sql: string, ...params: unknown[]): Promise<unknown>;
 };
 
-function spaceDb(db: Database, spaceDid: string): AsyncLike {
-  return (db as unknown as RoutedDb).forSpace(spaceDid);
+/**
+ * Seed writes are fire-and-forget: the test body runs synchronously and the
+ * `afterEach` teardown (`closeDb()`) can terminate the worker while seed
+ * requests are still in flight, rejecting their promises. A dropped promise
+ * surfaces as an unhandled rejection and fails the whole run (bun exits 1).
+ * Attach a no-op catch so the rejection is considered handled — awaited
+ * callers still observe it via the returned promise.
+ */
+function swallowDropped<T>(p: Promise<T>): Promise<T> {
+  p.catch(() => {});
+  return p;
+}
+
+function wrapAsyncLike(inner: AsyncLike): AsyncLike {
+  return {
+    query: (sql) => inner.query(sql),
+    run: (sql, ...params) => swallowDropped(inner.run(sql, ...params)),
+  };
+}
+
+/** Route a write to a space's per-space DB (entities, comp_room, edges). */
+export function spaceDb(db: Database, spaceDid: string): AsyncLike {
+  return wrapAsyncLike((db as unknown as RoutedDb).forSpace(spaceDid));
 }
 
 function globalDb(db: Database): AsyncLike {
-  return (db as unknown as RoutedDb).global();
+  return wrapAsyncLike((db as unknown as RoutedDb).global());
 }
 
-function readStateDb(db: Database): AsyncLike {
-  return (db as unknown as RoutedDb).readState();
+/** Route a write to the read-state DB (read_positions, user_thread_activity). */
+export function readStateDb(db: Database): AsyncLike {
+  return wrapAsyncLike((db as unknown as RoutedDb).readState());
 }
 
 // ─── Full-path materialization helper ────────────────────────────────────

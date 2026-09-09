@@ -130,8 +130,8 @@ export const updateSeenHandler: ProcedureHandler<UpdateSeenBody, void> = async (
   // your sidebar. Only threads get tracked -- channel reads don't touch the
   // sidebar's user_thread_activity. `db` is the per-space DB (isThread reads
   // comp_room there); `mainDb` is the read-state DB where activity lives.
-  if (await isThread(db, roomId)) {
-    await upsertUserThreadActivity(mainDb, userDid, roomId, Date.now());
+  if (await isThread(db, roomId) && access.spaceId) {
+    await upsertUserThreadActivity(mainDb, userDid, roomId, access.spaceId, Date.now());
   }
 
   // Reset the Engaged push-digest batch for this (user, room): the user has
@@ -160,6 +160,26 @@ export const updateSeenHandler: ProcedureHandler<UpdateSeenBody, void> = async (
           affectedUser: userDid,
         },
       },
+      // Reading a room clears its unread dot on the space index board
+      // (space.getThreads), scoped to the reader.
+      {
+        kind: "queryInvalidation",
+        signal: {
+          nsid: "space.roomy.space.getThreads" as QueryNsid,
+          params: { spaceId: access.spaceId },
+          affectedUser: userDid,
+        },
+      },
+      // Reading a room clears the activity feed's unread count for the
+      // reader (the feed shows unread per room).
+      {
+        kind: "queryInvalidation",
+        signal: {
+          nsid: "space.roomy.space.getActivityFeed" as QueryNsid,
+          params: {},
+          affectedUser: userDid,
+        },
+      },
       {
         kind: "queryInvalidation",
         signal: {
@@ -169,6 +189,43 @@ export const updateSeenHandler: ProcedureHandler<UpdateSeenBody, void> = async (
         },
       },
     ];
+    // Reading a thread changes the parent channel's unreadThreadCount (the
+    // Threads-tab badge on the channel page) — invalidate the channel's
+    // metadata too. `access.parentChannelId` is null for channels.
+    if (access.parentChannelId) {
+      signals.push({
+        kind: "queryInvalidation",
+        signal: {
+          nsid: "space.roomy.room.getMetadata" as QueryNsid,
+          params: { roomId: access.parentChannelId },
+          affectedUser: userDid,
+        },
+      });
+    }
+    // A federated reader marked the room read — the receiving space's (B)
+    // sidebar rendered it as unread. The read position lives in the origin
+    // space's DB, so this invalidation is what clears the marker in B's
+    // sidebar tree for this user. Native readers have no federated home
+    // space and get no extra signal.
+    const fedHome = access.federatedHomeSpaceId;
+    if (fedHome) {
+      signals.push({
+        kind: "queryInvalidation",
+        signal: {
+          nsid: "space.roomy.space.getMetadata" as QueryNsid,
+          params: { spaceId: fedHome },
+          affectedUser: userDid,
+        },
+      });
+      signals.push({
+        kind: "queryInvalidation",
+        signal: {
+          nsid: "space.roomy.space.getSpaces" as QueryNsid,
+          params: {},
+          affectedUser: userDid,
+        },
+      });
+    }
     router.emit(signals);
   }
 };

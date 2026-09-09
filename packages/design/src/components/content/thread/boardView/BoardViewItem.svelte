@@ -12,6 +12,9 @@ let {
 
 let lastMessageTimestamp = $derived(thread.activity.latestTimestamp);
 let read = $derived(!thread.unread);
+// 3-state unread: `unread` (bold) covers engaged-unread plus never-engaged
+// rooms with content; the dot is only for engaged-unread (`unreadDot`).
+let showDot = $derived(thread.unreadDot ?? thread.unread);
 </script>
 
 <a
@@ -30,23 +33,28 @@ let read = $derived(!thread.unread);
         }))}
     />
   {/snippet}
-  <!-- Unread marker column -->
-  <div class="w-6 shrink-0 flex items-center justify-start pl-2">
-    {#if thread.unread}
+
+  <!-- Unread marker column (desktop only) -->
+  <div class="hidden @[40rem]:flex w-8 shrink-0 items-center justify-start pl-5.5">
+    {#if showDot}
       <span class="size-2 rounded-full bg-accent-500" aria-label="Unread"></span>
     {/if}
   </div>
-
-  <div class="flex flex-row items-center gap-3 py-3 pl-1 pr-3 flex-1 min-w-0">
+  <div class="flex flex-row items-center gap-3 py-3 pl-4 sm:pl-3 pr-3 flex-1 min-w-0">
     <!-- Text column: title + mobile sub-row -->
     <div class="flex flex-col flex-1 min-w-0">
-      <div class={"flex-1 min-w-0 flex items-center gap-2 text-base font-light " + (read ? "text-base-600/90 dark:text-base-400" : "text-base-900 dark:text-base-100")}>
-        <span class="truncate">
-          {#if thread.kind == "space.roomy.channel"}
-            #&nbsp;
-          {/if}
+      <div class={"flex-1 min-w-0 flex items-baseline gap-2 text-base font-light " + (read ? "text-base-600/90 dark:text-base-400" : "text-base-900 dark:text-base-100")}>
+        {#if showDot}
+          <span class="shrink-0 size-1.5 rounded-full bg-accent-500 @[40rem]:hidden" aria-label="Unread"></span>
+        {/if}
+        <span class={"font-normal truncate " + (thread.kind == "space.roomy.channel" ? "italic" : "")}>
           {thread.name}
         </span>
+        {#if thread.activity.latestMessage?.text && thread.kind == "space.roomy.channel"}
+          <span class={"flex-1 min-w-0 text-xs truncate max-w-full items-center " + (read ? "text-base-500 dark:text-base-600" : "text-base-600 dark:text-base-300")}>
+            {thread.activity.latestMessage.text}
+          </span>
+        {/if}
       </div>
 
       <!-- Mobile sub-row: channel + date (smaller, lower contrast) -->
@@ -72,10 +80,9 @@ let read = $derived(!thread.unread);
     </div>
 
     <!-- Desktop columns (hidden on mobile) -->
-    <div class={"hidden @[40rem]:flex w-16 shrink-0 items-center justify-start transition-all " + (read ? "opacity-80 saturate-75" : "opacity-100 saturate-100") + " group-hover:opacity-100 group-hover:saturate-100"}>
+    <div class={"hidden @[40rem]:flex w-20 shrink-0 items-center justify-start transition-all " + (read ? "opacity-80 saturate-75" : "opacity-100 saturate-100") + " group-hover:opacity-100 group-hover:saturate-100"}>
       {@render avatarGroup()}
     </div>
-
     {#if !hideChannel}
       <div class={"hidden @[40rem]:flex w-[5.5rem] shrink-0 text-sm items-center gap-1 overflow-hidden " + (read ? "text-base-500 dark:text-base-500" : "text-base-600 dark:text-base-300/80")}>
         {#if thread.channelName}
@@ -85,7 +92,7 @@ let read = $derived(!thread.unread);
       </div>
     {/if}
 
-    <div class={"hidden @[40rem]:block w-[4.5rem] shrink-0 text-left text-xs " + (read ? "text-base-500 dark:text-base-500" : "text-base-600 dark:text-base-300/80")}>
+    <div class={"hidden @[40rem]:block w-[4.5rem] shrink-0 text-left text-[13px] " + (read ? "text-base-500 dark:text-base-500" : "text-base-600 dark:text-base-300/80")}>
       {#if lastMessageTimestamp}
         {formatRelativeTime(new Date(lastMessageTimestamp))}
       {/if}

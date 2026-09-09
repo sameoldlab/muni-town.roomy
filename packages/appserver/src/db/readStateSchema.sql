@@ -36,6 +36,20 @@ create table if not exists user_space_membership (
 create index if not exists idx_user_space_membership_user_state
   on user_space_membership(user_did, state, updated_at desc);
 
+-- Per-user space ordering (schema v8). One row per (user, space); `position`
+-- is the 0-based index in the user's space list. Absent row → fall back to
+-- the default ordering (updated_at desc). Written by the reorderSpaces
+-- procedure; read by getSpaces.
+create table if not exists space_order (
+  user_did   text not null,
+  space_did  text not null,
+  position   integer not null,
+  updated_at integer not null default (unixepoch() * 1000),
+  primary key (user_did, space_did)
+) strict;
+create index if not exists idx_space_order_user_position
+  on space_order(user_did, position);
+
 create table if not exists read_positions (
   user_did    text not null,
   room_id     text not null,
@@ -49,6 +63,7 @@ create table if not exists read_positions (
 create table if not exists user_thread_activity (
   user_did      text not null,
   thread_id     text not null,
+  space_did     text not null default '',  -- space stream DID (per-space split §1f)
   last_active_at integer not null,   -- unix epoch milliseconds
   updated_at    integer not null default (unixepoch() * 1000),
   primary key (user_did, thread_id)
@@ -56,6 +71,15 @@ create table if not exists user_thread_activity (
 
 create index if not exists idx_user_thread_activity_user
   on user_thread_activity(user_did, last_active_at desc);
+
+-- NOTE: the per-space index idx_user_thread_activity_user_space
+-- (user_did, space_did, last_active_at desc) is intentionally NOT declared
+-- here. It references the `space_did` column, which does not exist on
+-- pre-v7 databases; declaring it in this schema file would make
+-- `db.exec(schema)` throw "no such column: space_did" on an existing v6 DB
+-- before the v7 migration can add the column. It is created by the v7
+-- migration (existing DBs) and by the fresh-DB path in
+-- initializeReadStateSchema (worker.ts).
 
 -- ── Web push (schema v3) ────────────────────────────────────────────────
 -- A device/browser subscription for a user. A user may have many (one per
@@ -140,3 +164,24 @@ create table if not exists feature_flag_assignments (
 ) strict;
 create index if not exists idx_ff_assignments_flag
   on feature_flag_assignments(flag_key);
+
+-- ── Roomy Pro bridge tokens (schema v9) ─────────────────────────────────
+-- A Roomy Pro subscriber (or negotiated custom-membership grant) may grant
+-- one bridge token to a space; the grant powers a guild-space bridge up to
+-- the granted capacity. One active grant per user (primary key = grantor
+-- DID). `spent_at` is set when the bridged guild's member count exceeds 100
+-- and is PERMANENT — a spent grant can neither be revoked nor re-granted.
+-- `capacity_snapshot` is the grant-time capacity (for display; live
+-- capacity is re-resolved from Polar at read time). The grant row persists
+-- across subscription lapses/cancellations — read-time validity is decided
+-- by the caller against Polar, and a resubscribed grantor revalidates
+-- automatically.
+create table if not exists bridge_token_grants (
+  grantor_did        text primary key,
+  space_did          text not null,
+  granted_at         integer not null default (unixepoch() * 1000),
+  spent_at           integer,             -- epoch ms; NULL = not spent
+  capacity_snapshot  integer not null
+) strict;
+create index if not exists idx_bridge_token_grants_space
+  on bridge_token_grants(space_did);

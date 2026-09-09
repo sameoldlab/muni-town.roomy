@@ -1,4 +1,4 @@
-import { createQuery } from "@tanstack/svelte-query";
+import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
 import { cache, schemas } from "@roomy-space/sdk";
 import { px } from "$lib/auth.svelte";
 
@@ -7,10 +7,23 @@ const { queryKey } = cache;
 export type Member = typeof schemas.queries.getMembers.Member.infer;
 export type ExternalAdmin = typeof schemas.queries.getMembers.ExternalAdmin.infer;
 
-export function createMembersQuery(spaceId: () => string) {
+export function createMembersQuery(
+  spaceId: () => string,
+  search: () => string | undefined = () => undefined,
+) {
   return createQuery(() => ({
-    queryKey: queryKey("space.roomy.space.getMembers", { spaceId: spaceId() }),
+    queryKey: queryKey("space.roomy.space.getMembers", {
+      spaceId: spaceId(),
+      ...(search() ? { search: search() } : {}),
+    }),
     queryFn: () =>
-      px().query("space.roomy.space.getMembers", { spaceId: spaceId() }),
+      px().query("space.roomy.space.getMembers", {
+        spaceId: spaceId(),
+        ...(search() ? { search: search() } : {}),
+      }),
+    // Keep the previous member list rendered while a new search term fetches —
+    // without this, each keystroke flips isPending and the list flashes the
+    // loading state.
+    placeholderData: keepPreviousData,
   }));
 }

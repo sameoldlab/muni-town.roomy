@@ -109,6 +109,9 @@
         "name": {
           "type": "string"
         },
+        "unread": {
+          "type": "boolean"
+        },
         "unreadCount": {
           "type": "integer"
         }
@@ -129,6 +132,9 @@
             "type": "string"
           },
           "limit": {
+            "type": "string"
+          },
+          "search": {
             "type": "string"
           }
         }

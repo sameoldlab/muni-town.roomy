@@ -1,15 +1,28 @@
-// Grafana Alloy config — Roomy production log collector (Grafana Cloud).
+// Grafana Alloy config — Roomy production telemetry collector (Grafana Cloud).
 //
 // Receives logs from the Railway app services and forwards them to Grafana
-// Cloud Loki. The apps POST to this collector (see deploy/alloy/README.md).
+// Cloud Loki; scrapes the appserver's Prometheus /metrics endpoint and
+// remote-writes to Grafana Cloud Mimir. The apps POST to this collector (see
+// deploy/alloy/README.md).
 //
 // Required env vars:
 //   - GRAFANA_CLOUD_LOKI_URL    full push URL, e.g.
 //                               https://logs-prod-<region>.grafana.net/loki/api/v1/push
 //   - GRAFANA_CLOUD_LOKI_ID     Grafana Cloud Loki instance ID (basic auth user)
 //   - GRAFANA_CLOUD_LOKI_TOKEN  Grafana Cloud access policy token (basic auth pass)
+//   - GRAFANA_CLOUD_MIMIR_URL   Prometheus remote-write URL, e.g.
+//                               https://prometheus-prod-<region>.grafana.net/api/prom/push
+//   - GRAFANA_CLOUD_MIMIR_ID    Grafana Cloud Prometheus instance ID (basic auth user)
+//   - GRAFANA_CLOUD_MIMIR_TOKEN Grafana Cloud access policy token (basic auth pass)
 //
-// Optional: ALLOY_LOG_LEVEL (default `info`).
+// Optional:
+//   - APPSERVER_METRICS_URL     appserver scrape target as host:port (NO
+//                               scheme or path), e.g. appserver:8080 or
+//                               appserver.railway.internal:8080. Default
+//                               appserver:8080 (set in the Dockerfile ENV;
+//                               override on Railway). Scheme is http, path
+//                               is /metrics.
+//   - ALLOY_LOG_LEVEL           default `info`.
 
 logging {
 	level = "info" // override via ALLOY_LOG_LEVEL at runtime if desired
@@ -19,9 +32,22 @@ logging {
 loki.write "cloud" {
 	endpoint {
 		url = env("GRAFANA_CLOUD_LOKI_URL")
+
 		basic_auth {
 			username = env("GRAFANA_CLOUD_LOKI_ID")
 			password = env("GRAFANA_CLOUD_LOKI_TOKEN")
+		}
+	}
+}
+
+// ── Ship metrics to Grafana Cloud Mimir ─────────────────────────────
+prometheus.remote_write "mimir" {
+	endpoint {
+		url = env("GRAFANA_CLOUD_MIMIR_URL")
+
+		basic_auth {
+			username = env("GRAFANA_CLOUD_MIMIR_ID")
+			password = env("GRAFANA_CLOUD_MIMIR_TOKEN")
 		}
 	}
 }
@@ -38,12 +64,32 @@ loki.source.api "apps" {
 	forward_to = [loki.write.cloud.receiver]
 }
 
+// ── Scrape appserver Prometheus metrics ──────────────────────────────
+// The appserver exposes /metrics (request latency, DB pool queue depth,
+// cache hit rate, embed backlog, DB timeouts). Scrape it over the Railway
+// private network and remote-write to Mimir.
+prometheus.scrape "appserver" {
+	// __address__ must be host:port only (no scheme or path) — Prometheus
+	// rejects a full URL here. The scheme defaults to http and the path is
+	// set via metrics_path below.
+	targets = [{
+		__address__ = env("APPSERVER_METRICS_URL"),
+	}]
+	metrics_path = "/metrics"
+	forward_to   = [prometheus.remote_write.mimir.receiver]
+}
+
 // ── Optional: OTLP logs receiver (4317 gRPC / 4318 HTTP) ─────────────
 // Enable if you later instrument an app with OpenTelemetry and want to send
 // OTLP logs directly to Alloy instead of the Loki push API above.
 otelcol.receiver.otlp "apps" {
-	grpc { endpoint = "0.0.0.0:4317" }
-	http  { endpoint = "0.0.0.0:4318" }
+	grpc {
+		endpoint = "0.0.0.0:4317"
+	}
+
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
 
 	output {
 		logs = [otelcol.processor.batch.default.input]
@@ -58,4 +104,61 @@ otelcol.processor.batch "default" {
 
 otelcol.exporter.loki "apps" {
 	forward_to = [loki.write.cloud.receiver]
+}
+
+// ── Faro browser telemetry receiver (app-lite) ───────────────────────
+// The static SPA ships console logs + errors via the Grafana Faro browser
+// agent. This mirrors the dev compose `faro.receiver "frontend"` block:
+// logs pass through the same logfmt/label normalization so browser records
+// land in Loki with the same labels as the app services. No sourcemaps or
+// traces in v1 (no Tempo in production).
+//
+// Required env vars (set on Railway):
+//   - FARO_CORS_ORIGINS   comma-separated allowed browser origins, default
+//                         https://roomy.space (see Dockerfile ENV)
+//   - FARO_API_KEY        Faro API key, default "" (unset)
+loki.process "frontend" {
+	forward_to = [loki.write.cloud.receiver]
+
+	stage.logfmt {
+		mapping = {"service_name" = "app_name", kind = ""}
+	}
+
+	stage.labels {
+		values = {"kind" = "kind", "service_name" = "service_name", "app" = "service_name"}
+	}
+
+	// Make sure exceptions are logged at an error level instead of "unknown"
+	stage.match {
+		selector = "{kind=\"exception\"}"
+
+		stage.template {
+			source   = "const_error"
+			template = "error"
+		}
+
+		stage.structured_metadata {
+			values = {
+				"level" = "const_error",
+			}
+		}
+	}
+}
+
+faro.receiver "frontend" {
+	server {
+		listen_address           = "0.0.0.0"
+		listen_port              = 12345
+		cors_allowed_origins     = split(env("FARO_CORS_ORIGINS"), ",")
+		api_key                  = env("FARO_API_KEY")
+		max_allowed_payload_size = "10MiB"
+
+		rate_limiting {
+			rate = 100
+		}
+	}
+
+	output {
+		logs = [loki.process.frontend.receiver]
+	}
 }

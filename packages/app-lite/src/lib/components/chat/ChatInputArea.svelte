@@ -5,24 +5,18 @@
     type ChatInputShellMode,
   } from "@roomy/design/components/content/thread/ChatInputShell.svelte";
   import { messagingState } from "./messaging-state.svelte";
-  import { newUlid, toBytes, cache, extractFacetUrls } from "@roomy-space/sdk";
+  import { newUlid, toBytes, extractFacetUrls } from "@roomy-space/sdk";
   import type { schemas, Block } from "@roomy-space/sdk";
   import ChatInput, {
     clearInput,
     setInputFocus,
   } from "./ChatInput.svelte";
+  import { createMentionSearch } from "$lib/tiptap/mentions";
   import { sendMessage as sendMessageMutation } from "$lib/mutations/message";
   import { uploadFile } from "$lib/mutations/upload";
   import { sendEvents } from "$lib/mutations/send-events";
   import { createThread } from "$lib/mutations/thread";
   import MessageContext from "./MessageContext.svelte";
-  import { px, auth } from "$lib/auth.svelte";
-  import { queryClient } from "$lib/client";
-  import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
-  import type { Message } from "$lib/queries/messages";
-  import type { Member, ExternalAdmin } from "$lib/queries/members";
-  import type { TypeaheadUser } from "@roomy/design/components/ui/user-typeahead/UserTypeahead.svelte";
-  import { resolveBlobUrl } from "$lib/utils";
   import LinkCard from "./embeds/LinkCard.svelte";
   import { extractUrls, fetchEmbedData } from "$lib/embed/embed-service";
   import Button from "@roomy/design/components/ui/button/Button.svelte";
@@ -52,19 +46,23 @@
   // child ChatInput's onMount runs and triggers focus.
   const isCoarsePointer = browser && matchMedia("(pointer: coarse)").matches;
 
-  // Feature-flag gate for the new richtext send path. Mounted at component
-  // top level so the query runs; the flag is read synchronously from the
-  // cached result at send time (no await). Until the query has loaded, the
-  // legacy markdown path is used.
-  const flagsQuery = createFeatureFlagsQuery();
-  const richtextEnabled = $derived(
-    flagsQuery.data?.flags.includes("richtext-schema") ?? false,
-  );
-
-  // Blocks+facets form of the composer content, bound from ChatInput. Only
-  // used when the richtext flag is on; the markdown string binding remains
-  // the source of truth for messaging-state.
+  // Blocks+facets form of the composer content. Binding happens against a
+  // LOCAL mirror: a function-form bind on module-level messagingState state
+  // wedges SvelteKit's navigation flush when the keyed ChatInputArea remounts
+  // (the bind getter runs mid-navigation; the room switch then never renders).
+  // Pull store → local on change; push local edits → store guarded by
+  // reference so the pull doesn't echo itself back.
   let blocks: Block[] | undefined = $state();
+
+  $effect(() => {
+    blocks = messagingState.blocks;
+  });
+
+  $effect(() => {
+    if (blocks && blocks !== messagingState.blocks) {
+      messagingState.blocks = blocks;
+    }
+  });
 
   // ── Client-side link embeds ────────────────────────────────────────────
   // The composer detects the URL being typed, fetches embed metadata directly
@@ -81,8 +79,8 @@
   // The first URL currently present in the composer (rich-text link facets
   // when the new schema is active, else a regex scan of the markdown).
   const composedUrl = $derived(
-    blocks && blocks.length > 0
-      ? extractFacetUrls(blocks)[0] ?? null
+    messagingState.blocks && messagingState.blocks.length > 0
+      ? extractFacetUrls(messagingState.blocks)[0] ?? null
       : extractUrls(messagingState.input)[0] ?? null,
   );
 
@@ -127,66 +125,22 @@
 
 
   let isSendingMessage = $state(false);
-  let previewImages: string[] = $state([]);
 
-  let shouldFocus = $derived(autoFocus && !isCoarsePointer && !isSendingMessage && previewImages.length === 0);
-
-  // Most-recently-active members in this room, derived from the cached
-  // `getMessages` result (no extra fetch). Used to preseed the `@mention`
-  // popup before the user types anything. Self is excluded; ordered by last
-  // activity with the most recent at the bottom of the popup.
-  function recentActiveMembers(): TypeaheadUser[] {
-    const msgs = queryClient.getQueryData<Message[]>(
-      cache.queryKey("space.roomy.room.getMessages", { roomId }),
-    );
-    if (!msgs || msgs.length === 0) return [];
-    const selfDid = auth.userDid;
-    // Track each author's most recent message; `sort_idx` (ULID) is the
-    // canonical timeline order, falling back to the ISO `timestamp`.
-    const lastByDid = new Map<string, { user: TypeaheadUser; last: string }>();
-    for (const m of msgs) {
-      if (m.authorDid === selfDid) continue;
-      const ord = m.sort_idx ?? m.timestamp;
-      const existing = lastByDid.get(m.authorDid);
-      if (!existing || ord > existing.last) {
-        lastByDid.set(m.authorDid, {
-          user: {
-            did: m.authorDid,
-            name: m.authorName,
-            handle: m.authorHandle,
-            avatar: resolveBlobUrl(m.authorAvatar),
-          },
-          last: ord,
-        });
-      }
-    }
-    return [...lastByDid.values()]
-      .sort((a, b) => (a.last < b.last ? -1 : a.last > b.last ? 1 : 0))
-      .map((v) => v.user)
-      .slice(-8); // cap to the 8 most-recently-active; most recent stays last
-  }
+  let shouldFocus = $derived(autoFocus && !isCoarsePointer && !isSendingMessage && messagingState.previewImages.length === 0);
 
   // Server-side member search for `@mention` in the chat input. Empty query →
-  // recent-active preseed (above). Non-empty → `getMembers?search=` on the
-  // appserver, including both members and external admins so space admins
-  // without membership are mentionable too. (Self-exclusion applies only to
-  // the preseed, not to search results.)
-  async function mentionSearch(q: string): Promise<TypeaheadUser[]> {
-    const query = q.trim();
-    if (query === "") {
-      return recentActiveMembers();
-    }
-    const res = (await px().query("space.roomy.space.getMembers", {
-      spaceId,
-      search: query,
-    })) as { members: Member[]; externalAdmins: ExternalAdmin[] };
-    return [...res.members, ...res.externalAdmins].map((m) => ({
-      did: m.did,
-      handle: m.handle,
-      name: m.name,
-      avatar: resolveBlobUrl(m.avatar),
-    }));
-  }
+  // recent-active preseed; non-empty → `getMembers?search=` on the appserver.
+  // Shared with the edit-message editor and forward composer (see
+  // `$lib/tiptap/mentions.ts`).
+  const mentionSearch = createMentionSearch(spaceId, roomId);
+
+  // Activate this room's composer document BEFORE this component's subtree
+  // (re)mounts, so the ChatInput editor seeds from the recalled per-room
+  // draft (`{#key roomId}` remounts on room change). Pre-effects run ahead of
+  // this component's own DOM update, which precedes the ChatInput mount.
+  $effect.pre(() => {
+    messagingState.setActiveRoom(roomId);
+  });
 
   let fileInput: HTMLInputElement | undefined = $state();
   let actionMenuOpen = $state(false);
@@ -249,19 +203,23 @@
     if (messagingState.current.kind === "threading") return;
     messagingState.addFile(file);
 
+    // Preview URLs are stored on this room's draft (not the active one) so an
+    // async video thumbnail resolving after a room switch lands correctly.
     if (file.type.startsWith("video/")) {
       getVideoThumbnail(file).then((thumbnail) => {
-        previewImages.push(thumbnail);
+        messagingState.addPreviewImage(roomId, thumbnail);
       });
     } else {
-      previewImages.push(URL.createObjectURL(file));
+      messagingState.addPreviewImage(roomId, URL.createObjectURL(file));
     }
   }
 
   function removeImageFile(index: number) {
-    const previewImage = previewImages[index];
+    const previewImage = messagingState.previewImages[index];
     messagingState.removeFile(index);
-    previewImages = previewImages.filter((_, i) => i !== index);
+    messagingState.previewImages = messagingState.previewImages.filter(
+      (_, i) => i !== index,
+    );
     if (previewImage) URL.revokeObjectURL(previewImage);
   }
 
@@ -301,13 +259,11 @@
     const message = state.input;
     const filesToUpload = [...state.files];
 
-    // New-format send path: gated on the cached feature flag (synchronous
-    // read — no await at send time). When enabled and the composer produced
-    // blocks, the wire body is serializeBlocks(blocks) and the mentions
-    // sidecar is dropped (mentions fold into `#didMention` facets). Until
-    // the flag query has loaded, or when blocks are absent, the legacy
+    // New-format send path: when the composer produced blocks, the wire body
+    // is serializeBlocks(blocks) and the mentions sidecar is dropped (mentions
+    // fold into `#didMention` facets). When blocks are absent, the legacy
     // markdown path is used.
-    const useRichText = richtextEnabled && !!submittedBlocks && submittedBlocks.length > 0;
+    const useRichText = !!submittedBlocks && submittedBlocks.length > 0;
 
     try {
       const attachments: Record<string, unknown>[] = [];
@@ -378,10 +334,9 @@
     } catch (e: unknown) {
       console.error("Failed to send message:", e);
     } finally {
-      messagingState.set({ kind: "normal", input: "", files: [] });
+      messagingState.set({ kind: "normal", input: "", files: [], blocks: [], mentions: [], previewImages: [] });
       clearInput();
       isSendingMessage = false;
-      previewImages = [];
       setInputFocus();
     }
   }
@@ -404,7 +359,7 @@
       messageIds: selectedIds,
     });
 
-    messagingState.set({ kind: "normal", input: "", files: [] });
+    messagingState.set({ kind: "normal", input: "", files: [], blocks: [], mentions: [], previewImages: [] });
     clearInput();
 
     goto(`/${page.params.space}/${threadId}?parent=${roomId}`);
@@ -414,7 +369,7 @@
 <ChatInputShell
   {canWrite}
   {isSendingMessage}
-  {previewImages}
+  previewImages={messagingState.previewImages}
   mode={shellMode}
   {actionMenuOpen}
   {disableUploads}
@@ -454,6 +409,7 @@
           }
         }
         bind:blocks
+        initialBlocks={messagingState.blocks}
         onEnter={handleSend}
         disabled={isSendingMessage}
         setFocus={shouldFocus}

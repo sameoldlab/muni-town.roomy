@@ -6,7 +6,7 @@ import { createSpace, listSpaces } from "./spaces.js";
 import { listRooms, findLobbyRoom } from "./rooms.js";
 import { sendMessage, readMessages, buildMentionBlocks } from "./messages.js";
 import { setProfile } from "./profile.js";
-import { listen as bridgeListen } from "@roomy/omp-bridge";
+import { respond } from "./respond.js";
 
 const program = new Command();
 export { program };
@@ -110,7 +110,54 @@ program
     }
   });
 
+// ── create-room ─────────────────────────────────────────────────────────────
+
+program
+  .command("create-room")
+  .description("Create a room/channel in a space (requires space admin)")
+  .requiredOption("--space <id>", "Space ID")
+  .requiredOption("--name <name>", "Room name")
+  .option("--kind <kind>", "Room kind: channel|category|thread|page (default channel)", "channel")
+  .option("--description <description>", "Room description")
+  .action(async (options: { space: string; name: string; kind: string; description?: string }) => {
+    try {
+      const config = loadConfig();
+      const { xrpc } = await authenticate(config);
+      const { createRoom } = await import("@roomy-space/sdk");
+      const kind = `space.roomy.${options.kind}` as "space.roomy.channel" | "space.roomy.category" | "space.roomy.thread" | "space.roomy.page";
+      const events = createRoom({ kind, name: options.name, description: options.description });
+      await xrpc.procedure("space.roomy.space.sendEvents", { spaceId: options.space, events });
+      const id = events[0]?.id;
+      if (!id) throw new Error("createRoom returned no event");
+      console.log(`Created room: ${id}`);
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  });
+
 // ── send ──────────────────────────────────────────────────────────────────
+
+program
+  .command("delete-room")
+  .description("Delete (soft-delete) a room/channel (requires space admin)")
+  .requiredOption("--space <id>", "Space ID")
+  .requiredOption("--room <id>", "Room ID to delete")
+  .action(async (options: { space: string; room: string }) => {
+    try {
+      const config = loadConfig();
+      const { xrpc } = await authenticate(config);
+      const { deleteRoom } = await import("@roomy-space/sdk");
+      const events = deleteRoom({ roomId: options.room as never });
+      await xrpc.procedure("space.roomy.space.sendEvents", { spaceId: options.space, events });
+      const id = events[0]?.id;
+      if (!id) throw new Error("deleteRoom returned no event");
+      console.log(`Deleted room: ${options.room}`);
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  });
 
 program
   .command("send")
@@ -124,7 +171,8 @@ program
     "--json <json>",
     "Send a JSON richtext document (blocks array) instead of plain text",
   )
-  .action(async (options: { space: string; room?: string; text?: string; mention?: string; mentionLabel?: string; json?: string }) => {
+  .option("--parent <id>", "Reply to a message id, creating a thread rooted at it")
+  .action(async (options: { space: string; room?: string; text?: string; mention?: string; mentionLabel?: string; json?: string; parent?: string }) => {
     try {
       const config = loadConfig();
       const { xrpc } = await authenticate(config);
@@ -136,19 +184,20 @@ program
         console.error(`Using lobby room: ${lobby.name ?? "(unnamed)"} (${roomId})`);
       }
       let messageId: string;
+      const sendOpts = { parent: options.parent };
       if (options.json) {
         const parsed = JSON.parse(options.json);
         const blocks = Array.isArray(parsed) ? parsed : parsed?.blocks;
         if (!Array.isArray(blocks)) {
           throw new Error("--json must be a blocks array or a { blocks: [...] } document");
         }
-        ({ messageId } = await sendMessage(xrpc, options.space, roomId, "", { blocks }));
+        ({ messageId } = await sendMessage(xrpc, options.space, roomId, "", { blocks, ...sendOpts }));
       } else {
         const text = options.text ?? await readStdin();
         const blocks = options.mention
           ? buildMentionBlocks(text, options.mention, options.mentionLabel ?? options.mention)
           : undefined;
-        ({ messageId } = await sendMessage(xrpc, options.space, roomId, text, { blocks }));
+        ({ messageId } = await sendMessage(xrpc, options.space, roomId, text, { blocks, ...sendOpts }));
       }
       console.error(`Message sent: ${messageId}`);
     } catch (error) {
@@ -242,47 +291,56 @@ program
     }
   });
 
-// ── listen ────────────────────────────────────────────────────────────────
+// ── respond ─────────────────────────────────────────────────────────────
 
 program
-  .command("listen")
-  .description("Listen to a space/room and route mentioned messages to the omp agent")
-  .option("--space <id>", "Space ID (defaults to every space the agent has joined)")
-  .option("--room <id>", "Room ID (defaults to all rooms in the space)")
+  .command("respond")
+  .description("Read roomy-bridge mention events from stdin (NDJSON) and reply to each via omp")
   .option("--no-mention-only", "Respond to every message, not just mentions")
+  .option("--include-self", "Also respond to the agent's own messages (testing)")
   .option("--cwd <dir>", "Working directory for the omp agent")
   .option("--model <model>", "omp model override (fuzzy match)")
   .option("--prefix <text>", "Extra context prepended to every prompt")
   .option("--omp-bin <path>", "Path to the omp binary (default: omp on PATH)")
-  .option("--duration <ms>", "Stop after this many ms (0 = run forever)", "0")
-  .option("--include-self", "Also react to the agent's own messages (testing)")
+  .option("--no-continuity", "Give each mention a fresh omp session (default: resume per-room)")
+  .option("--session-file <path>", "Path for the room → omp session map (default ~/.roomy/omp-sessions.json)")
   .option("--no-thinking", "Don't post the agent's thinking trace, just the answer")
+  .option("--no-stream-thinking", "Don't stream thinking chunks; bundle thinking with the final answer")
+  .option("--thinking-chunk <n>", "Approx char threshold for each streamed thinking chunk (default 2000)", "2000")
+  .option("--system-prompt-file <path>", "File appended to omp's system prompt (default: $OMP_SYSTEM_PROMPT_FILE)")
+  .option("--recent <n>", "Recent room messages to load into context when mentioned (default 20; 0 disables)", "20")
   .action(async (options: {
-    space?: string;
-    room?: string;
     mentionOnly: boolean;
+    includeSelf?: boolean;
     cwd?: string;
     model?: string;
     prefix?: string;
     ompBin?: string;
-    duration: string;
-    includeSelf?: boolean;
+    continuity: boolean;
+    sessionFile?: string;
     thinking: boolean;
+    streamThinking: boolean;
+    thinkingChunk: string;
+    systemPromptFile?: string;
+    recent: string;
   }) => {
     try {
       const config = loadConfig();
       const auth = await authenticate(config);
-      await bridgeListen(auth, {
-        spaceId: options.space,
-        roomId: options.room,
+      await respond(auth.xrpc, auth.agent, {
         mentionOnly: options.mentionOnly,
+        includeSelf: options.includeSelf,
         cwd: options.cwd,
         model: options.model,
         prefix: options.prefix,
         ompBin: options.ompBin,
-        durationMs: Number(options.duration),
-        includeSelf: options.includeSelf,
+        continuity: options.continuity,
+        sessionFile: options.sessionFile,
         thinking: options.thinking,
+        streamThinking: options.streamThinking,
+        thinkingChunkSize: Number(options.thinkingChunk),
+        systemPromptFile: options.systemPromptFile ?? process.env.OMP_SYSTEM_PROMPT_FILE,
+        recent: Number(options.recent),
       });
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);

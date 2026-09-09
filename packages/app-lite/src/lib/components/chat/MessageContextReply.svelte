@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import UserAvatar from "@roomy/design/components/user/UserAvatar.svelte";
-  import { IconReplyLine } from "@roomy/design/icons";
+  import { IconReplyLine, IconForward } from "@roomy/design/icons";
   import { createMessageQuery } from "$lib/queries/message";
   import { resolveBlobUrl } from "$lib/utils";
   import { messageContentToPlaintext } from "./messagePreview";
@@ -14,6 +14,19 @@
   let { replyToId, roomId }: Props = $props();
 
   const target = createMessageQuery(() => replyToId, () => roomId);
+
+  // If the message being replied to is a forward, its own content is the
+  // forwarder's (often-empty) note; the message the forwarder embedded lives
+  // in another room. The original is denormalised server-side as
+  // `forwardedFrom.message` — show its content as the reply preview, with no
+  // extra fetch.
+  const forwardedFrom = $derived(target.data?.forwardedFrom);
+  const previewContent = $derived(
+    forwardedFrom?.message?.content ?? target.data?.content ?? "",
+  );
+  const previewMime = $derived(
+    forwardedFrom?.message?.mimeType ?? target.data?.mimeType,
+  );
 
   let isBridged = $derived(target.data?.authorDid?.startsWith("did:discord:") ?? false);
 </script>
@@ -53,19 +66,24 @@
       <span
         class="font-medium text-accent-700 dark:text-accent-300"
       >
-        {target.data.authorName || target.data.authorDid.slice(0, 12)}
+        {target.data.authorName || (target.data.authorHandle ? `@${target.data.authorHandle}` : target.data.authorDid.slice(0, 12))}
       </span>
     {:else}
       <a
         href={`/user/${target.data.authorDid}`}
         class="font-medium text-accent-700 dark:text-accent-300 hover:underline"
       >
-        {target.data.authorName || target.data.authorDid.slice(0, 12)}
+        {target.data.authorName || (target.data.authorHandle ? `@${target.data.authorHandle}` : target.data.authorDid.slice(0, 12))}
       </a>
     {/if}
   </div>
-  <div class="line-clamp-1 overflow-hidden italic">
-    {@html messageContentToPlaintext(target.data.content ?? "", target.data.mimeType)}
+  <div class="flex items-center gap-1 italic">
+    {#if forwardedFrom}
+      <IconForward class="size-3.5 shrink-0 text-base-500 dark:text-base-400" />
+    {/if}
+    <span class="line-clamp-1 overflow-hidden">
+      {@html messageContentToPlaintext(previewContent, previewMime)}
+    </span>
   </div>
 {:else if target.isPending}
   <div class="h-5"></div>

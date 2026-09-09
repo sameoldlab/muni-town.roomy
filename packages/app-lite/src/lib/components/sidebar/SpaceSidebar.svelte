@@ -30,9 +30,8 @@
     IconTrash,
   } from "@roomy/design/icons";
   import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
+  import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { createRoomMetadataQuery } from "$lib/queries/room-metadata";
-  import { isAuthenticated, isInitializing } from "$lib/auth.svelte";
-  import { isPushFeatureEnabled } from "$lib/push.svelte";
   import { createRoom, updateSidebar } from "$lib/mutations/room";
   import { newUlid, Ulid } from "@roomy-space/sdk";
   import { serverBar, toggleServerBar } from "$lib/components/layout/server-bar.svelte";
@@ -45,10 +44,11 @@
   import RestoreRoomModal from "./RestoreRoomModal.svelte";
   import EditableChannelItem from "./EditableChannelItem.svelte";
   import InviteModal from "$lib/components/InviteModal.svelte";
-import CreateRoomModal from "@roomy/design/components/modals/CreateRoomModal.svelte";
-import { createSpacesQuery } from "$lib/queries/spaces";
-import { toast } from "@foxui/core";
-import RoomyMark from "$lib/components/RoomyMark.svelte";
+  import CreateRoomModal from "@roomy/design/components/modals/CreateRoomModal.svelte";
+  import ChannelIcon from "./ChannelIcon.svelte";
+  import { createSpacesQuery } from "$lib/queries/spaces";
+  import { toast } from "@foxui/core";
+  import RoomyMark from "$lib/components/RoomyMark.svelte";
 
   type SidebarChannel =
     typeof schemas.queries.getSpaceMetadata.SidebarChannel.infer;
@@ -57,19 +57,13 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
 
   let { spaceId }: { spaceId?: string } = $props();
 
+  const flagsQuery = createFeatureFlagsQuery();
+
   const metaQuery = createSpaceMetadataQuery(
     () => spaceId ?? "",
     { enabled: !!spaceId },
   );
 
-  let pushFeatureEnabled = $state(false);
-  $effect(() => {
-    if (!isInitializing() && isAuthenticated()) {
-      isPushFeatureEnabled().then((enabled) => {
-        pushFeatureEnabled = enabled;
-      });
-    }
-  });
   const roomMetaQuery = createRoomMetadataQuery(
     () => page.params.room ?? "",
     { enabled: !!page.params.room },
@@ -153,12 +147,26 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
         (meta?.joinPolicy.allowMemberInvites ?? false)),
   );
   const showDiscordBridgeTab = false; //$derived(meta?.isAdmin ?? false);
+  const federationEnabled = $derived(
+    flagsQuery.data?.flags.includes("channel-federation") ?? false,
+  );
+  const showFederationTab = $derived(
+    federationEnabled && (meta?.isAdmin ?? false),
+  );
+  const spaceAccountMgmtEnabled = $derived(
+    flagsQuery.data?.flags.includes("space-account-management") ?? false,
+  );
+  const showIntegrationsTab = $derived(
+    spaceAccountMgmtEnabled && (meta?.isAdmin ?? false),
+  );
   const settingsTabs = $derived(
     [
       { slug: "", label: "General" },
-      { slug: "roles", label: "Roles" },
+      { slug: "permissions", label: "Permissions" },
       { slug: "members", label: "Members" },
-      ...(pushFeatureEnabled ? [{ slug: "notifications", label: "Notifications" }] : []),
+      ...(showIntegrationsTab ? [{ slug: "integrations", label: "Integrations" }] : []),
+      ...(showFederationTab ? [{ slug: "federations", label: "Federation" }] : []),
+      { slug: "notifications", label: "Notifications" },
       ...(showInvitesTab ? [{ slug: "invites", label: "Invites" }] : []),
       ...(showDiscordBridgeTab
         ? [{ slug: "discord-bridge", label: "Discord Bridge" }]
@@ -211,6 +219,20 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
     editingId = id;
   }
 
+  // When the edited sidebar item is a federated channel, carry its origin
+  // info + origin-grant ceiling into the edit modal so it renders the
+  // receiver-grant editor instead of the native members/roles editor.
+  const editingFederated = $derived.by(() => {
+    if (!editingId || !("room" in editingId)) return undefined;
+    const ch = channelMap.get(editingId.room);
+    if (!ch?.federated) return undefined;
+    return {
+      originSpaceId: ch.federated.originSpaceId,
+      originSpaceName: ch.federated.originSpaceName,
+      permission: ch.federated.permission,
+    };
+  });
+
   // --- Draft order for drag-and-drop reordering ---
 
   type DraftOrder = {
@@ -221,10 +243,12 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
 
   let draftOrder = $state<DraftOrder | null>(null);
 
-  const categories = $derived(meta?.sidebar.categories?.map(
-      cat => ({...cat,
-               channels: [...new Map(cat.channels?.map(ch => [ch.id, ch]) ?? []).values()]
-      }) ?? []));
+  const categories = $derived(
+    meta?.sidebar.categories?.map((cat) => ({
+      ...cat,
+      channels: [...new Map(cat.channels?.map((ch) => [ch.id, ch]) ?? []).values()],
+    })) ?? [],
+  );
 
   let categoryMap = $state(new Map<string, SidebarCategory>());
 
@@ -260,7 +284,6 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
         id: string;
         name: string;
         unreadCount: number;
-        lastRead: number;
       }>
     >();
 
@@ -274,7 +297,6 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
               id: t.id,
               name: t.name ?? t.id,
               unreadCount: t.unreadCount,
-              lastRead: t.lastRead ? new Date(t.lastRead).getTime() : -1,
             })),
           );
         }
@@ -288,7 +310,6 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
             id: t.id,
             name: t.name ?? t.id,
             unreadCount: t.unreadCount,
-            lastRead: t.lastRead ? new Date(t.lastRead).getTime() : -1,
           })),
         );
       }
@@ -307,9 +328,6 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
             id: currentRoom,
             name: roomMeta.name ?? currentRoom,
             unreadCount: roomMeta.unreadCount ?? 0,
-            lastRead: roomMeta.lastRead
-              ? new Date(roomMeta.lastRead).getTime()
-              : -1,
           },
         ]);
       }
@@ -584,6 +602,7 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
       <SpaceSidebarButtons
         {spaceId}
         allowPublicJoin={meta?.joinPolicy.allowPublicJoin ?? false}
+        isAdmin={meta?.isAdmin ?? false}
         onInvite={onInvite}
       />
     {/if}
@@ -777,6 +796,7 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
     bind:open={openEditRoomModal}
     {spaceId}
     id={editingId}
+    federated={editingFederated}
     {renameCategory}
     {deleteCategory}
   />
@@ -804,6 +824,7 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
 {#snippet channelItem(channel: SidebarChannel)}
   {@const isActive = activeChannelId === channel.id}
   {@const channelThreads = threadsByChannel.get(channel.id)}
+  {@const isFederated = channel.federated !== undefined}
   <div class={!channel.canRead ? "opacity-50 pointer-events-none" : ""}>
     <SidebarItemShell
       variant="channel"
@@ -812,7 +833,23 @@ import RoomyMark from "$lib/components/RoomyMark.svelte";
       active={isActive}
       hasUnreadDot={channel.unreadCount > 0}
       hasUnread={channel.unreadCount > 0}
-    />
+    >
+      {#snippet icon()}
+        <ChannelIcon {channel} />
+      {/snippet}
+      {#snippet trailing()}
+        {#if isFederated}
+          <span class="shrink-0" title={channel.federated?.originSpaceName ?? channel.federated?.originSpaceId}>
+            <SpaceAvatar
+              src={resolveBlobUrl(channel.federated?.originSpaceAvatar)}
+              id={channel.federated?.originSpaceId}
+              name={channel.federated?.originSpaceName ?? undefined}
+              size={16}
+            />
+          </span>
+        {/if}
+      {/snippet}
+    </SidebarItemShell>
     {#if !isEditing && channelThreads?.length}
       <LinkedRoomList
         rooms={channelThreads}

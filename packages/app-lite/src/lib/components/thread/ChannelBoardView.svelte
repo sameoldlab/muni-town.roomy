@@ -12,6 +12,7 @@
   } = $props();
 
   const roomId = $derived(page.params.room!);
+
   const threadsQuery = createRoomThreadsQuery(() => roomId);
 
   // Flatten all pages into a single array.
@@ -31,6 +32,14 @@
       name: t.name ?? "Unnamed Thread",
       kind: "space.roomy.thread",
       canonicalParent: t.canonicalParent,
+      // Honest unread: the server marks threads with messages the user
+      // hasn't read, including threads they've never engaged with.
+      unread: t.unread ?? (t.unreadCount ?? 0) > 0,
+      // 3-state: the dot marks threads the user has ENGAGED with and not
+      // finished reading. The server only bumps unreadCount for engaged
+      // users, so count > 0 implies engagement — a never-engaged thread
+      // with messages is bold (unread) but dotless.
+      unreadDot: (t.unreadCount ?? 0) > 0,
       activity: {
         members: t.activity.latestMembers.map((m) => ({
           id: m.did,
@@ -61,5 +70,9 @@
     <div class="text-sm text-red-600 p-2">{threadsQuery.error.message}</div>
   </div>
 {:else}
-  <BoardViewShell {threads} {emptyMessage} {hrefFor} hideChannel {loadMore} {hasMore} />
+  <div class="flex flex-col h-full min-h-0">
+    <div class="flex-1 min-h-0">
+      <BoardViewShell {threads} {emptyMessage} {hrefFor} hideChannel {loadMore} {hasMore} />
+    </div>
+  </div>
 {/if}

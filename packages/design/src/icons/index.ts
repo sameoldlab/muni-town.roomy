@@ -1,11 +1,13 @@
 // Navigation
 export { default as IconArrowDown } from "~icons/ph/arrow-down-bold";
 export { default as IconArrowLeft } from "~icons/ph/arrow-left-bold";
+export { default as IconArrowRight } from "~icons/ph/arrow-right-bold";
 export { default as IconChevronDown } from "~icons/ph/caret-down-bold";
 export { default as IconChevronUp } from "~icons/ph/caret-up-bold";
 export { default as IconChevronRight } from "~icons/ph/caret-right-bold";
 export { default as IconCornerDownRight } from "~icons/ph/arrow-bend-down-right-bold";
 export { default as IconHome } from "~icons/ph/house-bold";
+export { default as IconSearch } from "~icons/ph/magnifying-glass-bold";
 
 // Actions
 export { default as IconBell } from "~icons/ph/bell-bold";
@@ -20,6 +22,7 @@ export { default as IconSave } from "~icons/ph/floppy-disk-bold";
 export { default as IconSend } from "~icons/ph/paper-plane-right-bold";
 export { default as IconSettings } from "~icons/ph/gear-bold";
 export { default as IconShare } from "~icons/ph/share-fat-bold";
+export { default as IconGlobe } from "~icons/ph/globe-bold";
 export { default as IconSmilePlus } from "~icons/ph/smiley-bold";
 export { default as IconSmileyXEyes } from "~icons/ph/smiley-x-eyes-bold";
 export { default as IconTrash } from "~icons/ph/trash-bold";
@@ -49,6 +52,7 @@ export { default as IconMessageCircleOff } from "~icons/ph/chat-circle-slash-bol
 export { default as IconMessageCirclePlus } from "~icons/ph/chat-circle-dots-bold";
 export { default as IconNeedleThread } from "~icons/tabler/needle-thread";
 export { default as IconReply } from "~icons/ph/arrow-bend-up-left-bold";
+export { default as IconForward } from "~icons/ph/arrow-u-down-right-bold";
 
 // Status
 export { default as IconAlertCircle } from "~icons/ph/warning-circle-bold";

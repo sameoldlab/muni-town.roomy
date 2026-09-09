@@ -3,11 +3,11 @@
  *
  * Phase 4 (worker pool): the per-space DBs run on a pool of N `Bun.Worker`
  * threads, hash-routed by `spaceDid` (`hash(spaceDid) % N`), so different
- * spaces' materialization and reads run on different threads in parallel. A
- * dedicated "system" worker owns the global DB, the read-state DB and the
- * event-log DB. There is no monolithic materialised DB — the per-space DBs
- * are the source of truth for space data (Phase 3 of
- * docs/plans/per-space-dbs.md).
+ * spaces' materialization and reads run on different threads in parallel.
+ * Dedicated workers each own one of the shared DBs: a "global" worker, a
+ * "readstate" worker and an "events" worker. There is no monolithic
+ * materialised DB — the per-space DBs are the source of truth for space data
+ * (Phase 3 of docs/plans/per-space-dbs.md).
  *
  * This module owns the shared `DatabasePool` and hands out routed handles:
  * `openDb()` → the router (event-log DB by default, with `forSpace`/`global`/
@@ -28,7 +28,7 @@ import { dbPath, spacesDir } from "./paths.ts";
  * schema-space.sql changes — a bump wipes and re-derives every per-space DB
  * (from the event log via re-materialisation).
  */
-export const SPACE_SCHEMA_VERSION = "1";
+export const SPACE_SCHEMA_VERSION = "2";
 
 /**
  * Global DB schema version (`data/global.sqlite`). Bump whenever
@@ -56,10 +56,18 @@ export const SPACE_SCHEMA_VERSION = "1";
  * one-time repair of active joined-space edges from per-space membership
  * truth. This recovers global DBs wiped by the v4→v5 deployment bug.
  */
-export const GLOBAL_SCHEMA_VERSION = "6";
+export const GLOBAL_SCHEMA_VERSION = "8";
 
-/** Default pool size (per-space workers). Override via `APPSERVER_DB_POOL_SIZE`. */
-const DEFAULT_POOL_SIZE = 4;
+/**
+ * Default pool size (per-space workers). Override via `APPSERVER_DB_POOL_SIZE`.
+ *
+ * Spaces are pinned to a worker by `hashSpace(spaceDid) % size`. At size 4 the
+ * appserver's two highest-traffic spaces collided, so all their reads + bridge
+ * materialization serialized on one thread — the space-worker saturation that
+ * drove the system-worker-split diagnosis (see per-space-dbs.md). 8 spreads the
+ * hot spaces onto distinct workers. Raise/lower via `APPSERVER_DB_POOL_SIZE`.
+ */
+const DEFAULT_POOL_SIZE = 8;
 
 let pool: DatabasePool | null = null;
 let router: PooledDatabase | null = null;
@@ -82,8 +90,8 @@ function poolSizeFromEnv(): number {
 /**
  * Open the process-wide router handle (the "main" remaining DB). Default
  * operations target the event-log DB (`data/roomy-events.sqlite`) on the
- * system worker; `forSpace`/`global`/`readState`/`events`/`backfillEntitySpace`
- * dispatch to the correct worker.
+ * worker for its own shared DB; `forSpace`/`global`/`readState`/`events`/
+ * `backfillEntitySpace` dispatch to the correct worker.
  *
  * `opts.path` is accepted for backwards compatibility with tests that pass
  * `:memory:`; it selects the event-log DB path. `opts.isolated` spins up a
@@ -166,7 +174,7 @@ export async function openSpaceDbForEntity(
 
 /**
  * Return a handle that routes every request to the global DB
- * (`data/global.sqlite`), on the system worker. The global DB is created
+ * (`data/global.sqlite`), on the global worker. The global DB is created
  * lazily on first use and holds `joinedSpace`/`leftSpace` edges, the global
  * `profiles` table, and the `entity_space` entity→space index.
  */
@@ -195,7 +203,7 @@ export function tryOpenGlobalDb(): AsyncDatabase | null {
 
 /**
  * Return a handle that routes every request to the read-state DB
- * (`data/roomy-readstate.sqlite`), on the system worker.
+ * (`data/roomy-readstate.sqlite`), on the readstate worker.
  */
 export function openReadStateDb(): AsyncDatabase {
   ensurePool();
@@ -204,7 +212,7 @@ export function openReadStateDb(): AsyncDatabase {
 
 /**
  * Return a handle that routes every request to the event-log DB
- * (`data/roomy-events.sqlite`), on the system worker.
+ * (`data/roomy-events.sqlite`), on the events worker.
  */
 export function openEventsDb(): AsyncDatabase {
   ensurePool();
@@ -226,7 +234,9 @@ function ensurePool(): void {
 export function poolStats(): {
   size: number;
   spaceWorkers: Array<{ pending: number }>;
-  systemWorker: { pending: number };
+  globalWorker: { pending: number };
+  readStateWorker: { pending: number };
+  eventsWorker: { pending: number };
 } | null {
   return pool?.stats() ?? null;
 }

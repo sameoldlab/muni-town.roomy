@@ -5,10 +5,16 @@
  * server-side: author, content, replyTo, forwardedFrom, reactions, media,
  * linkEmbeds.
  *
+ * A forwarded message is the forwarder's own message; the original is fully
+ * denormalised (author, content, timestamp, reactions, media, link embeds,
+ * and its own `forwardedFrom` chain for nested forwards) and nested under
+ * `forwardedFrom.message` so clients render forwards with no extra fetches.
+ *
  * Strategy: 1 query for the message rows + singleton-edge joins (author,
  * reply, forward), then 3 small batch queries (reactions, image+video+
- * file+link embeds, link embed data) keyed on the page's IDs. Constant query
- * count, regardless of page size.
+ * file+link embeds, link embed data) keyed on the page's IDs, plus one
+ * recursive `selectMessages` batch for the forwarded originals. Constant
+ * query count, regardless of page size.
  *
  * The caller is responsible for authorisation — this helper does not check
  * read access.
@@ -17,7 +23,8 @@
 import type { DbLike } from "../db/types.ts";
 import { decodeContent } from "../db/content.ts";
 import { stripNulls } from "../xrpc/strip-nulls.ts";
-import { hydrateProfiles } from "./profileStore.ts";
+import { hydrateProfiles, resolveProfiles } from "./profileStore.ts";
+import { decodeTime } from "ulidx";
 
 export interface ReactionDto {
   emoji: string;
@@ -59,9 +66,24 @@ export interface MessageDto {
   authorName: string;
   authorHandle?: string;
   authorAvatar?: string;
+  /**
+   * True for system messages — messages authored by the space itself (e.g.
+   * "X joined the space", "X created [thread]"). The author line is not
+   * meaningful for these; clients hide the author identity and rely on the
+   * message body.
+   */
+  system?: boolean;
   timestamp: string;
   replyTo?: string;
-  forwardedFrom?: { name: string; roomId: string };
+  forwardedFrom?: {
+    messageId: string;
+    name: string;
+    roomId: string;
+    /** Fully denormalised original message (its own forwardedFrom chain
+     *  included for nested forwards). Absent when the original couldn't be
+     *  resolved (deleted, not-yet-materialised, or cross-space). */
+    message?: MessageDto;
+  };
   reactions: Array<ReactionDto>;
   media: Array<MediaDto>;
   /** Link embeds with enriched metadata from the embed service. */
@@ -70,10 +92,21 @@ export interface MessageDto {
 
 export type SelectScope =
   | { kind: "room"; roomId: string; limit: number; cursor: string | null }
-  | { kind: "ids"; ids: string[] };
+  | {
+      kind: "ids";
+      ids: string[];
+      /**
+       * Internal: ids already on the current forward-resolution chain. A
+       * forward never re-resolves an id already seen, bounding pathological
+       * cycles (A forwards B, B forwards A) to one pass instead of
+       * recursing forever.
+       */
+      forwardChain?: string[];
+    };
 
 interface BaseRow {
   id: string;
+  stream_id: string | null;
   sort_idx: string | null;
   room: string | null;
   mime_type: string | null;
@@ -100,6 +133,7 @@ export async function selectMessages(
     const sql = `
       select
         e.id as id,
+        e.stream_id as stream_id,
         e.sort_idx as sort_idx,
         e.room as room,
         cc.mime_type as mime_type,
@@ -130,7 +164,13 @@ export async function selectMessages(
       where e.room = ?1
         and (cc.entity is not null or forward_e.tail is not null)
         ${scope.cursor ? "and e.id < ?2" : ""}
-      order by coalesce(e.sort_idx, e.id) desc
+      -- Order by sort_idx directly (not coalesce(sort_idx, id)) so SQLite can
+      -- use idx_entities_room_sort and stop after the limit. Messages always
+      -- have sort_idx set by the materializer, so the coalesce fallback to id
+      -- was never exercised for the rows this filter keeps; the coalesce forced
+      -- a full temp-B-tree sort of every entity in the room, which is
+      -- catastrophic on a large bridged channel.
+      order by e.sort_idx desc
       limit ${Math.max(1, Math.min(scope.limit, 100))}
     `;
     const stmt = db.query(sql);
@@ -147,6 +187,7 @@ export async function selectMessages(
         `
         select
           e.id as id,
+          e.stream_id as stream_id,
           e.sort_idx as sort_idx,
           e.room as room,
           cc.mime_type as mime_type,
@@ -184,67 +225,36 @@ export async function selectMessages(
 
   const ids = baseRows.map((r) => r.id);
 
-  // ── Step 2: forwarded-message body resolution ─────────────────────────
-  // For rows whose own `data` is null but have a `forward_target`, fetch the
-  // original message's content and author and substitute.
+  // ── Step 2: forwarded-original resolution ─────────────────────────────
+  // Every forward row (forward-as-embed with own content, or a legacy
+  // forward reference with no own content) carries a `forwardedFrom`. The
+  // original is fetched as a fully denormalised MessageDto (via
+  // selectMessages, so its own forwardedFrom chain, reactions, media and
+  // link embeds are all resolved) and embedded in `forwardedFrom.message`.
+  // Clients render the embedded original directly — no extra fetches.
+  //
+  // Previously this step substituted the original's content and author into
+  // the forward row, which made a forward look like the ORIGINAL's message
+  // and (with the forwarder's own content present) rendered the same content
+  // twice. That substitution is gone: a forward is always the forwarder's
+  // message, with the original nested under `forwardedFrom.message`.
+  //
+  // Constant query count: one `selectMessages` batch call per chain level.
+  // The chain set bounds pathological cycles (A forwards B, B forwards A):
+  // a forward never re-resolves an id already on its chain.
+  const chain = new Set(scope.kind === "ids" ? (scope.forwardChain ?? []) : []);
   const forwardTargets = baseRows
-    .filter((r) => r.data === null && r.forward_target)
+    .filter((r) => r.forward_target && !chain.has(r.forward_target))
     .map((r) => r.forward_target!) as string[];
 
-  const forwardOrig = new Map<
-    string,
-    {
-      mime_type: string | null;
-      data: Buffer | Uint8Array | null;
-      timestamp: number | null;
-      author_did: string | null;
-      author_name: string | null;
-      author_handle: string | null;
-      author_avatar: string | null;
-    }
-  >();
+  const forwardOriginalDto = new Map<string, MessageDto>();
   if (forwardTargets.length > 0) {
-    const ph = forwardTargets.map(() => "?").join(",");
-    const rows = await db
-      .query(
-        `select
-           e.id as id,
-           cc.mime_type as mime_type,
-           cc.data as data,
-           cc.timestamp as timestamp,
-           author_e.tail as author_did,
-           author_info.name as author_name,
-           author_info.avatar as author_avatar,
-           author_user.handle as author_handle
-         from entities e
-         left join comp_content cc on cc.entity = e.id
-         left join edges author_e
-           on author_e.head = e.id and author_e.label = 'author'
-         left join comp_info author_info on author_info.entity = author_e.tail
-         left join comp_user author_user on author_user.did = author_e.tail
-         where e.id in (${ph})`,
-      )
-      .all<{
-        id: string;
-        mime_type: string | null;
-        data: Buffer | Uint8Array | null;
-        timestamp: number | null;
-        author_did: string | null;
-        author_name: string | null;
-        author_handle: string | null;
-        author_avatar: string | null;
-      }>([...forwardTargets]);
-    for (const r of rows) {
-      forwardOrig.set(r.id, {
-        mime_type: r.mime_type,
-        data: r.data,
-        timestamp: r.timestamp,
-        author_did: r.author_did,
-        author_name: r.author_name,
-        author_handle: r.author_handle,
-        author_avatar: r.author_avatar,
-      });
-    }
+    const { messages: originals } = await selectMessages(
+      db,
+      { kind: "ids", ids: [...new Set(forwardTargets)], forwardChain: [...chain, ...forwardTargets] },
+      viewerDid,
+    );
+    for (const orig of originals) forwardOriginalDto.set(orig.id, orig);
   }
 
   // ── Step 3: batch-fetch reactions / embeds / link embed data keyed by id ──
@@ -412,28 +422,16 @@ export async function selectMessages(
   }
 
   const messages: MessageDto[] = baseRows.map((r) => {
-    // If this row is a forward reference (no own content, has forward_target),
-    // substitute the original's content/author.
-    let mime = r.mime_type;
-    let data = r.data;
-    let ts = r.timestamp;
-    let authorDid = r.author_did;
-    let authorName = r.author_name;
-    let authorHandle = r.author_handle;
-    let authorAvatar = r.author_avatar;
-
-    if (r.data === null && r.forward_target) {
-      const orig = forwardOrig.get(r.forward_target);
-      if (orig) {
-        mime = orig.mime_type;
-        data = orig.data;
-        ts = orig.timestamp;
-        authorDid = orig.author_did;
-        authorName = orig.author_name;
-        authorHandle = orig.author_handle;
-        authorAvatar = orig.author_avatar;
-      }
-    }
+    // A forward row keeps its OWN content and author — it is the forwarder's
+    // message. The original is nested under `forwardedFrom.message` (see
+    // Step 2) for clients to render; it is never substituted into the row.
+    const mime = r.mime_type;
+    const data = r.data;
+    const ts = r.timestamp;
+    const authorDid = r.author_did;
+    const authorName = r.author_name;
+    const authorHandle = r.author_handle;
+    const authorAvatar = r.author_avatar;
 
     const content = decodeContent(mime, data);
 
@@ -462,14 +460,31 @@ export async function selectMessages(
       authorName: authorName ?? "",
       authorHandle: authorHandle,
       authorAvatar: authorAvatar,
-      timestamp: ts != null ? new Date(ts).toISOString() : "",
+      system:
+        authorDid != null && r.stream_id != null && authorDid === r.stream_id
+          ? true
+          : undefined,
+      // Legacy forward-reference rows (forwardMessages.v0) carry no
+      // comp_content, so cc.timestamp is NULL. Fall back to the forward
+      // event's own ULID time — the entity id IS the forward event's ULID —
+      // so the forwarder's timestamp is real (the client renders it in the
+      // forward context line and sorts diffs by it; an empty string rendered
+      // as "Invalid Date" and NaN-sorted to the end of the cache).
+      timestamp:
+        ts != null
+          ? new Date(ts).toISOString()
+          : r.forward_target != null
+            ? new Date(decodeTime(r.id)).toISOString()
+            : "",
       replyTo: r.reply_to,
       forwardedFrom:
         r.forward_target != null
-          ? {
+          ? stripNulls({
+              messageId: r.forward_target,
               name: r.forward_target_room_name ?? "",
               roomId: r.forward_target_room ?? "",
-            }
+              message: forwardOriginalDto.get(r.forward_target) ?? null,
+            })
           : null,
       reactions,
       media: mediaForMsg,
@@ -492,6 +507,14 @@ export async function selectMessages(
     },
   );
 
+  // System messages are authored by the space and reference a *different*
+  // user (the joiner / thread creator) in their body by DID — the SDK
+  // materialiser stores the raw DID as the link label deterministically.
+  // Resolve those DIDs to the user's current handle/display name here, at
+  // read time, so the UI never shows a bare DID and we don't bake a missing
+  // or stale handle into the stored message.
+  await resolveSystemMessageNames(messages);
+
   // Sort ascending so callers get oldest → newest (matches spec example).
   // sort_idx is set by the materializer for messages (using the canonical
   // timestamp from the ULID or timestampOverride extension). Fall back to
@@ -511,4 +534,54 @@ export async function selectMessages(
   }
 
   return { messages, nextCursor };
+}
+
+/**
+ * Resolve display names for users referenced by system messages.
+ *
+ * A system message is authored by the space and references a *different*
+ * user (the joiner / thread creator) in its markdown body as
+ * `[@<did>](/user/<did>)`. The materialiser stores the raw DID as the link
+ * label deterministically, so resolve it to the user's current display
+ * name / handle from the global profile store and rewrite the link label —
+ * the UI never shows a bare DID. DIDs we can't resolve are left untouched
+ * (the user has no profile anywhere); the label remains a clickable link.
+ */
+async function resolveSystemMessageNames(messages: MessageDto[]): Promise<void> {
+  const systemMessages = messages.filter((m) => m.system);
+  if (systemMessages.length === 0) return;
+
+  // Collect every `/user/<did>` reference so we can batch-resolve profiles.
+  const userLinkRe = /\[\@[^\]]+\]\(\/user\/([^)]+)\)/g;
+  const dids = new Set<string>();
+  for (const m of systemMessages) {
+    for (const match of m.content.matchAll(userLinkRe)) {
+      const raw = match[1];
+      if (raw) dids.add(decodeURIComponent(raw));
+    }
+  }
+  if (dids.size === 0) return;
+
+  const profiles = await resolveProfiles([...dids]);
+  const labelRe = /\[\@([^\]]+)\]\(\/user\/([^)]+)\)/g;
+  for (const m of systemMessages) {
+    if (!m.content.includes("/user/")) continue;
+    m.content = m.content.replace(
+      labelRe,
+      (whole: string, label: string, didPath: string) => {
+        const did = decodeURIComponent(didPath);
+        const p = profiles.get(did);
+        // Only rewrite the deterministic DID label (label === DID path); leave
+        // any pre-existing baked handle or user-authored content untouched.
+        if (!p || label !== didPath) return whole;
+        // Treat empty/whitespace names as absent: the Bluesky appview returns
+        // displayName:"" for users without one, and "" would win over the
+        // handle (and then fail the !rendered guard, bailing to the raw DID).
+        const name = p.name?.trim() ? p.name : null;
+        const rendered = name ?? (p.handle ? `@${p.handle}` : null);
+        if (!rendered) return whole;
+        return `[${rendered}]${whole.slice(whole.indexOf("("))}`;
+      },
+    );
+  }
 }

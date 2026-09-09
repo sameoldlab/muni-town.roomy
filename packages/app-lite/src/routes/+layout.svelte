@@ -6,7 +6,12 @@
   import { queryClient } from "$lib/client";
   import { auth, init, updateProfile } from "$lib/auth.svelte";
   import { installPushDebug } from "$lib/push-debug";
-  import { installPushSubscriptionChangeListener } from "$lib/push.svelte";
+  import { preloadSpaceSidebars } from "$lib/preload";
+  import { initFaro } from "$lib/telemetry/faro";
+  import {
+    installNotificationNavigateListener,
+    installPushSubscriptionChangeListener,
+  } from "$lib/push.svelte";
   import { startSync, stopSync } from "$lib/sync.svelte";
   import { restoreScrollPositionsFromStorage, saveScrollPositionsToStorage } from "$lib/components/chat/scroll-position.svelte";
   import {
@@ -40,6 +45,9 @@
     // failures) that would otherwise leave the app unusable. In the PWA the
     // page cannot be manually refreshed, so this is the safety net.
     installGlobalErrorRecovery();
+    // Faro first so console capture/error instrumentation is active before
+    // auth/bootstrap logs anything (no-op unless PUBLIC_FARO_URL is set).
+    initFaro();
     console.log("[app-lite env debug] $env/dynamic/public:", {
       PUBLIC_PDS: dynamicEnv.PUBLIC_PDS,
       PUBLIC_PDS_HANDLE_SUFFIX: dynamicEnv.PUBLIC_PDS_HANDLE_SUFFIX,
@@ -50,7 +58,18 @@
     init();
     installPushDebug();
     installPushSubscriptionChangeListener();
+    installNotificationNavigateListener();
     restoreScrollPositionsFromStorage();
+
+    // Background data preloading: once auth settles, prefetch the sidebar
+    // for every joined space so opening a space renders instantly. The
+    // preload is idempotent (ensureQueryData) and best-effort.
+    const preloadTimer = setInterval(() => {
+      if (!auth.initializing && auth.authenticated) {
+        clearInterval(preloadTimer);
+        void preloadSpaceSidebars();
+      }
+    }, 250);
 
     // Save scroll positions before page unload
     const handleBeforeUnload = () => {
@@ -66,6 +85,7 @@
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       clearInterval(saveInterval);
+      clearInterval(preloadTimer);
       saveScrollPositionsToStorage();
     };
   });

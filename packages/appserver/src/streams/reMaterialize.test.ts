@@ -118,7 +118,7 @@ describe("reMaterializeFromLocalEvents", () => {
     await seedEvents(db, streamDid, events);
 
     // ── First pass ──────────────────────────────────────────────────────
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Snapshot materialized row counts (per-space DB)
     const entities1 = await space
@@ -157,7 +157,7 @@ describe("reMaterializeFromLocalEvents", () => {
     expect(infoRow1!.name).toBe("Idempotent Space");
 
     // ── Second pass — should not change anything ──────────────────────
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const entities2 = await space
       .query("select count(*) as cnt from entities")
@@ -210,7 +210,7 @@ describe("reMaterializeFromLocalEvents", () => {
       events.length,
     );
 
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const globalDb = db.global!();
     await globalDb.run(
@@ -223,14 +223,18 @@ describe("reMaterializeFromLocalEvents", () => {
       member,
       streamDid,
     );
+    // Simulate an in-progress v6 migration (a DB that was mid-upgrade when
+    // the v7 bump landed): fresh DBs only stamp the current version, so the
+    // pending v6 marker must be created explicitly. The registered v6 task
+    // must still run and reconstruct membership.
     await globalDb.run(
-      "update global_schema_migrations set completed_at = null where version = '6'",
+      "insert or ignore into global_schema_migrations (version, completed_at) values ('6', null)",
     );
 
     // The per-space cursor is current, so no events are replayed. The pending
     // global migration must still reconstruct membership from the retained
     // member edge, then mark itself complete.
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const joined = await globalDb
       .query(
@@ -264,7 +268,7 @@ describe("reMaterializeFromLocalEvents", () => {
       member,
       events.length,
     );
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const globalDb = db.global!();
     await globalDb.run(
@@ -272,7 +276,7 @@ describe("reMaterializeFromLocalEvents", () => {
       member,
       streamDid,
     );
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const joined = await globalDb
       .query(
@@ -284,7 +288,7 @@ describe("reMaterializeFromLocalEvents", () => {
 
   test("empty events DB", async () => {
     // No events seeded — should be a no-op
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // No streams in the event-log DB → nothing materialized anywhere.
     const streams = await db
@@ -305,7 +309,7 @@ describe("reMaterializeFromLocalEvents", () => {
     await seedEvents(db, stream1, events1);
     await seedEvents(db, stream2, events2);
 
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Both streams should have entities (in their own per-space DBs)
     const stream1Entities = await space1
@@ -349,7 +353,7 @@ describe("reMaterializeFromLocalEvents", () => {
     await seedEvents(db, streamDid, events);
 
     // First call: full replay (no cursor row → materialized_to defaults to -1)
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const entitiesAfterFirst = await space
       .query("select count(*) as cnt from entities where stream_id = ?")
@@ -365,7 +369,7 @@ describe("reMaterializeFromLocalEvents", () => {
     expect(cursor!.materialized_to).toBe(events.length - 1);
 
     // Second call: cursor is current → stream is skipped, no replay
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Row counts unchanged
     const entitiesAfterSecond = await space
@@ -388,7 +392,7 @@ describe("reMaterializeFromLocalEvents", () => {
     await seedEvents(db, streamDid, initialEvents);
 
     // First call: materialize all initial events
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const cursorAfterFirst = await space
       .query("select materialized_to from materialization_cursor where stream_id = ?")
@@ -400,7 +404,7 @@ describe("reMaterializeFromLocalEvents", () => {
     await seedEvents(db, streamDid, extraEvents, ADMIN, initialEvents.length);
 
     // Second call: should only replay the new events (idx > cursor)
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Cursor should advance to the new latest idx
     const cursorAfterSecond = await space
@@ -422,14 +426,14 @@ describe("reMaterializeFromLocalEvents", () => {
     await seedEvents(db, behind, events2);
 
     // First call: materialize both
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Add more events to "behind" only
     const extraEvents = createDefaultSpaceEvents({ name: "Behind Extra" });
     await seedEvents(db, behind, extraEvents, ADMIN, events2.length);
 
     // Second call: "caughtUp" should be skipped, "behind" should replay extras
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     const caughtUpCursor = await caughtUpSpace
       .query("select materialized_to from materialization_cursor where stream_id = ?")
@@ -449,7 +453,7 @@ describe("reMaterializeFromLocalEvents", () => {
     const events = makeRoomEvents(600);
     await seedEvents(db, streamDid, events);
 
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Cursor should be at the last event idx (599)
     const cursor = await space
@@ -464,7 +468,7 @@ describe("reMaterializeFromLocalEvents", () => {
     expect(roomCount!.cnt).toBe(600);
 
     // Second call: cursor is current → skipped
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
     const cursor2 = await space
       .query("select materialized_to from materialization_cursor where stream_id = ?")
       .get<{ materialized_to: number }>(streamDid);
@@ -498,7 +502,7 @@ describe("reMaterializeFromLocalEvents", () => {
 
     // Now simulate a restart: reMaterializeFromLocalEvents should see the
     // cursor at 499 and only replay events 500-999 (the second chunk).
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // Cursor should now be at 999
     const cursorAfterResume = await space
@@ -545,7 +549,7 @@ describe("reMaterializeFromLocalEvents", () => {
     expect(cursor!.materialized_to).toBe(2); // last event idx (0-indexed)
 
     // reMaterializeFromLocalEvents should skip this stream (cursor is current)
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
     const cursor2 = await space
       .query("select materialized_to from materialization_cursor where stream_id = ?")
       .get<{ materialized_to: number }>(streamDid);
@@ -607,7 +611,7 @@ describe("reMaterializeFromLocalEvents", () => {
       },
     ]);
 
-    await reMaterializeFromLocalEvents(db);
+    await reMaterializeFromLocalEvents(db, async () => []);
 
     // The room entity must be resolvable via the global entity_space index
     // (Phase 3: openSpaceDbForEntity reads this to find the owning space).

@@ -6,29 +6,35 @@
   import { IconBell, IconSettings, IconUserPlus, IconX } from "@roomy/design/icons";
   import { settingsBar } from "$lib/components/layout/settings-bar.svelte";
   import { spaceNavigation } from "$lib/components/layout/last-room.svelte";
-  import { isPushFeatureEnabled } from "$lib/push.svelte";
-  import { isAuthenticated, isInitializing } from "$lib/auth.svelte";
+  import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
+  import { createFederationRequestsQuery } from "$lib/queries/federation";
 
   let {
     spaceId = $bindable(),
     allowPublicJoin = false,
+    isAdmin = false,
     onInvite,
   }: {
     spaceId?: string;
     allowPublicJoin?: boolean;
+    isAdmin?: boolean;
     onInvite?: () => void;
   } = $props();
 
   const currentSpaceId = $derived(spaceId ?? page.params.space);
 
-  let pushFeatureEnabled = $state(false);
-  $effect(() => {
-    if (!isInitializing() && isAuthenticated()) {
-      isPushFeatureEnabled().then((enabled) => {
-        pushFeatureEnabled = enabled;
-      });
-    }
-  });
+  // Channel-federation flag gate + pending-request badge (admins only).
+  const flagsQuery = createFeatureFlagsQuery();
+  const federationEnabled = $derived(
+    flagsQuery.data?.flags.includes("channel-federation") ?? false,
+  );
+  const requestsQuery = createFederationRequestsQuery(
+    () => currentSpaceId ?? "",
+    { enabled: () => federationEnabled && isAdmin && !!currentSpaceId },
+  );
+  const pendingRequestCount = $derived(
+    requestsQuery.data?.requests?.length ?? 0,
+  );
 
   // When the settings panel is open, the button shows an X (close) icon.
   // When closed, it shows the settings cog.
@@ -45,7 +51,7 @@
     settingsBar.expanded = false;
     const sid = currentSpaceId;
     if (!sid) return;
-    const destination = spaceNavigation.get(sid)?.destination;
+    const destination = spaceNavigation.get(sid);
     const target =
       destination?.kind === "room"
         ? `/${sid}/${destination.id}`
@@ -79,7 +85,6 @@
     aria-label="Notifications"
     title="Notifications"
     onclick={() => goto(`/${currentSpaceId}/settings/notifications`)}
-    disabled={!pushFeatureEnabled}
   >
     <IconBell />
   </Button>
@@ -100,20 +105,32 @@
        navigating; the user navigates by selecting a page from the panel.
        Closing it navigates back to the space's most recently accessed channel,
        like the space selector. The button shows an X when the panel is open. -->
-  <Button
-    variant="ghost"
-    size="default"
-    class="w-full justify-center"
-    aria-label={settingsBar.expanded ? "Close settings" : "Settings"}
-    title={settingsBar.expanded ? "Close settings" : "Settings"}
-    aria-expanded={settingsBar.expanded}
-    data-current={settingsBar.expanded}
-    onclick={toggleSettings}
-  >
-    {#if settingsBar.expanded}
-      <IconX />
-    {:else}
-      <IconSettings />
-    {/if}
-  </Button>
+  <div class="relative">
+    <Button
+      variant="ghost"
+      size="default"
+      class="w-full justify-center"
+      aria-label={settingsBar.expanded ? "Close settings" : "Settings"}
+      title={settingsBar.expanded ? "Close settings" : "Settings"}
+      aria-expanded={settingsBar.expanded}
+      data-current={settingsBar.expanded}
+      onclick={toggleSettings}
+    >
+      <span class="relative inline-flex">
+        {#if settingsBar.expanded}
+          <IconX />
+        {:else}
+          <IconSettings />
+        {/if}
+        {#if !settingsBar.expanded && pendingRequestCount > 0}
+          <span
+            class="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-accent-500 text-white text-[10px] font-bold flex items-center justify-center pointer-events-none"
+            title={`${pendingRequestCount} pending federation ${pendingRequestCount === 1 ? "request" : "requests"}`}
+          >
+            {pendingRequestCount}
+          </span>
+        {/if}
+      </span>
+    </Button>
+  </div>
 </div>

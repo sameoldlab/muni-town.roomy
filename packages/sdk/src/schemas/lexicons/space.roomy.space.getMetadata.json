@@ -96,6 +96,31 @@
         }
       }
     },
+    "federated": {
+      "type": "object",
+      "required": [
+        "originSpaceId",
+        "permission"
+      ],
+      "properties": {
+        "originSpaceId": {
+          "type": "string"
+        },
+        "permission": {
+          "type": "string",
+          "knownValues": [
+            "read",
+            "readwrite"
+          ]
+        },
+        "originSpaceAvatar": {
+          "type": "string"
+        },
+        "originSpaceName": {
+          "type": "string"
+        }
+      }
+    },
     "channels": {
       "type": "object",
       "required": [
@@ -132,6 +157,10 @@
             "type": "ref",
             "ref": "#activeThreads"
           }
+        },
+        "federated": {
+          "type": "ref",
+          "ref": "#federated"
         },
         "lastRead": {
           "type": "string"
@@ -246,6 +275,31 @@
         }
       }
     },
+    "federated2": {
+      "type": "object",
+      "required": [
+        "originSpaceId",
+        "permission"
+      ],
+      "properties": {
+        "originSpaceId": {
+          "type": "string"
+        },
+        "permission": {
+          "type": "string",
+          "knownValues": [
+            "read",
+            "readwrite"
+          ]
+        },
+        "originSpaceAvatar": {
+          "type": "string"
+        },
+        "originSpaceName": {
+          "type": "string"
+        }
+      }
+    },
     "orphans": {
       "type": "object",
       "required": [
@@ -282,6 +336,10 @@
             "type": "ref",
             "ref": "#activeThreads2"
           }
+        },
+        "federated": {
+          "type": "ref",
+          "ref": "#federated2"
         },
         "lastRead": {
           "type": "string"
@@ -352,7 +410,9 @@
             "isAdmin",
             "isMember",
             "joinPolicy",
-            "sidebar"
+            "sidebar",
+            "unreadRoomCount",
+            "unreadThreadCount"
           ],
           "properties": {
             "isAdmin": {
@@ -368,6 +428,12 @@
             "sidebar": {
               "type": "ref",
               "ref": "#sidebar"
+            },
+            "unreadRoomCount": {
+              "type": "integer"
+            },
+            "unreadThreadCount": {
+              "type": "integer"
             },
             "avatar": {
               "type": "string"

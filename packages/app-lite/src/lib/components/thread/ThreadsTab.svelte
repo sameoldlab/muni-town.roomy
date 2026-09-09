@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { createSpaceThreadsQuery } from "$lib/queries/threads";
+  import { createSpaceThreadsQuery, type SpaceRoom } from "$lib/queries/threads";
   import BoardViewShell from "@roomy/design/components/content/thread/boardView/BoardView.svelte";
   import type { ThreadInfo } from "@roomy/design/components/content/thread/boardView/types.ts";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
@@ -8,64 +8,77 @@
 
   let { spaceId }: { spaceId: string } = $props();
 
-  const threadsQuery = createSpaceThreadsQuery(() => spaceId);
+  const roomsQuery = createSpaceThreadsQuery(() => spaceId);
 
-  // Flatten all pages into a single array.
-  let threads = $derived<ThreadInfo[]>(
-    (threadsQuery.data?.pages.flatMap((p) => p.threads) ?? []).map(mapThread),
+  // Flatten all pages into a single array. The space index board shows
+  // channels AND threads, ordered by latest activity.
+  let rooms = $derived<ThreadInfo[]>(
+    (roomsQuery.data?.pages.flatMap((p) => p.rooms) ?? []).map(mapRoom),
   );
 
-  let hasMore = $derived(threadsQuery.hasNextPage ?? false);
+  let hasMore = $derived(roomsQuery.hasNextPage ?? false);
 
   function loadMore() {
-    threadsQuery.fetchNextPage();
+    roomsQuery.fetchNextPage();
   }
 
-  function mapThread(t: {
-    id: string;
-    name?: string;
-    channelName?: string;
-    canonicalParent?: string;
-    unreadCount?: number;
-    activity: {
-      latestTimestamp?: string;
-      latestMembers: Array<{ did: string; name?: string | null; avatar?: string | null }>;
-    };
-  }): ThreadInfo {
+  function mapRoom(r: SpaceRoom): ThreadInfo {
     return {
-      id: t.id,
-      name: t.name ?? "Unnamed Thread",
-      kind: "space.roomy.thread",
-      channelName: t.channelName,
-      canonicalParent: t.canonicalParent,
-      unread: (t.unreadCount ?? 0) > 0,
+      id: r.id,
+      name: r.name ?? "Unnamed Thread",
+      kind: r.kind === "channel" ? "space.roomy.channel" : "space.roomy.thread",
+      // Channels have no parent channel; show their own name in the right
+      // column too so the board reads consistently (duplicated — intended).
+      channelName: r.channelName ?? (r.kind === "channel" ? r.name : undefined),
+      // Honest unread: the server marks a room unread when it has messages
+      // the user hasn't read (threads this user never engaged with count
+      // as unread; channels follow the sidebar's unreadCount).
+      unread: r.unread ?? (r.unreadCount ?? 0) > 0,
+      // 3-state: the dot marks rooms the user has ENGAGED with and not
+      // finished reading. For threads, the server only bumps unreadCount
+      // for engaged users, so count > 0 implies engagement — a
+      // never-engaged thread with messages is bold but dotless. Channels
+      // always get the dot when unread (their count is the sidebar's).
+      unreadDot: (r.unreadCount ?? 0) > 0,
       activity: {
-        members: t.activity.latestMembers.map((m) => ({
+        members: r.activity.latestMembers.map((m) => ({
           id: m.did,
           name: m.name ?? null,
           avatar: resolveBlobUrl(m.avatar ?? undefined) ?? null,
         })),
-        latestTimestamp: t.activity.latestTimestamp
-          ? new Date(t.activity.latestTimestamp).getTime()
+        latestTimestamp: r.activity.latestTimestamp
+          ? new Date(r.activity.latestTimestamp).getTime()
           : 0,
+        ...(r.activity.latestMessage
+          ? {
+              latestMessage: {
+                id: r.activity.latestMessage.id,
+                text: r.activity.latestMessage.content,
+              },
+            }
+          : {}),
       },
     };
   }
 
-  function hrefFor(thread: ThreadInfo): string {
-    const parentParam = thread.canonicalParent
-      ? "?parent=" + thread.canonicalParent
+  function hrefFor(room: ThreadInfo): string {
+    const parentParam = room.canonicalParent
+      ? "?parent=" + room.canonicalParent
       : "";
-    return `/${page.params.space}/${thread.id}${parentParam}`;
+    return `/${page.params.space}/${room.id}${parentParam}`;
   }
 </script>
 
-{#if threadsQuery.isPending && !threadsQuery.data}
+{#if roomsQuery.isPending && !roomsQuery.data}
   <div class="h-full w-full flex items-center justify-center">
-    <div class="text-sm text-base-400 p-2">Loading threads…</div>
+    <div class="text-sm text-base-400 p-2">Loading…</div>
   </div>
-{:else if threadsQuery.isError && !threadsQuery.data}
-  <ErrorMessage message={threadsQuery.error.message} class="h-full w-full justify-center" />
+{:else if roomsQuery.isError && !roomsQuery.data}
+  <ErrorMessage message={roomsQuery.error.message} class="h-full w-full justify-center" />
 {:else}
-  <BoardViewShell {threads} emptyMessage="No threads yet" {hrefFor} {loadMore} {hasMore} />
+  <div class="flex flex-col h-full min-h-0">
+    <div class="flex-1 min-h-0">
+      <BoardViewShell threads={rooms} emptyMessage="No activity yet" {hrefFor} {loadMore} {hasMore} />
+    </div>
+  </div>
 {/if}

@@ -27,7 +27,8 @@ import type {
 
 import { materialize } from "./materializer.ts";
 import { applyBundle, getSavepointMutex } from "./applyBundle.ts";
-import { isGlobalEdgeStatement } from "./statementRouting.ts";
+import { canonicalMessageTimestamp } from "./sortIdx.ts";
+import { isGlobalDbStatement } from "./statementRouting.ts";
 import type { StatementBundleSuccess } from "./types.ts";
 import {
   isDebugEnabled,
@@ -44,6 +45,7 @@ import {
   type MembershipIntent,
 } from "../queries/userSpaceMembership.ts";
 import { decodeContent, decodeRichTextBody } from "../db/content.ts";
+import { enqueueIndexMessage, enqueueDeleteMessage } from "../search/indexer.ts";
 import { RICHTEXT_MIME, extractFacetUrls } from "@roomy-space/sdk";
 import { decodeTime, ulid } from "ulidx";
 
@@ -160,7 +162,7 @@ export async function applyBatch(
               : Array.isArray(params)
                 ? (params as unknown[])
                 : [params],
-          derived: isGlobalEdgeStatement(stmt.sql) ? "global" : "space",
+          derived: isGlobalDbStatement(stmt.sql) ? "global" : "space",
         });
         // Phase 3: maintain the global entity→space index. Every `insert
         // into entities` statement carries (id, stream_id) as its first two
@@ -185,15 +187,7 @@ export async function applyBatch(
 
       // sort_idx: inline the UPDATE (no SELECT needed)
       if (e.event.$type === "space.roomy.message.createMessage.v0") {
-        const event = e.event as Record<string, unknown>;
-        const overrideExt =
-          (event.extensions as Record<string, unknown> | undefined)?.["space.roomy.extension.timestampOverride.v0"] as
-            | { timestamp?: string }
-            | undefined;
-        const timestamp = overrideExt
-          ? Number(overrideExt.timestamp)
-          : decodeTime(e.event.id);
-        const sortIdx = ulid(timestamp) as Ulid;
+        const sortIdx = ulid(canonicalMessageTimestamp(e.event)) as Ulid;
         chunkSteps.push({
           type: "run",
           sql: "update entities set sort_idx = ? where id = ? and sort_idx is null",
@@ -202,22 +196,22 @@ export async function applyBatch(
         });
       }
 
-      // forwardMessages sort_idx copy
-      if (
-        e.event.$type === "space.roomy.message.forwardMessages.v0" &&
-        "messageIds" in e.event &&
-        Array.isArray((e.event as Record<string, unknown>).messageIds)
-      ) {
-        const messageIds = (e.event as Record<string, unknown>).messageIds as string[];
-        const originalId = messageIds[0];
-        if (originalId) {
-          chunkSteps.push({
-            type: "run",
-            sql: "update entities set sort_idx = (select sort_idx from entities where id = ?) where id = ? and sort_idx is null",
-            params: [originalId, e.event.id],
-            derived: "space",
-          });
-        }
+      // forwardMessages sort_idx: the forward-reference entity sorts by the
+      // forward event's OWN time (its ULID), so a forward appears at the top
+      // of the destination room's timeline — matching the modern
+      // forward-as-embed representation (createMessage + forward attachment).
+      // Previously the original's sort_idx was copied, which buried a forward
+      // of an old message deep in history, outside the first getMessages page
+      // (the client's room query returns the newest `limit` rows), so the
+      // forward flashed in via the WS diff and vanished on the next refetch.
+      if (e.event.$type === "space.roomy.message.forwardMessages.v0") {
+        const sortIdx = ulid(decodeTime(e.event.id)) as Ulid;
+        chunkSteps.push({
+          type: "run",
+          sql: "update entities set sort_idx = ? where id = ? and sort_idx is null",
+          params: [sortIdx, e.event.id],
+          derived: "space",
+        });
       }
 
       chunkSteps.push({ type: "exec", sql: `release ${savepoint}`, derived: "none" });
@@ -239,7 +233,19 @@ export async function applyBatch(
       if (done >= nextLogAt && done < total) {
         nextLogAt = done + logInterval;
         const pct = Math.round((done / total) * 100);
-        log.info("materialize", `${streamId}: ${done}/${total} events (${pct}%) — ${stats.applied} applied, ${stats.materializerErrors} materializer errors, ${stats.applyErrors} apply errors`);
+        // Structured progress telemetry (Loki): one line per ~10% of the
+        // batch. Query in Grafana with
+        // `{scope="materialize"} | json | unwrap applied`.
+        log.info("[materialize] progress", {
+          streamId,
+          done,
+          total,
+          pct,
+          applied: stats.applied,
+          materializerErrors: stats.materializerErrors,
+          applyErrors: stats.applyErrors,
+          isBackfill: opts.isBackfill,
+        });
       }
     }
 
@@ -334,7 +340,7 @@ export async function applyBatch(
                 reason: "apply",
                 message: `[globalDb] ${message}`,
               });
-              console.error(
+              log.error(
                 `[materialize] globalDb write failed for ${streamId} (per-space intact): ${message}`,
               );
             }
@@ -420,6 +426,20 @@ export async function applyBatch(
     },
   ]);
 
+  // Completion telemetry (Loki): one line per batch. The final applied count
+  // is the cross-restart progress signal for a stream (the per-space
+  // materialization_cursor persists), so a Grafana panel can track how far a
+  // space has materialized over time. Query with
+  // `{scope="materialize"} | json | unwrap applied`.
+  log.info("[materialize] done", {
+    streamId,
+    total,
+    applied: stats.applied,
+    materializerErrors: stats.materializerErrors,
+    applyErrors: stats.applyErrors,
+    isBackfill: opts.isBackfill,
+  });
+
   return stats;
 }
 
@@ -449,6 +469,11 @@ async function applyChunkSideEffects(
         dependsOn: [],
       };
       await applyBundle(db, bundle, { isBackfill, streamId }, globalDb, openReadStateDb());
+
+      // Search indexing (Phase 2): enqueue the message for the out-of-band
+      // Qdrant indexer — the worker re-reads the materialised rows, so no
+      // synchronous search work happens here.
+      enqueueIndexMessage(streamId, e.event.id);
 
       const body = (e.event as Record<string, unknown>).body as
         | { mimeType?: string; data?: { buf: Uint8Array } }
@@ -493,6 +518,19 @@ async function applyChunkSideEffects(
             );
           }
         }
+      }
+    } else if (e.event.$type === "space.roomy.message.editMessage.v0") {
+      // Re-index the edited message: the chunk's statements updated
+      // comp_content; the search worker re-reads the updated plaintext.
+      const messageId = (e.event as Record<string, unknown>).messageId as string | undefined;
+      if (messageId) {
+        enqueueIndexMessage(streamId, messageId);
+      }
+    } else if (e.event.$type === "space.roomy.message.deleteMessage.v0") {
+      // Drop the deleted message from the search index.
+      const messageId = (e.event as Record<string, unknown>).messageId as string | undefined;
+      if (messageId) {
+        enqueueDeleteMessage(messageId);
       }
     }
   }

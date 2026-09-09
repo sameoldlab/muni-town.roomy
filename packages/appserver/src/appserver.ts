@@ -21,7 +21,7 @@ import { appserverSigningKeyMultibase } from "./auth/serviceAuth.ts";
 import { Router as InvalidationRouter } from "./invalidation/index.ts";
 import { startEmbedSweeper, stopEmbedSweeper, embedSweeperStats } from "./embed/sweeper.ts";
 import { countPendingLinks } from "./embed/enricher.ts";
-import { openDb, openGlobalDb, openReadStateDb, closeDb, poolStats } from "./db/db.ts";
+import { openDb, openGlobalDb, openReadStateDb, openSpaceDb, openSpaceDbForEntity, closeDb, poolStats } from "./db/db.ts";
 import { StreamManager, setStreamManager, _resetStreamManager } from "./streams/StreamManager.ts";
 import { ACTIVE_WINDOW_MS, purgeStaleThreadActivity } from "./queries/userActiveThreads.ts";
 import { getConnectionTicketHandler } from "./handlers/space.roomy.auth.getConnectionTicket.ts";
@@ -45,6 +45,10 @@ import { getSpaceSummaryHandler } from "./handlers/space.roomy.space.getSpaceSum
 import { getSpaceThreadsHandler } from "./handlers/space.roomy.space.getThreads.ts";
 import { getRolesHandler } from "./handlers/space.roomy.space.getRoles.ts";
 import { getInvitesHandler } from "./handlers/space.roomy.space.getInvites.ts";
+import { getFederationRequestsHandler } from "./handlers/space.roomy.federation.getRequests.ts";
+import { getFederationIncomingHandler } from "./handlers/space.roomy.federation.getIncoming.ts";
+import { getFederationOutgoingHandler } from "./handlers/space.roomy.federation.getOutgoing.ts";
+import { getFederationGrantsHandler } from "./handlers/space.roomy.federation.getGrants.ts";
 import { getRoomMetadataHandler } from "./handlers/space.roomy.room.getMetadata.ts";
 import { getRoomSummaryHandler } from "./handlers/space.roomy.room.getRoomSummary.ts";
 import { getRoomThreadsHandler } from "./handlers/space.roomy.room.getThreads.ts";
@@ -52,26 +56,44 @@ import { getMessagesHandler } from "./handlers/space.roomy.room.getMessages.ts";
 import { getMessageHandler } from "./handlers/space.roomy.message.getMessage.ts";
 import { getReactionsHandler } from "./handlers/space.roomy.message.getReactions.ts";
 import { getProfileHandler } from "./handlers/space.roomy.user.getProfile.ts";
+import { getMembershipStatusHandler } from "./handlers/space.roomy.user.getMembershipStatus.ts";
 import { getMentionsHandler } from "./handlers/space.roomy.mention.getMentions.ts";
+import { searchMessagesHandler } from "./handlers/space.roomy.search.messages.ts";
+import { searchRoomsHandler } from "./handlers/space.roomy.search.rooms.ts";
 import { getLinkMetadataHandler } from "./handlers/space.roomy.embed.getLinkMetadata.ts";
 import { updateSeenHandler } from "./handlers/space.roomy.room.updateSeen.ts";
 import { sendEventsHandler } from "./handlers/space.roomy.space.sendEvents.ts";
 import { createSpaceHandler } from "./handlers/space.roomy.space.createSpace.ts";
 import { joinSpaceHandler } from "./handlers/space.roomy.space.joinSpace.ts";
 import { leaveSpaceHandler } from "./handlers/space.roomy.space.leaveSpace.ts";
+import { reorderSpacesHandler } from "./handlers/space.roomy.space.reorderSpaces.ts";
 import { setHandleHandler } from "./handlers/space.roomy.space.setHandle.ts";
+import { updatePolicyHandler } from "./handlers/space.roomy.space.updatePolicy.ts";
 import { getActivityFeedHandler } from "./handlers/space.roomy.space.getActivityFeed.ts";
+import { getUserAccessHandler } from "./handlers/space.roomy.space.getUserAccess.ts";
+import { grantBridgeTokenHandler } from "./handlers/space.roomy.space.grantBridgeToken.ts";
+import { revokeBridgeTokenHandler } from "./handlers/space.roomy.space.revokeBridgeToken.ts";
+import { getBridgeTokensHandler } from "./handlers/space.roomy.space.getBridgeTokens.ts";
+import { adminGetSpaceMembershipHandler } from "./handlers/space.roomy.admin.getSpaceMembership.ts";
 import { getVapidPublicKeyHandler } from "./handlers/space.roomy.push.getVapidPublicKey.ts";
 import { getPreferencesHandler } from "./handlers/space.roomy.push.getPreferences.ts";
 import { registerSubscriptionHandler } from "./handlers/space.roomy.push.registerSubscription.ts";
 import { unregisterSubscriptionHandler } from "./handlers/space.roomy.push.unregisterSubscription.ts";
 import { setPreferencesHandler } from "./handlers/space.roomy.push.setPreferences.ts";
 import { startPushDispatcher, pushDispatcherStats, _resetPushDispatcher } from "./push/dispatcher.ts";
+import { startSearchIndexer, stopSearchIndexer, searchIndexerStats } from "./search/indexer.ts";
+import { startSearchBackfill, stopSearchBackfill, searchBackfillStats } from "./search/backfill.ts";
 import { schemas } from "@roomy-space/sdk";
 import { initHappyView, type HappyViewConfig } from "./happyview.ts";
+import { initQdrant } from "./qdrant.ts";
+import { initPolar } from "./billing/polar.ts";
 import { getArbiterConfig, type ArbiterConfig } from "./arbiter/config.ts";
+import type { GetProfilesFn } from "./materialization/profiles.ts";
 
 import { proxyBlob } from "./blob.ts";
+import { log } from "./log.ts";
+import { metrics } from "./metrics.ts";
+import { resolveBuildId } from "./telemetry/build.ts";
 import {
   CACHEABLE_NSIDS,
   createQueryCacheFromEnv,
@@ -97,10 +119,17 @@ export interface AppserverOptions {
   dbPath?: string;
   /** Read-state DB path. Defaults to `dbPath("roomy-readstate.sqlite")` (under `DATA_DIR`). */
   readStateDbPath?: string;
-  /** Suppress the per-request console.log. Tests set this to quiet output. */
+  /** Suppress the per-request log.info lines. Tests set this to quiet output. */
   quiet?: boolean;
   /** Disable the background embed enrichment sweeper. Useful for tests that don't exercise embeds. */
   disableEmbedSweeper?: boolean;
+  /** Disable ALL background worker loops: the embed enrichment sweeper, the
+   *  search indexer + backfill sweeper, and the push dispatcher. E2E tests
+   *  that exercise request handling directly set this: no detached loop is
+   *  running against the test DB, so none can resume mid-teardown (a loop
+   *  waking against a closed DB is the #1 CI flake source). Implies
+   *  `disableEmbedSweeper`. */
+  disableBackgroundWorkers?: boolean;
   /** Disable the query response cache. Tests set this so handler call counts
    *  are deterministic (the cache would skip the handler on the second call).
    *  Also disabled when the `APPSERVER_QUERY_CACHE_ENABLED` env var is `"false"`. */
@@ -109,6 +138,10 @@ export interface AppserverOptions {
    *  (`HAPPYVIEW_ENDPOINT` / `HAPPYVIEW_DID`). When `null`, HappyView is
    *  disabled and profile fetching uses Bluesky only. */
   happyView?: HappyViewConfig | null;
+  /** Custom profile fetcher for materialization. When set, replaces the
+   *  HappyView-first / Bluesky fallback pipeline entirely. Tests pass a
+   *  no-op stub to keep E2E runs hermetic (no api.bsky.app calls). */
+  getProfiles?: GetProfilesFn;
   /** Arbiter server config. When unset, reads from env (`ARBITER_URL` /
    *  `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
    *  self-provisioned (legacy did:plc path). */
@@ -175,9 +208,19 @@ export function buildRouter(
       inputSchema: schemas.procedures.leaveSpace.Input,
       // No outputSchema: void return; short-circuits to 200 with empty body.
     })
+    .procedure("space.roomy.space.reorderSpaces", {
+      handler: reorderSpacesHandler,
+      inputSchema: schemas.procedures.reorderSpaces.Input,
+      // No outputSchema: void return; short-circuits to 200 with empty body.
+    })
     .procedure("space.roomy.space.setHandle", {
       handler: setHandleHandler,
       inputSchema: schemas.procedures.setHandle.Input,
+      // No outputSchema: void return; short-circuits to 200 with empty body.
+    })
+    .procedure("space.roomy.space.updatePolicy", {
+      handler: updatePolicyHandler,
+      inputSchema: schemas.procedures.updatePolicy.Input,
       // No outputSchema: void return; short-circuits to 200 with empty body.
     })
     // Admin routes (connectSpace, materializeSpace) intentionally have no
@@ -222,6 +265,9 @@ export function buildRouter(
     .query("space.roomy.admin.listSpaces", {
       handler: adminListSpacesHandler,
     })
+    .query("space.roomy.admin.getSpaceMembership", {
+      handler: adminGetSpaceMembershipHandler,
+    })
     .query("space.roomy.sync.getEvents", {
       handler: getEventsHandler,
     })
@@ -265,6 +311,46 @@ export function buildRouter(
       paramsSchema: schemas.queries.getInvites.Params,
       outputSchema: schemas.queries.getInvites.Response,
     })
+    .query("space.roomy.space.getUserAccess", {
+      handler: getUserAccessHandler,
+      paramsSchema: schemas.queries.getUserAccess.Params,
+      outputSchema: schemas.queries.getUserAccess.Response,
+    })
+    .procedure("space.roomy.space.grantBridgeToken", {
+      handler: grantBridgeTokenHandler,
+      inputSchema: schemas.procedures.grantBridgeToken.Input,
+      outputSchema: schemas.procedures.grantBridgeToken.Output,
+    })
+    .procedure("space.roomy.space.revokeBridgeToken", {
+      handler: revokeBridgeTokenHandler,
+      inputSchema: schemas.procedures.revokeBridgeToken.Input,
+      outputSchema: schemas.procedures.revokeBridgeToken.Output,
+    })
+    .query("space.roomy.space.getBridgeTokens", {
+      handler: getBridgeTokensHandler,
+      paramsSchema: schemas.queries.getBridgeTokens.Params,
+      outputSchema: schemas.queries.getBridgeTokens.Response,
+    })
+    .query("space.roomy.federation.getRequests", {
+      handler: getFederationRequestsHandler,
+      paramsSchema: schemas.queries.getFederationRequests.Params,
+      outputSchema: schemas.queries.getFederationRequests.Response,
+    })
+    .query("space.roomy.federation.getIncoming", {
+      handler: getFederationIncomingHandler,
+      paramsSchema: schemas.queries.getFederationIncoming.Params,
+      outputSchema: schemas.queries.getFederationIncoming.Response,
+    })
+    .query("space.roomy.federation.getOutgoing", {
+      handler: getFederationOutgoingHandler,
+      paramsSchema: schemas.queries.getFederationOutgoing.Params,
+      outputSchema: schemas.queries.getFederationOutgoing.Response,
+    })
+    .query("space.roomy.federation.getGrants", {
+      handler: getFederationGrantsHandler,
+      paramsSchema: schemas.queries.getFederationGrants.Params,
+      outputSchema: schemas.queries.getFederationGrants.Response,
+    })
     .query("space.roomy.room.getMetadata", {
       handler: getRoomMetadataHandler,
       paramsSchema: schemas.queries.getRoomMetadata.Params,
@@ -298,10 +384,25 @@ export function buildRouter(
       paramsSchema: schemas.queries.getProfile.Params,
       outputSchema: schemas.queries.getProfile.Response,
     })
+    .query("space.roomy.user.getMembershipStatus", {
+      handler: getMembershipStatusHandler,
+      paramsSchema: schemas.queries.getMembershipStatus.Params,
+      outputSchema: schemas.queries.getMembershipStatus.Response,
+    })
     .query("space.roomy.mention.getMentions", {
       handler: getMentionsHandler,
       paramsSchema: schemas.queries.getMentions.Params,
       outputSchema: schemas.queries.getMentions.Response,
+    })
+    .query("space.roomy.search.messages", {
+      handler: searchMessagesHandler,
+      paramsSchema: schemas.queries.searchMessages.Params,
+      outputSchema: schemas.queries.searchMessages.Response,
+    })
+    .query("space.roomy.search.rooms", {
+      handler: searchRoomsHandler,
+      paramsSchema: schemas.queries.searchRooms.Params,
+      outputSchema: schemas.queries.searchRooms.Response,
     })
     .query("space.roomy.embed.getLinkMetadata", {
       handler: getLinkMetadataHandler,
@@ -370,6 +471,18 @@ export async function createAppserver(
     ? initHappyView()
     : (opts.happyView as HappyViewConfig | null);
 
+  // ─── Qdrant config ──────────────────────────────────────────────────
+  // Initialize the process-wide singleton from env (`QDRANT_URL` /
+  // `QDRANT_API_KEY`). When unset, search is unavailable but the appserver
+  // runs fine without it (the indexer queues nothing; the endpoint 503s).
+  initQdrant();
+
+  // ─── Polar config ───────────────────────────────────────────────────
+  // Initialize the process-wide singleton from env (`POLAR_ACCESS_TOKEN` /
+  // `ROOMY_PRO_PRODUCT_ID` / `POLAR_ENDPOINT`). When unset, the bridge-token
+  // endpoints reject with 503 (Polar billing is unavailable).
+  initPolar();
+
   // ─── Arbiter config ────────────────────────────────────────────────
   // When `opts.arbiter` is unset, reads from env (`ARBITER_URL` /
   // `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
@@ -402,7 +515,13 @@ export async function createAppserver(
   // Open as process-wide singletons so handlers' internal `openDb()` calls
   // resolve to the same handle. Tests that want isolation should reset the
   // singletons (closeDb) before calling createAppserver.
-  const mainDb = openDb();
+  //
+  // `opts.dbPath` is honored here (event-log path; `:memory:` also pins the
+  // read-state/global/spaces DBs to memory, see `openDb`). Previously the
+  // option was dead: every factory test silently opened the real files under
+  // `DATA_DIR`, and closeDb→reopen cycles raced SQLite file locks on shared
+  // CI runners (surfacing as `database is locked` 500s).
+  const mainDb = openDb(opts.dbPath !== undefined ? { path: opts.dbPath } : {});
 
   // ─── Periodic maintenance ────────────────────────────────────────────
   // Purge stale user_thread_activity rows older than the activity window
@@ -411,10 +530,46 @@ export async function createAppserver(
     const cutoff = Date.now() - ACTIVE_WINDOW_MS;
     const purged = await purgeStaleThreadActivity(openReadStateDb(), cutoff);
     if (purged > 0) {
-      console.log(`[maintenance] purged ${purged} stale user_thread_activity rows`);
+      log.info(`[maintenance] purged ${purged} stale user_thread_activity rows`);
     }
   }, 60 * 60 * 1000);
   maintenanceTimer.unref();
+
+  // ─── Periodic metrics snapshot ──────────────────────────────────────
+  // Emit a compact pool/cache/embed/search snapshot to Loki every 30s so
+  // operators can chart saturation over time in Grafana without a metrics
+  // backend. This is what surfaces a worker backlog (e.g. the system-worker
+  // N+1) as a visible trend rather than a manual /health/pool curl.
+  const metricsTimer = setInterval(() => {
+    const pool = poolStats();
+    const cache = queryCache?.stats ?? { hits: 0, misses: 0, evictions: 0, size: 0 };
+    const embed = embedSweeperStats();
+    const search = searchIndexerStats();
+    const backfill = searchBackfillStats();
+    log.info("[metrics] snapshot", {
+      pool: pool
+        ? {
+            size: pool.size,
+            spaceWorkers: pool.spaceWorkers.map((w) => w.pending),
+            globalWorker: pool.globalWorker.pending,
+            readStateWorker: pool.readStateWorker.pending,
+            eventsWorker: pool.eventsWorker.pending,
+          }
+        : null,
+      cache,
+      embed: {
+        pending: embed.priorityQueue ?? 0,
+        inFlight: embed.inFlight ?? 0,
+        enrichedNull: embed.enrichedNull ?? 0,
+        dbBackoff: embed.dbBackoffActive ?? false,
+      },
+      search: {
+        queue: search.queueLength ?? 0,
+        backfilled: backfill.backfilled ?? 0,
+      },
+    });
+  }, 30 * 1000);
+  metricsTimer.unref();
 
   // ─── Invalidation + Sync ─────────────────────────────────────────────
   const invalidationRouter = new InvalidationRouter();
@@ -427,24 +582,50 @@ export async function createAppserver(
     invalidationRouter,
     appserverUrl: serviceEndpoint,
     happyView,
+    getProfiles: opts.getProfiles,
     arbiter,
     ownDid,
   });
   setStreamManager(streamManager);
-  // Start the centralized embed enrichment sweeper.
-  startEmbedSweeper({ globalDb: openGlobalDb(), invalidationRouter });
-  // Start the centralized push dispatcher unconditionally. The dispatcher is
-  // global infrastructure that processes every live createMessage and
-  // computes fan-out; the `push-notifications` feature flag is a per-recipient
-  // filter applied during evaluation (see push/evaluate.ts), not a process-
-  // level kill switch. Starting it here means the StreamManager's pokes are
-  // always queued and evaluated regardless of flag state. No-op-safe when
-  // VAPID isn't configured (deliveries just find no subscriptions).
-  startPushDispatcher({ db: openReadStateDb() });
+  // Background worker loops (embed sweeper, search indexer/backfill, push
+  // dispatcher). They are all safe to disable in tests: request handling is
+  // independent, and a detached loop that resumes against a closed DB is a
+  // teardown-race flake source (a loop's poke/backoff timer can fire after
+  // closeDb(), turning a "Database is closed" rejection into an unhandled
+  // error that fails the whole run).
+  const backgroundWorkers = !opts.disableBackgroundWorkers;
+  if (backgroundWorkers && !opts.disableEmbedSweeper) {
+    // Start the centralized embed enrichment sweeper.
+    startEmbedSweeper({ globalDb: openGlobalDb(), invalidationRouter });
+  }
+  if (backgroundWorkers) {
+    // Start the Qdrant message-search indexer (drains the enqueue queue from
+    // applyChunkSideEffects) and the boot backfill sweeper (re-indexes
+    // messages missing from Qdrant). Both are no-op-safe when Qdrant is not
+    // configured.
+    startSearchIndexer();
+    startSearchBackfill({ globalDb: openGlobalDb() });
+  }
+  if (backgroundWorkers) {
+    // Start the centralized push dispatcher unconditionally. The dispatcher is
+    // global infrastructure that processes every live createMessage and
+    // computes fan-out. Starting it here means the StreamManager's pokes are
+    // always queued and evaluated. No-op-safe when VAPID isn't configured
+    // (deliveries just find no subscriptions).
+    startPushDispatcher({ db: openReadStateDb() });
+  }
 
   // ─── XRPC routes ──────────────────────────────────────────────────────
   const authVerifier = opts.authVerifier ?? selectAuthVerifier();
-  const syncSubscribeHandler = createSyncSubscribeHandler(invalidationRouter, streamManager);
+  const syncSubscribeHandler = createSyncSubscribeHandler(
+    invalidationRouter,
+    streamManager,
+    {
+      openSpaceDbForEntity,
+      openSpaceDb,
+      openGlobalDb,
+    },
+  );
   const router = buildRouter(authVerifier, syncSubscribeHandler);
 
   // ─── Query response cache ─────────────────────────────────────────────
@@ -466,15 +647,65 @@ export async function createAppserver(
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   };
 
+  // ─── Request metrics ────────────────────────────────────────────────
+  // Per-endpoint request counter + latency histogram. The /metrics endpoint
+  // (Prometheus scrape) exposes these so a dashboard can show which XRPC
+  // endpoint is slow and how often it's called — the first signal that
+  // pinpoints a pool-saturation / N+1 bottleneck.
+  const xrpcRequests = metrics.counter(
+    "roomy_xrpc_requests_total",
+    "Total XRPC/HTTP requests handled, by endpoint, method and status.",
+    ["endpoint", "method", "status"],
+  );
+  const xrpcDuration = metrics.histogram(
+    "roomy_xrpc_request_duration_seconds",
+    "Request handling latency in seconds, by endpoint and method.",
+    ["endpoint", "method"],
+  );
+
+  // Live gauges refreshed on each /metrics scrape from the health stats.
+  const poolGauge = metrics.gauge("roomy_pool_size", "Number of per-space DB workers in the pool.");
+  const poolWorkerPending = metrics.gauge(
+    "roomy_pool_worker_pending",
+    "In-flight (queued) requests on a pool worker.",
+    ["worker"],
+  );
+  const cacheHits = metrics.gauge("roomy_cache_hits_total", "Query response cache hits.");
+  const cacheMisses = metrics.gauge("roomy_cache_misses_total", "Query response cache misses.");
+  const cacheEvictions = metrics.gauge("roomy_cache_evictions_total", "Query response cache evictions.");
+  const cacheSize = metrics.gauge("roomy_cache_size", "Query response cache entries.");
+  const embedPending = metrics.gauge("roomy_embed_pending", "Embed links awaiting enrichment.");
+  const embedInFlight = metrics.gauge("roomy_embed_in_flight", "Embed enrichments currently in flight.");
+  const embedEnrichedNull = metrics.gauge("roomy_embed_enriched_null", "Embed links enriched to null (no card).");
+  const embedDbBackoff = metrics.gauge("roomy_embed_db_backoff", "1 when the embed sweeper is in DB backoff.");
+  const searchQueue = metrics.gauge("roomy_search_indexer_queue", "Search indexer queue length.");
+  const searchBackfilled = metrics.gauge("roomy_search_backfilled", "Search backfill progress.");
+  const pushQueued = metrics.gauge("roomy_push_queued", "Push dispatcher queued messages.");
+
   const server = Bun.serve({
     port,
     idleTimeout: 255,
     fetch: async (req, server) => {
-      if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders });
+      try {
+        return await handleFetch(req, server);
+      } catch (err) {
+        // During teardown (tests) the DB workers are terminated while
+        // requests are in flight; the rejection is expected and must not
+        // surface as an unhandled error (bun exits 1 on those). The server
+        // is being stopped anyway.
+        if (!quiet) log.info(`${req.method} ${new URL(req.url).pathname} → error during teardown: ${err instanceof Error ? err.message : String(err)}`);
+        return new Response("Service shutting down", { status: 503 });
       }
+    },
+    websocket: router.websocket,
+  });
 
-      const url = new URL(req.url);
+  async function handleFetchInner(req: Request, server: Server<WsData>): Promise<Response | undefined> {
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    const url = new URL(req.url);
 
       if (url.pathname === "/.well-known/did.json") {
         return new Response(JSON.stringify(DID_DOCUMENT), {
@@ -489,6 +720,7 @@ export async function createAppserver(
             uptime: process.uptime(),
             did: ownDid,
             port,
+            build_id: resolveBuildId(),
           }),
           { headers: { "content-type": "application/json", ...corsHeaders } },
         );
@@ -511,6 +743,15 @@ export async function createAppserver(
           headers: { "content-type": "application/json", ...corsHeaders },
         });
       }
+      if (url.pathname === "/health/search") {
+        return new Response(
+          JSON.stringify({
+            indexer: searchIndexerStats(),
+            backfill: searchBackfillStats(),
+          }),
+          { headers: { "content-type": "application/json", ...corsHeaders } },
+        );
+      }
       if (url.pathname === "/health/cache") {
         const cacheStats = queryCache?.stats ?? {
           hits: 0,
@@ -527,9 +768,9 @@ export async function createAppserver(
         );
       }
       if (url.pathname === "/health/pool") {
-        // Phase 4: per-worker pool stats (size + in-flight per worker) so an
-        // operator can see whether load is spreading across the pool or
-        // collapsing onto one worker.
+        // Per-worker pool stats (size + in-flight per worker) so an operator
+        // can see whether load is spreading across the pool and the three
+        // shared-DB workers, or collapsing onto one.
         const stats = poolStats();
         return new Response(
           JSON.stringify(stats ? { enabled: true, ...stats } : { enabled: false }),
@@ -537,12 +778,46 @@ export async function createAppserver(
         );
       }
 
+      if (url.pathname === "/metrics") {
+        // Prometheus text exposition for the observability stack (Alloy
+        // scrapes this and remote-writes to Grafana Cloud Mimir). Pulls the
+        // live pool/cache/embed/search/push stats into gauges, then renders
+        // the registry (request counters/histograms + DB timeouts are
+        // maintained incrementally elsewhere).
+        const pool = poolStats();
+        if (pool) {
+          poolGauge.set({}, pool.size);
+          pool.spaceWorkers.forEach((w, i) => poolWorkerPending.set({ worker: `space-${i}` }, w.pending));
+          poolWorkerPending.set({ worker: "global" }, pool.globalWorker.pending);
+          poolWorkerPending.set({ worker: "readstate" }, pool.readStateWorker.pending);
+          poolWorkerPending.set({ worker: "events" }, pool.eventsWorker.pending);
+        }
+        const cache = queryCache?.stats ?? { hits: 0, misses: 0, evictions: 0, size: 0 };
+        cacheHits.set({}, cache.hits);
+        cacheMisses.set({}, cache.misses);
+        cacheEvictions.set({}, cache.evictions);
+        cacheSize.set({}, cache.size);
+        const embed = embedSweeperStats();
+        embedPending.set({}, embed.priorityQueue ?? 0);
+        embedInFlight.set({}, embed.inFlight ?? 0);
+        embedEnrichedNull.set({}, embed.enrichedNull ?? 0);
+        embedDbBackoff.set({}, embed.dbBackoffActive ? 1 : 0);
+        const search = searchIndexerStats();
+        searchQueue.set({}, search.queueLength ?? 0);
+        const backfill = searchBackfillStats();
+        searchBackfilled.set({}, backfill.backfilled ?? 0);
+        const push = pushDispatcherStats();
+        pushQueued.set({}, push.queueDepth ?? 0);
+        return new Response(metrics.render(), {
+          headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8", ...corsHeaders },
+        });
+      }
+
       const blobMatch = url.pathname.match(/^\/blob\/(.+?)\/(.+)$/);
       if (blobMatch && req.method === "GET") {
         const did = decodeURIComponent(blobMatch[1]!);
         const cid = decodeURIComponent(blobMatch[2]!);
         const res = await proxyBlob(did, cid, req);
-        if (!quiet) console.log(`${req.method} ${url.pathname} → ${res.status}`);
         for (const [k, v] of Object.entries(corsHeaders)) {
           res.headers.set(k, v);
         }
@@ -551,19 +826,40 @@ export async function createAppserver(
 
       const res = await router.fetch(req, server);
       if (res === undefined) {
-        if (!quiet) console.log(`${req.method} ${url.pathname} → [ws upgrade]`);
         return undefined;
       }
-      if (!quiet) console.log(`${req.method} ${url.pathname} → ${res.status}`);
       for (const [k, v] of Object.entries(corsHeaders)) {
         res.headers.set(k, v);
       }
       return res;
-    },
-    websocket: router.websocket,
-  });
+  }
 
-  if (!quiet) console.log(`Appserver listening on port ${port} (DID: ${ownDid})`);
+  // Wrapper that records per-request metrics (counter + latency histogram)
+  // and adds a duration field to the access log. The inner function has many
+  // early returns (health endpoints, blob proxy, ws upgrade), so measuring
+  // here keeps the instrumentation in one place.
+  async function handleFetch(req: Request, server: Server<WsData>): Promise<Response | undefined> {
+    const start = performance.now();
+    const pathname = new URL(req.url).pathname;
+    try {
+      const res = await handleFetchInner(req, server);
+      const status = res?.status ?? 0; // 0 = ws upgrade (undefined response)
+      const durationMs = performance.now() - start;
+      xrpcRequests.inc({ endpoint: pathname, method: req.method, status: String(status) });
+      xrpcDuration.observe({ endpoint: pathname, method: req.method }, durationMs / 1000);
+      if (!quiet && res) {
+        log.info(`[xrpc] ${req.method} ${pathname} → ${res.status}`, { duration_ms: Math.round(durationMs) });
+      }
+      return res;
+    } catch (err) {
+      const durationMs = performance.now() - start;
+      xrpcRequests.inc({ endpoint: pathname, method: req.method, status: "500" });
+      xrpcDuration.observe({ endpoint: pathname, method: req.method }, durationMs / 1000);
+      throw err;
+    }
+  }
+
+  if (!quiet) log.info(`Appserver listening on port ${port} (DID: ${ownDid})`);
 
   return {
     server,
@@ -571,38 +867,46 @@ export async function createAppserver(
     ownDid,
     queryCache,
     close(): Promise<void> {
-      return stopEmbedSweeper().finally(() => {
+      return stopEmbedSweeper()
+        .then(() => stopSearchIndexer())
+        .then(() => stopSearchBackfill())
+        .finally(() => {
+        // Graceful stop: wait for in-flight requests to complete so their
+        // DB awaits resolve (or reject into the fetch guard's catch) before
+        // the workers are terminated. A forced stop kills the handlers
+        // mid-await, leaving their rejections unhandled (bun exits 1).
         try {
-          server.stop(true);
+          server.stop();
         } catch (e) {
-          console.error("appserver close: server.stop failed", e);
+          log.error("appserver close: server.stop failed", e);
         }
         try {
           clearInterval(maintenanceTimer);
+          clearInterval(metricsTimer);
           closeDb();
         } catch (e) {
-          console.error("appserver close: closeDb failed", e);
+          log.error("appserver close: closeDb failed", e);
         }
         try {
           _resetStreamManager();
         } catch (e) {
-          console.error("appserver close: _resetStreamManager failed", e);
+          log.error("appserver close: _resetStreamManager failed", e);
         }
         try {
           _resetPushDispatcher();
         } catch (e) {
-          console.error("appserver close: _resetPushDispatcher failed", e);
+          log.error("appserver close: _resetPushDispatcher failed", e);
         }
         try {
           if (cacheUnsub) cacheUnsub();
           if (queryCache) queryCache.clear();
         } catch (e) {
-          console.error("appserver close: query cache cleanup failed", e);
+          log.error("appserver close: query cache cleanup failed", e);
         }
         try {
           InvalidationRouter.resetInstance();
         } catch (e) {
-          console.error("appserver close: resetInvalidationRouter failed", e);
+          log.error("appserver close: resetInvalidationRouter failed", e);
         }
       });
     },

@@ -24,15 +24,23 @@
   import { parseRichTextContent } from "./enrich-internal-links";
   import { RICHTEXT_MIME } from "@roomy-space/sdk";
   import type { Block } from "@roomy-space/sdk";
+  import ForwardMessageModal from "./ForwardMessageModal.svelte";
+  import { goto } from "$app/navigation";
   const { queryKey } = cache;
 
   type Props = {
     spaceId: string;
     roomId: string;
     onSeen?: () => void;
+    /**
+     * Message id to deep-link to (`?message=<id>` route param / push
+     * notification click). ChatArea pages backward until the message is in
+     * the loaded window, scrolls it to center, and briefly highlights it.
+     */
+    highlightMessage?: string | null;
   };
   
-  let { spaceId, roomId, onSeen }: Props = $props();
+  let { spaceId, roomId, onSeen, highlightMessage = null }: Props = $props();
 
   const messagesQuery = createMessagesQuery(() => roomId);
 
@@ -71,6 +79,15 @@
     isDeleteConfirmOpen = true;
   }
 
+  // Forward modal state — lifted here so one modal serves every message.
+  let forwardMessage = $state<Message | null>(null);
+  let isForwardModalOpen = $state(false);
+
+  function openForward(message: Message) {
+    forwardMessage = message;
+    isForwardModalOpen = true;
+  }
+
   function openMobileMenu(message: Message) {
     mobileMenuMessage = message;
     isMobileDrawerOpen = true;
@@ -85,6 +102,10 @@
     // SDK's applyMessageDiff — already chronological, so use it as-is.
     const chronological = data;
 
+    // Merge keys on the message's own authorDid. Forwards are the
+    // forwarder's message (authorDid = forwarder, no server-side
+    // substitution), so adjacent forwards merge with the forwarder's other
+    // messages — never with the original author's.
     return chronological.map((message, index) => {
       const prev = index > 0 ? chronological[index - 1] : null;
       let mergeWithPrevious = false;
@@ -260,6 +281,11 @@
     const currentRoomId = roomId;
     const data = messagesQuery.data;
 
+    // While a deep-link highlight is pending, don't restore or scroll to
+    // bottom — the highlight effect owns the viewport until it resolves
+    // (found or search budget exhausted), then positions us itself.
+    if (highlight && !highlight.found) return;
+
     // Only restore if we haven't restored for this specific roomId yet
     if (
       data &&
@@ -299,6 +325,88 @@
       }, 200);
     }
   });
+
+  // ── Deep-link message highlight (?message=<id> / push notification) ────
+  // `highlight` holds the active target + resolution: `found: false` while
+  // we're still searching backward through history, `true` once we've
+  // scrolled to it (or given up). The highlight visual then stays for a few
+  // seconds via a timer, clears, and strips the consumed `?message=` param
+  // so later room navigations in this session don't re-attempt it.
+  let highlight = $state<{ id: string; found: boolean } | null>(null);
+  /** Room the active highlight belongs to (`null` = none). */
+  let highlightRoom = $state<string | null>(null);
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Pages to search backward before giving up (50 msgs each). */
+  let highlightPagesLeft = 8;
+
+  // Reset/restart the highlight when the requested message or the room
+  // changes (room navigation while `?message=` still lingers in the URL).
+  $effect(() => {
+    if (!highlightMessage) {
+      highlight = null;
+      highlightRoom = null;
+      return;
+    }
+    if (highlightRoom === roomId && highlight?.id === highlightMessage) {
+      return;
+    }
+    highlight = { id: highlightMessage, found: false };
+    highlightPagesLeft = 8;
+    highlightRoom = roomId;
+  });
+
+  // Resolve the highlight: scroll to center once the message is loaded,
+  // page backward until it shows up, then give up at the search budget.
+  $effect(() => {
+    const h = highlight;
+    const msgs = timeline;
+    if (!h || h.found) return;
+
+    const idx = msgs.findIndex((m) => m.id === h.id);
+    if (idx >= 0) {
+      h.found = true;
+      // Mark this room as restored so the generic restore effect never
+      // overrides our positioning with a bottom/saved-position scroll.
+      lastRestoredRoomId = roomId;
+      // Scroll after layout so the target row exists in the virtualizer.
+      queueMicrotask(() => {
+        virtualizer?.scrollToIndex(idx, { align: "center" });
+      });
+      scheduleHighlightEnd();
+      return;
+    }
+
+    // Not in the loaded window — page backward if there's more history.
+    if (hasMore && !isLoadingOlder && highlightPagesLeft > 0) {
+      highlightPagesLeft -= 1;
+      loadOlderMessages();
+      return;
+    }
+
+    // Search budget exhausted or full history loaded — land at the bottom
+    // like a normal visit.
+    h.found = true;
+    lastRestoredRoomId = roomId;
+    scrollToBottom();
+    scheduleHighlightEnd();
+  });
+
+  function scheduleHighlightEnd() {
+    clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      highlight = null;
+      highlightRoom = null;
+      // Consume the deep-link param so later room navigations in this
+      // session don't re-attempt the highlight for unrelated rooms.
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has("message")) {
+          url.searchParams.delete("message");
+          goto(url.pathname + url.search, { replaceState: true });
+        }
+      }
+    }, 5000);
+  }
 
   // Auto-scroll when new messages arrive and already at bottom
   // Skip during initial restoration to prevent jumping back to bottom
@@ -432,7 +540,9 @@
                       onCancelEdit={() => (editingMessageId = undefined)}
                       onOpenMobileMenu={openMobileMenu}
                       onRequestDelete={openDeleteConfirm}
+                      onForward={openForward}
                       mergeWithPrevious={message.mergeWithPrevious}
+                      highlighted={highlight?.id === message.id}
                     />
                   {/if}
                 {/snippet}
@@ -471,6 +581,7 @@
       isMobileDrawerOpen = false;
       openDeleteConfirm(mobileMenuMessage);
     }}
+    onForward={openForward}
   />
 
   <DeleteMessageDialog
@@ -486,4 +597,13 @@
       await deleteMessage(spaceId, roomId, deleteMessageTarget.id);
     }}
   />
+
+  {#if forwardMessage}
+    <ForwardMessageModal
+      bind:open={isForwardModalOpen}
+      {spaceId}
+      fromRoomId={roomId}
+      messageId={forwardMessage.id}
+    />
+  {/if}
 </div>

@@ -22,7 +22,7 @@
 import type { StreamDid, Ulid, UserDid } from "@roomy-space/sdk";
 import type { AppliedEvent, InvalidationEvent, MessageDiffOp, QueryNsid } from "./types.ts";
 import type { DbLike } from "../db/types.ts";
-import { openReadStateDb, openSpaceDb } from "../db/db.ts";
+import { openReadStateDb, openSpaceDb, tryOpenGlobalDb } from "../db/db.ts";
 import { selectMessages, type MessageDto } from "../queries/selectMessages.ts";
 import { getRoomReadPositionUsers } from "../queries/readPositions.ts";
 import { getMentionedDidsForMessage } from "../queries/mentions.ts";
@@ -80,6 +80,69 @@ function invalidateSpace(spaceId: StreamDid): InvalidationEvent[] {
     invalidate("space.roomy.space.getThreads", { spaceId }),
     invalidate("space.roomy.space.getMembers", { spaceId }),
   ];
+}
+
+/**
+ * Invalidations a message in `spaceId` triggers on every space that has one
+ * of `spaceId`'s rooms federated INTO it (receiving spaces). The receiving
+ * spaces' sidebars render those rooms as federated rows, so a new message
+ * there must refresh their unread markers even though it never lands on the
+ * receiving space's event stream.
+ *
+ * Only channel messages call this (thread messages don't render on the
+ * receiving side; the fed row is the channel). Returns one `roomMetadataDiff`
+ * per receiving space (the receiving-side patch for the fed room row and the
+ * space's room-count badge) plus the `space.getMetadata`/`getSpaces`
+ * invalidations — the frames patch receiving-space connections directly; the
+ * invalidations catch other tabs/connections and keep the server-side query
+ * cache coherent.
+ */
+async function federatedReceiversInvalidation(
+  globalDb: DbLike | null,
+  spaceId: StreamDid,
+  roomId: Ulid,
+  signal: {
+    seq: number;
+    delta: number;
+    users: ReadonlyArray<UserDid>;
+    roomUnreadDeltas: ReadonlyMap<UserDid, number>;
+  },
+): Promise<InvalidationEvent[]> {
+  if (!globalDb) return [];
+
+  const fedRows = await globalDb
+    .query(
+      `select frp.federating_space_did as home
+         from federation_room_permissions frp
+         join space_federations sf
+           on sf.space_id = frp.space_id
+          and sf.federating_space_did = frp.federating_space_did
+        where frp.space_id = ?
+          and frp.room_id = ?
+          and sf.status = 'active'`,
+    )
+    .all<{ home: string }>([spaceId, roomId]);
+  if (fedRows.length === 0) return [];
+
+  const signals: InvalidationEvent[] = [];
+  for (const r of fedRows) {
+    signals.push({
+      kind: "roomMetadataDiff",
+      signal: {
+        spaceId: r.home as StreamDid,
+        roomId,
+        seq: signal.seq,
+        delta: signal.delta,
+        users: [...signal.users],
+        roomUnreadDeltas: signal.roomUnreadDeltas,
+      },
+    });
+    // Receiving-space sidebar + space list refetch for clients the live
+    // frame missed (other tabs/connections, cache coherence).
+    signals.push(invalidate("space.roomy.space.getMetadata", { spaceId: r.home as StreamDid }));
+    signals.push(invalidate("space.roomy.space.getSpaces", {}));
+  }
+  return signals;
 }
 
 function invalidateRoom(roomId: Ulid, spaceId: StreamDid): InvalidationEvent[] {
@@ -182,6 +245,41 @@ async function handleCreateMessage(
   // no refetch.
   const users = await getRoomReadPositionUsers(db ?? openReadStateDb(), roomId);
   if (users.length > 0) {
+    // Determine which users became newly-unread: their unread_count went
+    // 0 → 1 with this message's +1 bump. Those users' room-count badges
+    // (channels-with-unreads / engaged-threads-with-unreads) increment.
+    const readState = db ?? openReadStateDb();
+    const ph = users.map(() => "?").join(",");
+    const unreadRows = await readState
+      .query(
+        `select user_did, unread_count from read_positions
+          where user_did in (${ph}) and room_id = ?`,
+      )
+      .all<{ user_did: string; unread_count: number }>([...users, roomId]);
+    const newlyUnread = unreadRows
+      .filter((r) => r.unread_count === 1)
+      .map((r) => r.user_did as UserDid);
+
+    // Thread messages only bump engaged users and carry the parent channel
+    // so the client can patch the channel-scoped thread count.
+    const spaceDb = db ?? openSpaceDb(event.streamDid);
+    const roomRow = await spaceDb
+      .query("select label from comp_room where entity = ?")
+      .get<{ label: string | null }>(roomId);
+    const isThread = roomRow?.label === "space.roomy.thread";
+    let parentChannelId: string | undefined;
+    if (isThread) {
+      const parent = await spaceDb
+        .query(
+          `select head from edges
+            where tail = ? and label = 'link'
+              and coalesce(json_extract(payload, '$.canonical_parent'), 0) = 1
+            limit 1`,
+        )
+        .get<{ head: string }>(roomId);
+      parentChannelId = parent?.head;
+    }
+
     signals.push({
       kind: "roomMetadataDiff",
       signal: {
@@ -190,8 +288,49 @@ async function handleCreateMessage(
         seq: 0,
         delta: 1,
         users,
+        ...(parentChannelId ? { parentChannelId } : {}),
+        ...(isThread
+          ? {
+              threadUnreadDeltas: new Map(
+                newlyUnread.map((u) => [u, 1] as const),
+              ),
+            }
+          : {
+              roomUnreadDeltas: new Map(
+                newlyUnread.map((u) => [u, 1] as const),
+              ),
+            }),
       },
     });
+
+    // Federation: if this room is federated into other (receiving) spaces,
+    // those spaces' sidebars show it as an unread row. Send the same live
+    // roomMetadataDiff (room id, +1 delta) scoped to each receiving space's
+    // connections, plus broadcast metadata invalidations for the spaces
+    // themselves — the message never lands on their event streams, so
+    // without this their sidebar unread markers only update on refetch.
+    // Thread messages are skipped: B's sidebar renders the federated
+    // CHANNEL row (bumped by channel messages), not individual threads.
+    if (!isThread) {
+      signals.push(
+        ...(await federatedReceiversInvalidation(
+          // Production passes the routed pool handle (Router.onEventsApplied);
+          // direct callers/tests fall back to the process-wide registry.
+          (db as { global?: () => DbLike } | undefined)?.global?.()
+            ?? tryOpenGlobalDb(),
+          spaceId,
+          roomId,
+          {
+            seq: 0, // stamped by the Router
+            delta: 1,
+            users,
+            roomUnreadDeltas: new Map(
+              newlyUnread.map((u) => [u, 1] as const),
+            ),
+          },
+        )),
+      );
+    }
   }
 
   // recentThreads / room.getThreads may have changed (the new message is
@@ -199,6 +338,16 @@ async function handleCreateMessage(
   // above, so this invalidation is only for the thread-activity fields.
   signals.push(invalidate("space.roomy.room.getMetadata", { roomId }));
   signals.push(invalidate("space.roomy.room.getThreads", { roomId }));
+
+  // The space index board (space.getThreads) re-orders on new activity
+  // (latest timestamp per room) and gains/clears unread dots for every
+  // subscriber — broadcast, not caller-scoped.
+  signals.push(invalidate("space.roomy.space.getThreads", { spaceId }));
+
+  // A new message is a new activity-feed item (and bumps the feed's unread
+  // counts for every subscriber). The activity feed is a global per-user
+  // query, so invalidate with no params — broadcast to all users.
+  signals.push(invalidate("space.roomy.space.getActivityFeed", {}));
 
   // A message in a thread may update the author's `activeThreads` in the
   // space sidebar. The `roomMetadataDiff` only patches `unreadCount`, not
@@ -254,8 +403,14 @@ async function handleEditMessage(
     );
   }
   // Edit doesn't change unread count, but room metadata's recentThreads
-  // might reference this message's activity.
+  // might reference this message's activity, and the space index board
+  // shows the edited message as its latest activity.
   signals.push(invalidate("space.roomy.room.getMetadata", { roomId }));
+  signals.push(
+    invalidate("space.roomy.space.getThreads", { spaceId: event.streamDid }),
+  );
+  // An edited message may change the activity feed's rendered item.
+  signals.push(invalidate("space.roomy.space.getActivityFeed", {}));
 
   return signals;
 }
@@ -283,6 +438,11 @@ async function handleDeleteMessage(
       },
     },
     ...invalidateRoom(roomId, event.streamDid),
+    // The space index board (space.getThreads) may drop this room or reorder
+    // it when its latest message is deleted — broadcast invalidation.
+    invalidate("space.roomy.space.getThreads", { spaceId: event.streamDid }),
+    // A deleted message may remove an activity-feed item.
+    invalidate("space.roomy.space.getActivityFeed", {}),
   ];
 
   // Emit `remove` mention ops for every DID the deleted message mentioned,
@@ -328,6 +488,9 @@ function handleReactionChange(event: AppliedEvent): InvalidationEvent[] {
     // Per the "over-invalidate" principle this broadcasts to all users;
     // a reaction on a non-latest message triggers a harmless no-op refetch.
     invalidate("space.roomy.space.getActivityFeed", {}),
+    // A reaction on a room's latest message changes the space index board's
+    // `latestMembers` (recent participants) for that room — broadcast.
+    invalidate("space.roomy.space.getThreads", { spaceId }),
     ...(details.messageId
       ? [
           invalidate("space.roomy.message.getMessage", {
@@ -393,7 +556,11 @@ function handleDeleteRoom(event: AppliedEvent): InvalidationEvent[] {
   const details = event.details ?? {};
   const roomId = (details.roomId as Ulid | undefined) ?? event.roomId;
 
-  const signals: InvalidationEvent[] = [...invalidateSpace(spaceId)];
+  const signals: InvalidationEvent[] = [
+    ...invalidateSpace(spaceId),
+    // Deleting a room removes its activity items from every feed.
+    invalidate("space.roomy.space.getActivityFeed", {}),
+  ];
   if (roomId) {
     signals.push(invalidate("space.roomy.room.getMetadata", { roomId }));
   }
@@ -424,6 +591,8 @@ function handleJoinSpace(event: AppliedEvent): InvalidationEvent[] {
   return [
     ...invalidateSpace(spaceId),
     invalidate("space.roomy.space.getSpaces", {}, event.user),
+    // Joining a space adds its recent activity to the caller's feed.
+    invalidate("space.roomy.space.getActivityFeed", {}, event.user),
   ];
 }
 
@@ -432,6 +601,8 @@ function handleLeaveSpace(event: AppliedEvent): InvalidationEvent[] {
   return [
     ...invalidateSpace(spaceId),
     invalidate("space.roomy.space.getSpaces", {}, event.user),
+    // Leaving a space removes its activity from the caller's feed.
+    invalidate("space.roomy.space.getActivityFeed", {}, event.user),
   ];
 }
 
@@ -597,6 +768,92 @@ function handleMarkRead(event: AppliedEvent): InvalidationEvent[] {
   ];
 }
 
+// ─── Federation events ──────────────────────────────────────────────────
+
+/**
+ * A federation request was submitted (stream A). A's admins' request list
+ * and outgoing view change.
+ */
+function handleFederationRequest(event: AppliedEvent): InvalidationEvent[] {
+  const spaceId = event.streamDid;
+  return [
+    invalidate("space.roomy.federation.getRequests", { spaceId }),
+    invalidate("space.roomy.federation.getOutgoing", { spaceId }),
+  ];
+}
+
+/**
+ * A request was approved/rejected (stream A). A's request/outgoing/grants
+ * views change; B's incoming view and (on approval) B's sidebar federated
+ * channels change too.
+ */
+function handleFederationRespond(event: AppliedEvent): InvalidationEvent[] {
+  const spaceId = event.streamDid;
+  const b = event.details?.federatingSpaceDid as string | undefined;
+  const signals: InvalidationEvent[] = [
+    invalidate("space.roomy.federation.getRequests", { spaceId }),
+    invalidate("space.roomy.federation.getOutgoing", { spaceId }),
+    invalidate("space.roomy.federation.getGrants", { spaceId }),
+  ];
+  if (b) {
+    signals.push(invalidate("space.roomy.federation.getIncoming", { spaceId: b }));
+    signals.push(invalidate("space.roomy.space.getMetadata", { spaceId: b }));
+    signals.push(invalidate("space.roomy.space.getSpaces", {}));
+  }
+  return signals;
+}
+
+/**
+ * A federation was removed (stream A, initiated by an A or B admin). Grants
+ * are dropped; A's outgoing/grants views and B's incoming/sidebar change.
+ */
+function handleFederationRemove(event: AppliedEvent): InvalidationEvent[] {
+  const spaceId = event.streamDid;
+  const b = event.details?.federatingSpaceDid as string | undefined;
+  const signals: InvalidationEvent[] = [
+    invalidate("space.roomy.federation.getOutgoing", { spaceId }),
+    invalidate("space.roomy.federation.getGrants", { spaceId }),
+  ];
+  if (b) {
+    signals.push(invalidate("space.roomy.federation.getIncoming", { spaceId: b }));
+    signals.push(invalidate("space.roomy.space.getMetadata", { spaceId: b }));
+    signals.push(invalidate("space.roomy.space.getSpaces", {}));
+  }
+  return signals;
+}
+
+/**
+ * An origin grant changed (stream A). A's outgoing/grants views change; B's
+ * sidebar visibility of the channel changes (the channel may appear, hide,
+ * or flip read→readwrite).
+ */
+function handleSetRoomPermission(event: AppliedEvent): InvalidationEvent[] {
+  const spaceId = event.streamDid;
+  const b = event.details?.federatingSpaceDid as string | undefined;
+  const signals: InvalidationEvent[] = [
+    invalidate("space.roomy.federation.getOutgoing", { spaceId }),
+    invalidate("space.roomy.federation.getGrants", { spaceId }),
+  ];
+  if (b) {
+    signals.push(invalidate("space.roomy.space.getMetadata", { spaceId: b }));
+    signals.push(invalidate("space.roomy.space.getSpaces", {}));
+  }
+  return signals;
+}
+
+/**
+ * A receiver grant changed (stream B — B admins author these). B's grants
+ * view and B members' sidebar visibility change.
+ */
+function handleSetReceiverPermission(event: AppliedEvent): InvalidationEvent[] {
+  const spaceId = event.streamDid;
+  return [
+    invalidate("space.roomy.federation.getGrants", { spaceId }),
+    invalidate("space.roomy.space.getMetadata", { spaceId }),
+    invalidate("space.roomy.space.getSpaces", {}),
+  ];
+}
+
 // ─── Dispatch table ─────────────────────────────────────────────────────
 
 const HANDLERS: Record<string, (event: AppliedEvent, db?: DbLike, messageSnapshots?: ReadonlyMap<Ulid, MessageDto>) => InvalidationEvent[] | Promise<InvalidationEvent[]>> = {
@@ -653,6 +910,13 @@ const HANDLERS: Record<string, (event: AppliedEvent, db?: DbLike, messageSnapsho
 
   // State
   "space.roomy.state.markRead.v0": handleMarkRead,
+
+  // Channel federation
+  "space.roomy.federation.request.v0": handleFederationRequest,
+  "space.roomy.federation.respond.v0": handleFederationRespond,
+  "space.roomy.federation.remove.v0": handleFederationRemove,
+  "space.roomy.federation.setRoomPermission.v0": handleSetRoomPermission,
+  "space.roomy.federation.setReceiverPermission.v0": handleSetReceiverPermission,
 
   // Calendar — no XRPC endpoints yet
   "space.roomy.openmeet.configure.v0": () => [],

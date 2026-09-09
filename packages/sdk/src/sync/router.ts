@@ -21,8 +21,10 @@ import { queryKey } from "../cache/query-key";
 import { applyMessageDiff, type Message } from "./diff";
 import {
   patchRoomMetadata,
+  patchChannelThreadCount,
   patchSpaces,
   patchSpaceMetadata,
+  type RoomMetadataDiffPatch,
   type RoomMetadataResponse,
   type GetSpacesResponse,
   type SpaceMetadataResponse,
@@ -129,20 +131,37 @@ export class SyncRouter {
         });
         return;
       }
-      // Patch three cache entries from the one frame. Each patcher returns
+      const patch: RoomMetadataDiffPatch = {
+        delta: parsed.delta,
+        roomUnreadDelta: parsed.roomUnreadDelta,
+        threadUnreadDelta: parsed.threadUnreadDelta,
+        parentChannelId: parsed.parentChannelId,
+      };
+      // Patch cache entries from the one frame. Each patcher returns
       // undefined when its cache entry is absent or the target isn't found —
       // a no-op (`setQueryData` treats undefined as "don't write").
       this.#adapter.patch<RoomMetadataResponse>(
         queryKey(ROOM_METADATA_NSID, { roomId: parsed.roomId }),
-        (prev) => patchRoomMetadata(prev, parsed.delta),
+        (prev) => patchRoomMetadata(prev, patch),
       );
-      this.#adapter.patch<GetSpacesResponse>(
+      // A thread message also bumps the parent channel's thread count.
+      if (parsed.parentChannelId && parsed.threadUnreadDelta) {
+        this.#adapter.patch<RoomMetadataResponse>(
+          queryKey(ROOM_METADATA_NSID, { roomId: parsed.parentChannelId }),
+          (prev) => patchChannelThreadCount(prev, parsed.threadUnreadDelta!),
+        );
+      }
+      // Patch every cached variant of getSpaces (the server bar caches
+      // `?includeLeft=true`, the home page the bare query). `patchAll`
+      // prefix-matches rather than requiring the exact key, so a single
+      // frame updates every mounted variant; no cache entry = no-op.
+      this.#adapter.patchAll<GetSpacesResponse>(
         queryKey(GET_SPACES_NSID),
-        (prev) => patchSpaces(prev, parsed.spaceId, parsed.delta),
+        (prev) => patchSpaces(prev, parsed.spaceId, patch),
       );
       this.#adapter.patch<SpaceMetadataResponse>(
         queryKey(SPACE_METADATA_NSID, { spaceId: parsed.spaceId }),
-        (prev) => patchSpaceMetadata(prev, parsed.roomId, parsed.delta),
+        (prev) => patchSpaceMetadata(prev, parsed.roomId, patch),
       );
       return;
     }
