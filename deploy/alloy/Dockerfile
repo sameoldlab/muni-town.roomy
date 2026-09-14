@@ -1,19 +1,23 @@
 # ── Grafana Alloy (production collector) ────────────────────────────────
 #
-# Central log collector for Roomy on Railway. Receives logs pushed by
+# Central telemetry collector for Roomy on Railway. Receives logs pushed by
 # appserver / discord-bridge and ships them to Grafana Cloud, plus the
-# app-lite Faro browser telemetry (faro.receiver on 12345).
+# app-lite Faro browser telemetry (faro.receiver on 12345). Also forwards
+# OTLP traces (4317/4318, and browser traces from Faro) to Grafana Cloud
+# Tempo, and scrapes the appserver's Prometheus /metrics into Mimir.
 #
 # Config is baked in (the user can't attach a Railway volume), so the only
 # runtime inputs are env vars (see README.md):
 #   - GRAFANA_CLOUD_LOKI_ID
 #   - GRAFANA_CLOUD_LOKI_TOKEN
-#   - GRAFANA_CLOUD_REGION   (optional, default `us`)
+#   - GRAFANA_CLOUD_MIMIR_URL / _ID / _TOKEN
+#   - GRAFANA_CLOUD_TEMPO_URL / _ID / _TOKEN   (optional; unset → no traces)
+#   - APPSERVER_METRICS_URL  (scrape target; default below)
 #   - FARO_CORS_ORIGINS      (comma-separated browser origins; default below)
 #   - FARO_API_KEY           (optional; default empty)
 #
 # Ports: 5005 (Alloy UI/reload), 3100 (Loki push API), 12345 (Faro),
-# 4317/4318 (OTLP).
+# 4317/4318 (OTLP logs + traces).
 
 FROM grafana/alloy:latest
 
