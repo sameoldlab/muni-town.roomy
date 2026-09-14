@@ -14,12 +14,18 @@ import { XrpcError } from "../xrpc/errors.ts";
 import { optionalInt, optionalString, requireString } from "../xrpc/params.ts";
 import { stripNulls } from "../xrpc/strip-nulls.ts";
 import type { AuthCtx, QueryHandler, QueryParams } from "../xrpc/types.ts";
+import { withSpan } from "../telemetry/tracing.ts";
 
 interface GetMessagesResult {
   messages: MessageDto[];
   cursor?: string;
 }
 
+/**
+ * Instrumented entry point. Phases are split so the waterfall shows whether
+ * latency is membership hydration, the message query, or read-driven embed
+ * prioritisation — three very different fixes.
+ */
 export const getMessagesHandler: QueryHandler<
   QueryParams,
   GetMessagesResult
@@ -33,29 +39,55 @@ export const getMessagesHandler: QueryHandler<
   });
   const cursor = optionalString(params, "cursor") ?? null;
 
-  if (userDid !== null) {
-    await hydrateUserMembership(userDid);
-  }
+  return withSpan(
+    "space.roomy.room.getMessages",
+    { "roomy.room_id": roomId, "roomy.limit": limit },
+    async (span) => {
+      if (userDid !== null) {
+        await withSpan("getMessages.hydrateMembership", {}, () =>
+          hydrateUserMembership(userDid),
+        );
+      }
 
-  const db = await openSpaceDbForEntity(roomId);
-  if (!db) {
-    throw new XrpcError(404, "NotFound", `Room not found: ${roomId}`);
-  }
-  await requireRoomRead(db, roomId, userDid);
+      const db = await withSpan("getMessages.openDb", {}, async (s) => {
+        const opened = await openSpaceDbForEntity(roomId);
+        s.setAttribute("roomy.db_found", opened !== null);
+        return opened;
+      });
+      if (!db) {
+        throw new XrpcError(404, "NotFound", `Room not found: ${roomId}`);
+      }
+      await withSpan("getMessages.requireRead", {}, () =>
+        requireRoomRead(db, roomId, userDid),
+      );
 
-  const { messages, nextCursor } = await selectMessages(db, {
-    kind: "room",
-    roomId,
-    limit,
-    cursor,
-  }, userDid ?? "");
+      const { messages, nextCursor } = await withSpan(
+        "getMessages.selectMessages",
+        {},
+        async (s) => {
+          const result = await selectMessages(db, {
+            kind: "room",
+            roomId,
+            limit,
+            cursor,
+          }, userDid ?? "");
+          s.setAttribute("roomy.message_count", result.messages.length);
+          return result;
+        },
+      );
 
-  // Read-driven embed prioritisation: a user viewing this room is actively
-  // waiting on these link cards, so jump any never-attempted links ahead of
-  // the oldest-first backfill backlog (which can take hours when dominated
-  // by erroring/timing-out links). Already-enriched links are a no-op and
-  // transient-failed links keep their backoff (see prioritiseLinksForRead).
-  await prioritiseLinksForRead(db, messages);
+      // Read-driven embed prioritisation: a user viewing this room is
+      // actively waiting on these link cards, so jump any never-attempted
+      // links ahead of the oldest-first backfill backlog (which can take
+      // hours when dominated by erroring/timing-out links). Already-enriched
+      // links are a no-op and transient-failed links keep their backoff (see
+      // prioritiseLinksForRead).
+      await withSpan("getMessages.prioritiseLinks", {}, () =>
+        prioritiseLinksForRead(db, messages),
+      );
 
-  return stripNulls({ messages, cursor: nextCursor }) as GetMessagesResult;
+      span.setAttribute("roomy.has_cursor", nextCursor != null);
+      return stripNulls({ messages, cursor: nextCursor }) as GetMessagesResult;
+    },
+  );
 };

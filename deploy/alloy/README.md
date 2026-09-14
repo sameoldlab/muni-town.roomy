@@ -23,14 +23,16 @@ The config is **baked into the image** so no Railway volume is required.
    | `GRAFANA_CLOUD_MIMIR_URL` | `https://prometheus-prod-<region>.grafana.net/api/prom/push` |
    | `GRAFANA_CLOUD_MIMIR_ID` | Grafana Cloud Prometheus instance ID |
    | `GRAFANA_CLOUD_MIMIR_TOKEN` | Grafana Cloud access policy token |
-   | `GRAFANA_CLOUD_TEMPO_URL` | OTLP gateway base URL, e.g. `https://otlp-gateway-prod-<region>.grafana.net/otlp` (the exporter appends `/v1/traces`). Optional: unset → the exporter points at a placeholder and spans are dropped after retry; logs/metrics are unaffected. |
+   | `GRAFANA_CLOUD_TEMPO_URL` | OTLP gateway base URL, e.g. `https://otlp-gateway-prod-<region>.grafana.net/otlp` (the exporter appends `/v1/traces`). Optional: unset → the exporter points at a placeholder and spans are dropped after retry; logs/metrics are unaffected. **Set all three Tempo vars or none** — a URL with placeholder credentials just 401s. |
    | `GRAFANA_CLOUD_TEMPO_ID` | Grafana Cloud instance ID (OTLP basic-auth user). Required *with* `_URL`/`_TOKEN` to ship spans. |
    | `GRAFANA_CLOUD_TEMPO_TOKEN` | Grafana Cloud access policy token (OTLP basic-auth pass). |
-   | `APPSERVER_METRICS_URL` | appserver scrape target as **host:port** (no scheme/path), e.g. `appserver:8080` or `appserver.railway.internal:8080` (default `appserver:8080`, set in the Dockerfile ENV; override on Railway). Scheme is http, path is `/metrics`. |
+   | `APPSERVER_METRICS_URL` | appserver scrape target as **host:port** (no scheme/path). On Railway this must be `<service-name>.railway.internal:8080` — Railway's private DNS uses the `.railway.internal` suffix, so the Dockerfile default `appserver:8080` does **not** resolve there. Short/bare names only work in the dev compose network (where the container is actually named `alloy`/`appserver`). Scheme is http, path is `/metrics`. |
    | `FARO_CORS_ORIGINS` | Comma-separated browser origins allowed to POST Faro telemetry (default `https://roomy.space` — the SPA origin) |
    | `FARO_API_KEY` | Optional Faro API key (default unset) |
-3. **Networking → Private networking** — add this service to a private
-   network so the apps can reach it by name at `alloy:3100`.
+3. **Networking → Private networking** — ensure this service is on the
+   project's private network so the apps can reach it by name at
+   `alloy.railway.internal:3100`. (Railway enables this by default; the
+   `.railway.internal` suffix is required — a bare `alloy` will not resolve.)
 4. **Ports**: open `3100` (Loki push API), `12345` (Faro receiver),
    `5005` (Alloy UI/reload), `4317`/`4318` (OTLP gRPC/HTTP — logs + traces).
 5. **Healthcheck**: `/-/healthy` on port `5005`.
@@ -46,14 +48,22 @@ The config is **baked into the image** so no Railway volume is required.
 Alloy forwards OTLP traces to Grafana Cloud Tempo (`otelcol.exporter.otlphttp
 "tempo"`), authenticated with the stack instance ID + access policy token:
 
-- **App services** — send OTLP spans (gRPC `:4317` or HTTP `:4318/v1/traces`)
-  to the collector. **Nothing in the repo emits spans yet**: `appserver` and
-  `discord-bridge` have no OpenTelemetry SDK, and the SDK's `src/otel.ts`
-  tracer is a no-op without a registered provider. Traffic will be empty
-  until an app is instrumented.
+- **appserver** — **instrumented**: exports OTLP/HTTP spans for
+  `space.roomy.space.sendEvents`, `space.roomy.room.getMessages` and
+  `space.roomy.space.getThreads`, each with child spans for its internal
+  phases (e.g. `sendEvents.write`, `getMessages.selectMessages`). Set
+  `OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy.railway.internal:4318` on the
+  appserver service to switch it on; unset, tracing is a strict no-op.
+  Log lines from inside a span carry `trace_id`/`span_id` so Grafana can
+  pivot log → trace.
+- **discord-bridge** — not instrumented: it ships logs only (the SDK's
+  `src/otel.ts` tracer is a no-op without a registered provider).
 - **app-lite** — the Faro receiver forwards browser traces to Tempo as well,
   but only once `faro.ts` registers `TracingInstrumentation` (it currently
   loads just console + error instrumentation).
+
+To visualise: in Grafana pick the Tempo (traces) data source and search by
+service `appserver`, or jump straight from any log line's `trace_id`.
 
 Because Tempo vars are optional, an unconfigured collector still loads and
 keeps shipping logs/metrics; spans retry against `127.0.0.1:1` for up to
@@ -87,20 +97,29 @@ Apps push structured JSON logs directly to Alloy over the Railway private
 network — no stdout pipes or sidecar forwarders.
 
 - **appserver** and **discord-bridge** — each ships an in-app Loki sink
-  (`src/telemetry/loki.ts` in both packages). When `ALLOY_URL` is set
-  (default `http://alloy:3100/loki/api/v1/push`), every structured log
-  record is batched (500 / 2s) and POSTed to the Alloy Loki push API with
-  stream labels `service_name`, `level`, `scope` (plus Railway replica
-  labels when present). Unset in dev → stdout only.
+  (`src/telemetry/loki.ts` in both packages). Set `ALLOY_URL` to
+  `http://alloy.railway.internal:3100/loki/api/v1/push` (Railway — the
+  `.railway.internal` suffix is required). There is **no default in code**:
+  unset means stdout only. Every structured log record is batched (500 / 2s)
+  and POSTed with stream labels `service_name`, `level`, `scope` (plus
+  Railway replica labels when present).
 - **app-lite** — ships logs from the browser via Faro (TASK-66), not the
   Alloy collector.
 
 app-lite is a static SPA (no server stdout): set `PUBLIC_FARO_URL` on the
-app-lite service to the collector's Faro endpoint — the path must be
-included, e.g. `https://alloy.<railway-domain>.up.railway.app:12345/collect`
-(the Faro agent POSTs verbatim to the configured URL; it does NOT append
-`/collect`) and the Faro browser agent POSTs console logs + errors to the
-`faro.receiver` here. See `packages/app-lite/src/lib/telemetry/faro.ts`.
+app-lite service to the collector's Faro endpoint — **the path is required**,
+e.g. `https://<alloy-domain>.up.railway.app/collect`. The Faro browser agent
+POSTs console logs + errors to the `faro.receiver` here. Because app-lite is
+built with `adapter-static`, `PUBLIC_FARO_URL` is **inlined at build time**
+(see `Dockerfile.app-lite`) — changing it requires a rebuild, and it must be
+passed as a build arg/`ARG`, not just a runtime variable. See
+`packages/app-lite/src/lib/telemetry/faro.ts`.
+
+> **Faro is the one signal that needs a public domain.** Railway's edge only
+> serves 443, so generate a domain for the alloy service and set its
+> **target port to 12345** (Settings → Networking → the domain's port). The
+> URL is then `https://<that-domain>/collect` with **no explicit port**.
+> Logs, metrics, and app OTLP traces all stay on the private network.
 
 ## Ports
 - `3100`  — Loki push API receiver (`loki.source.api`)

@@ -102,6 +102,7 @@ import { proxyBlob } from "./blob.ts";
 import { log } from "./log.ts";
 import { metrics } from "./metrics.ts";
 import { resolveBuildId } from "./telemetry/build.ts";
+import { initTracing, shutdownTracing } from "./telemetry/tracing.ts";
 import {
   CACHEABLE_NSIDS,
   createQueryCacheFromEnv,
@@ -484,6 +485,12 @@ export async function createAppserver(
   const serviceEndpoint = opts.serviceEndpoint ?? process.env.APPSERVER_ORIGIN ?? "https://api.roomy.space";
   const corsOrigin = opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "*";
   const quiet = opts.quiet ?? false;
+
+  // ─── Tracing ────────────────────────────────────────────────────────
+  // Install the OTLP tracer provider before any request is served, so every
+  // handler span has a live context. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+  // (or the traces-specific variant) is set — see telemetry/tracing.ts.
+  initTracing();
 
   // ─── HappyView config ───────────────────────────────────────────────
   // Initialize the process-wide singleton. When `opts.happyView` is unset,
@@ -949,7 +956,11 @@ export async function createAppserver(
         } catch (e) {
           log.error("appserver close: resetInvalidationRouter failed", e);
         }
-      });
+      })
+      // Flush buffered spans last, after teardown has ended any in-flight
+      // request spans, so a redeploy doesn't drop the final batch. No-op
+      // when tracing is disabled.
+      .then(() => shutdownTracing());
     },
   };
 }

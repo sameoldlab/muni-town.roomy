@@ -9,6 +9,7 @@
  */
 
 import { parseEvent, type Event, StreamDid } from "@roomy-space/sdk";
+import { withSpan } from "../telemetry/tracing.ts";
 import { log } from "../log.ts";
 import { openGlobalDb, openSpaceDb } from "../db/db.ts";
 import { checkWriteAuth } from "../auth/writeAuth.ts";
@@ -28,11 +29,32 @@ interface SendEventsBody {
   events?: unknown;
 }
 
+/**
+ * Entry point. The span covers the whole request so a slow `sendEvents` is
+ * attributable to a phase (access / authorize / write) rather than being one
+ * opaque latency number.
+ */
 export const sendEventsHandler: ProcedureHandler<SendEventsBody, void> = async (
+  params: QueryParams,
+  auth: AuthCtx,
+  body: SendEventsBody,
+) =>
+  withSpan(
+    "space.roomy.space.sendEvents",
+    {
+      "roomy.event_count": Array.isArray(body.events) ? body.events.length : 0,
+      ...(typeof body.spaceId === "string"
+        ? { "roomy.space_id": body.spaceId }
+        : {}),
+    },
+    () => sendEventsImpl(params, auth, body),
+  );
+
+async function sendEventsImpl(
   _params: QueryParams,
   auth: AuthCtx,
   body: SendEventsBody,
-) => {
+) {
   // 1. Validate input
   if (typeof body.spaceId !== "string" || body.spaceId === "") {
     throw new XrpcError(
@@ -57,11 +79,16 @@ export const sendEventsHandler: ProcedureHandler<SendEventsBody, void> = async (
   }
 
   const spaceId = body.spaceId;
+  // Narrowed once here: the guard above proves it, but TS loses the narrowing
+  // inside the callbacks below (the `body` property read is not re-invoked in
+  // a way the compiler can track).
+  const events = body.events;
   const callerDid = parseUserDid(auth);
   if (callerDid === null) {
     throw new XrpcError(401, "AuthRequired", "Authentication required");
   }
-  log.info("sendEvents", { spaceId, callerDid, count: body.events.length });
+  log.info("sendEvents", { spaceId, callerDid, count: events.length });
+  // Hoisted above the ban check: the service's own DID is exempt from it.
   const streamManager = getStreamManager();
   const db = openSpaceDb(spaceId);
   // Space access is resolved here (for writeAuth + to reject banned callers)
@@ -70,7 +97,11 @@ export const sendEventsHandler: ProcedureHandler<SendEventsBody, void> = async (
   // to write to a federated channel. Per-event `writeAuth` is the sole
   // authority on what the caller may send — it denies events that require
   // membership/admin and allows federated room writes.
-  const access = await spaceAccess(db, spaceId, callerDid);
+  const access = await withSpan("sendEvents.access", {}, async (s) => {
+    const result = await spaceAccess(db, spaceId, callerDid);
+    s.setAttribute("roomy.is_banned", result.isBanned);
+    return result;
+  });
   // A ban is a space-level gate on ordinary participants. The service DID is
   // not a participant: it is the authority that evaluates bans. Exempting it
   // here is what lets it emit its own events (the Pro members-role sweep)
@@ -82,67 +113,82 @@ export const sendEventsHandler: ProcedureHandler<SendEventsBody, void> = async (
 
   // 3. Validate + authorize each event
   const parsedEvents: (typeof Event.infer)[] = [];
-  for (let i = 0; i < body.events.length; i++) {
-    const raw = body.events[i];
-    if (typeof raw !== "object" || raw === null) {
-      throw new XrpcError(
-        400,
-        "InvalidRequest",
-        `Event at index ${i} is not an object`,
-      );
-    }
-    const parsed = parseEvent(raw);
-    if (!parsed.success) {
-      throw new XrpcError(
-        400,
-        "InvalidRequest",
-        `Event at index ${i} is invalid: ${parsed.error}`,
-      );
-    }
-    const event = parsed.data;
-    const denial = await checkWriteAuth(
-      db,
-      spaceId,
-      callerDid,
-      event,
-      access,
-      openSpaceDb,
-      openGlobalDb(),
-      // The service's own DID is allowed to author a narrow set of events
-      // (the Pro members-role sweep) without holding space membership or
-      // admin — see SERVICE_SELF_WRITE_TYPES in auth/writeAuth.ts.
-      streamManager.ownDid,
-    );
-    if (denial) {
-      throw new XrpcError(
-        denial.status,
-        denial.error,
-        denial.message,
-      );
-    }
-    parsedEvents.push(event);
-  }
+  // Per-event write authorization is a DB round-trip each (auth edges,
+  // membership, policy): the dominant cost for a large batch. One span
+  // around the loop (rather than N) keeps the trace cheap while still
+  // separating "authorize" from "write" when reading the waterfall.
+  await withSpan(
+    "sendEvents.authorize",
+    { "roomy.event_count": events.length },
+    async (s) => {
+      for (let i = 0; i < events.length; i++) {
+        const raw = events[i];
+        if (typeof raw !== "object" || raw === null) {
+          throw new XrpcError(
+            400,
+            "InvalidRequest",
+            `Event at index ${i} is not an object`,
+          );
+        }
+        const parsed = parseEvent(raw);
+        if (!parsed.success) {
+          throw new XrpcError(
+            400,
+            "InvalidRequest",
+            `Event at index ${i} is invalid: ${parsed.error}`,
+          );
+        }
+        const event = parsed.data;
+        const denial = await checkWriteAuth(
+          db,
+          spaceId,
+          callerDid,
+          event,
+          access,
+          openSpaceDb,
+          openGlobalDb(),
+          // The service's own DID is allowed to author a narrow set of events
+          // (the Pro members-role sweep) without holding space membership or
+          // admin — see SERVICE_SELF_WRITE_TYPES in auth/writeAuth.ts.
+          streamManager.ownDid,
+        );
+        if (denial) {
+          throw new XrpcError(
+            denial.status,
+            denial.error,
+            denial.message,
+          );
+        }
+        parsedEvents.push(event);
+      }
+      s.setAttribute("roomy.authorized_count", parsedEvents.length);
+    },
+  );
   log.debug("sendEvents", "validated", { spaceId, count: parsedEvents.length });
 
   // 4. Write to events DB + materialize inline
   log.info("sendEvents", "writing to events DB", { spaceId, count: parsedEvents.length });
   const streamDid = StreamDid.assert(spaceId);
-  try {
-    await streamManager.sendEvents(streamDid, parsedEvents, callerDid);
-  } catch (err) {
-    // Blue-green (P2/P8): a write to a space that is currently being rebuilt
-    // is rejected before it lands in the event log. Surface it as a retryable
-    // 409 so clients can back off and retry once the rebuild commits — not a
-    // 500 (the write is safe to retry; nothing was applied).
-    if (err instanceof SpaceRematerializingError) {
-      throw new XrpcError(
-        409,
-        "SpaceRematerializing",
-        `Space ${spaceId} is being rematerialized; retry the write shortly`,
-      );
+  // The write + inline materialization: where a space-local bottleneck
+  // (pool saturation, SQLite writer contention) actually shows up.
+  await withSpan("sendEvents.write", {}, async () => {
+    try {
+      await streamManager.sendEvents(streamDid, parsedEvents, callerDid);
+    } catch (err) {
+      // Blue-green (P2/P8): a write to a space that is currently being
+      // rebuilt is rejected before it lands in the event log. Surface it as a
+      // retryable 409 so clients can back off and retry once the rebuild
+      // commits — not a 500 (the write is safe to retry; nothing applied).
+      if (err instanceof SpaceRematerializingError) {
+        throw new XrpcError(
+          409,
+          "SpaceRematerializing",
+          `Space ${spaceId} is being rematerialized; retry the write shortly`,
+        );
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 
   log.info("sendEvents", "done", { spaceId, count: parsedEvents.length });
 };

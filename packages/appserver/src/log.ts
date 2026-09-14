@@ -29,6 +29,7 @@
 
 import { createLokiSink, type LokiSink } from "./telemetry/loki.ts";
 import { resolveBuildId } from "./telemetry/build.ts";
+import { currentTraceContext } from "./telemetry/tracing.ts";
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
 export type LogLevel = keyof typeof LEVELS;
@@ -107,6 +108,14 @@ function emit(level: LogLevel, args: unknown[]): void {
       message: error.message,
       stack: error.stack,
     };
+  }
+  // Correlate this log line with its trace so Grafana can pivot log → trace.
+  // Null when tracing is off or outside a request, in which case the fields
+  // are omitted entirely (never all-zero placeholder ids).
+  const traceCtx = currentTraceContext();
+  if (traceCtx) {
+    record.trace_id = traceCtx.traceId;
+    record.span_id = traceCtx.spanId;
   }
   const line = JSON.stringify(record);
 
