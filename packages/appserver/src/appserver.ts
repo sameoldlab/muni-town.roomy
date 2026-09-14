@@ -38,6 +38,9 @@ import { adminGetPushStatsHandler } from "./handlers/space.roomy.admin.push.getS
 import { adminGetDashboardStatsHandler } from "./handlers/space.roomy.admin.getDashboardStats.ts";
 import { adminListSpacesHandler } from "./handlers/space.roomy.admin.listSpaces.ts";
 import { adminTestSendHandler } from "./handlers/space.roomy.admin.push.testSend.ts";
+import { adminResetSearchBackfillHandler } from "./handlers/space.roomy.admin.resetSearchBackfill.ts";
+import { adminRunSearchBackfillHandler } from "./handlers/space.roomy.admin.runSearchBackfill.ts";
+import { adminReindexSpaceHandler } from "./handlers/space.roomy.admin.reindexSpace.ts";
 import { getSpacesHandler } from "./handlers/space.roomy.space.getSpaces.ts";
 import { getMembersHandler } from "./handlers/space.roomy.space.getMembers.ts";
 import { getMetadataHandler } from "./handlers/space.roomy.space.getMetadata.ts";
@@ -74,7 +77,9 @@ import { getUserAccessHandler } from "./handlers/space.roomy.space.getUserAccess
 import { grantBridgeTokenHandler } from "./handlers/space.roomy.space.grantBridgeToken.ts";
 import { revokeBridgeTokenHandler } from "./handlers/space.roomy.space.revokeBridgeToken.ts";
 import { getBridgeTokensHandler } from "./handlers/space.roomy.space.getBridgeTokens.ts";
+import { createProCheckoutHandler } from "./handlers/space.roomy.pro.createCheckout.ts";
 import { adminGetSpaceMembershipHandler } from "./handlers/space.roomy.admin.getSpaceMembership.ts";
+import { adminReconcileProMembersHandler } from "./handlers/space.roomy.admin.reconcileProMembers.ts";
 import { getVapidPublicKeyHandler } from "./handlers/space.roomy.push.getVapidPublicKey.ts";
 import { getPreferencesHandler } from "./handlers/space.roomy.push.getPreferences.ts";
 import { registerSubscriptionHandler } from "./handlers/space.roomy.push.registerSubscription.ts";
@@ -87,6 +92,10 @@ import { schemas } from "@roomy-space/sdk";
 import { initHappyView, type HappyViewConfig } from "./happyview.ts";
 import { initQdrant } from "./qdrant.ts";
 import { initPolar } from "./billing/polar.ts";
+import {
+  runProMembersReconcile,
+  PRO_MEMBERS_RECONCILE_INTERVAL_MS,
+} from "./billing/proMembersReconcile.ts";
 import { getArbiterConfig, type ArbiterConfig } from "./arbiter/config.ts";
 import type { GetProfilesFn } from "./materialization/profiles.ts";
 
@@ -94,6 +103,7 @@ import { proxyBlob } from "./blob.ts";
 import { log } from "./log.ts";
 import { metrics } from "./metrics.ts";
 import { resolveBuildId } from "./telemetry/build.ts";
+import { initTracing, shutdownTracing } from "./telemetry/tracing.ts";
 import {
   CACHEABLE_NSIDS,
   createQueryCacheFromEnv,
@@ -262,11 +272,23 @@ export function buildRouter(
     .query("space.roomy.admin.getDashboardStats", {
       handler: adminGetDashboardStatsHandler,
     })
+    .procedure("space.roomy.admin.resetSearchBackfill", {
+      handler: adminResetSearchBackfillHandler,
+    })
+    .procedure("space.roomy.admin.runSearchBackfill", {
+      handler: adminRunSearchBackfillHandler,
+    })
+    .procedure("space.roomy.admin.reindexSpace", {
+      handler: adminReindexSpaceHandler,
+    })
     .query("space.roomy.admin.listSpaces", {
       handler: adminListSpacesHandler,
     })
     .query("space.roomy.admin.getSpaceMembership", {
       handler: adminGetSpaceMembershipHandler,
+    })
+    .procedure("space.roomy.admin.reconcileProMembers", {
+      handler: adminReconcileProMembersHandler,
     })
     .query("space.roomy.sync.getEvents", {
       handler: getEventsHandler,
@@ -330,6 +352,11 @@ export function buildRouter(
       handler: getBridgeTokensHandler,
       paramsSchema: schemas.queries.getBridgeTokens.Params,
       outputSchema: schemas.queries.getBridgeTokens.Response,
+    })
+    .procedure("space.roomy.pro.createCheckout", {
+      handler: createProCheckoutHandler,
+      inputSchema: schemas.procedures.createProCheckout.Input,
+      outputSchema: schemas.procedures.createProCheckout.Output,
     })
     .query("space.roomy.federation.getRequests", {
       handler: getFederationRequestsHandler,
@@ -462,6 +489,12 @@ export async function createAppserver(
   const serviceEndpoint = opts.serviceEndpoint ?? process.env.APPSERVER_ORIGIN ?? "https://api.roomy.space";
   const corsOrigin = opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "*";
   const quiet = opts.quiet ?? false;
+
+  // ─── Tracing ────────────────────────────────────────────────────────
+  // Install the OTLP tracer provider before any request is served, so every
+  // handler span has a live context. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+  // (or the traces-specific variant) is set — see telemetry/tracing.ts.
+  initTracing();
 
   // ─── HappyView config ───────────────────────────────────────────────
   // Initialize the process-wide singleton. When `opts.happyView` is unset,
@@ -613,6 +646,24 @@ export async function createAppserver(
     // always queued and evaluated. No-op-safe when VAPID isn't configured
     // (deliveries just find no subscriptions).
     startPushDispatcher({ db: openReadStateDb() });
+  }
+  // ─── Roomy Pro members-role reconciliation (periodic sweep) ───────────
+  // Every 10 minutes, reconcile the Roomy Space's 'Members' role against
+  // Polar's live Pro-subscriber set (add paying subscribers, remove lapsed
+  // tracked ones). Unref'd alongside the maintenance/metrics timers. No-op
+  // when Polar isn't configured; fail-safe (writes nothing) on a Polar
+  // outage. Disabled in tests via `disableBackgroundWorkers`.
+  let proMembersTimer: ReturnType<typeof setInterval> | undefined;
+  if (backgroundWorkers) {
+    proMembersTimer = setInterval(() => {
+      runProMembersReconcile().catch((err) => {
+        log.error(
+          "[pro-members] periodic sweep crashed",
+          err instanceof Error ? err : undefined,
+        );
+      });
+    }, PRO_MEMBERS_RECONCILE_INTERVAL_MS);
+    proMembersTimer.unref();
   }
 
   // ─── XRPC routes ──────────────────────────────────────────────────────
@@ -883,6 +934,7 @@ export async function createAppserver(
         try {
           clearInterval(maintenanceTimer);
           clearInterval(metricsTimer);
+          clearInterval(proMembersTimer);
           closeDb();
         } catch (e) {
           log.error("appserver close: closeDb failed", e);
@@ -908,7 +960,11 @@ export async function createAppserver(
         } catch (e) {
           log.error("appserver close: resetInvalidationRouter failed", e);
         }
-      });
+      })
+      // Flush buffered spans last, after teardown has ended any in-flight
+      // request spans, so a redeploy doesn't drop the final batch. No-op
+      // when tracing is disabled.
+      .then(() => shutdownTracing());
     },
   };
 }

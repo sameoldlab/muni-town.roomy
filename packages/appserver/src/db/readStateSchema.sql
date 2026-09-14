@@ -4,7 +4,9 @@
 -- from the event log. Unlike the materialisation DB, this data
 -- survives schema changes to the materialisation tables.
 --
--- Bump the version constant in readStateDb.ts whenever this file changes.
+-- Bump by adding a version to READSTATE_MIGRATIONS in readStateVersions.ts;
+-- that manifest drives the version constant, the worker's upgrade loop, and
+-- the async-task key type.
 
 pragma foreign_keys = on;
 
@@ -13,9 +15,11 @@ create table if not exists readstate_schema_version (
   version text not null
 ) strict;
 
--- Resumable asynchronous/data migrations. Structural DDL is applied by the
--- worker first; startup stamps completed_at only after the registered recovery
--- task succeeds, so interrupted migrations retry safely.
+-- Resumable asynchronous/data migrations. Only versions declared
+-- `kind: "data"` in READSTATE_MIGRATIONS get a row here (the worker inserts it
+-- at upgrade time); startup runs the registered task and stamps completed_at
+-- only after it succeeds, so interrupted migrations retry safely. Structural
+-- versions never appear here.
 create table if not exists readstate_schema_migrations (
   version text primary key,
   completed_at integer
@@ -185,3 +189,14 @@ create table if not exists bridge_token_grants (
 ) strict;
 create index if not exists idx_bridge_token_grants_space
   on bridge_token_grants(space_did);
+
+-- ── Roomy Pro members-area role grants (schema v10) ─────────────────────
+-- Tracks the DIDs the Roomy Pro members-role reconcile sweep has granted
+-- the 'Members' role in the Roomy Space. This is the sweep's ownership
+-- record so it can remove a lapsed subscriber WITHOUT clobbering a
+-- manually-assigned member who is not a subscriber. Removal only applies
+-- to a tracked DID whose subscription has lapsed.
+create table if not exists pro_role_grants (
+  did         text primary key,
+  granted_at  integer not null default (unixepoch() * 1000)
+) strict;

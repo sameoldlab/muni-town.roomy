@@ -141,11 +141,16 @@ Lexicon `Level` enum: `"silent" | "quiet" | "engaged" | "busy"`.
 
 ## Storage schema (readstate DB)
 
-Bump `READSTATE_SCHEMA_VERSION` in `src/db/readStateDb.ts` and add a v3 migration
-to the `MIGRATIONS` array in `src/db/worker.ts` (the worker owns readstate schema
-lifecycle). Update `readStateSchema.sql` to reflect the final shape — the schema
-file is applied via `db.exec()` on init (all `create table if not exists`), and the
-migration ensures existing v2 DBs advance their version row to 3.
+Bump the read-state schema by adding a version to `READSTATE_MIGRATIONS` in
+`src/db/readStateVersions.ts` (the single source of truth for the version
+constant, the worker's upgrade loop, and the async-task key type) and update
+`readStateSchema.sql` to the final shape — the schema file is applied via
+`db.exec()` on init (all `create table if not exists`), and the manifest entry
+ensures existing v2 DBs advance their version row to 3. A version whose tables
+are all `create table if not exists` needs no worker `up` and no async task:
+declare it `{ kind: "structural" }`. Only a version with an async data
+migration declares `{ kind: "data" }`, which the compiler then requires a task
+for in `src/db/userSpaceMembershipMigration.ts`.
 
 ```sql
 -- A device/browser subscription for a user. A user may have many (one per browser).
@@ -602,8 +607,8 @@ No change to the lazy `ensureReadPositions` strategy is required for push.
 **appserver**
 - `scripts/generate-vapid.ts` (new)
 - `package.json` — add `web-push` dep
-- `src/db/readStateSchema.sql`, `src/db/readStateDb.ts` (schema v3)
-- `src/db/worker.ts` — v3 migration in `MIGRATIONS` array (push tables)
+- `src/db/readStateSchema.sql` (schema v3 tables)
+- `src/db/readStateVersions.ts` — v3 manifest entry (`kind: "structural"`)
 - `src/push/dispatcher.ts`, `src/push/evaluate.ts`, `src/push/avatars.ts`,
   `src/push/webpush.ts`, `src/push/types.ts`, `src/push/level.ts` (new)
 - `src/handlers/space.roomy.push.{getVapidPublicKey,registerSubscription,unregisterSubscription,getPreferences,setPreferences}.ts` (new)

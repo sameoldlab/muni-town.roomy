@@ -11,6 +11,10 @@ import {
   reduceMembershipEvents,
   runPendingReadStateMigrationsWithRetry,
 } from "./userSpaceMembershipMigration.ts";
+import {
+  READSTATE_MIGRATIONS,
+  readStateMigrationEntry,
+} from "./readStateVersions.ts";
 
 const USER = UserDid.assert("did:plc:test-user");
 const SPACE = StreamDid.assert("did:web:space.example");
@@ -173,23 +177,31 @@ describe("runPendingReadStateMigrationsWithRetry", () => {
     expect(row?.completed_at).not.toBeNull();
   });
 
-  test("is a no-op for structural-only schema v8 (space_order)", async () => {
-    // Schema v8 (per-user space reordering) only adds the space_order table in
-    // the DB worker — no async data task exists. A pending v8 row must be
-    // stamped complete rather than throwing; otherwise the appserver crash-
-    // loops at boot (regression for the staging 502s).
+  test("stamps structural-only versions and refuses unknown ones", async () => {
+    // A `kind: "structural"` version has no async task: the worker created its
+    // tables via the schema exec, and boot must simply stamp the marker rather
+    // than look for a task. v8, v9 and v10 regressed this at the type level
+    // before the manifest existed; that direction is now a compile error, so
+    // this asserts the runtime behaviour the manifest drives.
     //
-    // Use a real in-process sqlite DB (via toAsyncDb) so the read-state
-    // migration runner sees a concrete pending v8 row without the worker-pool
-    // lifecycle that makes a :memory: pool's readstate handle transient.
+    // Use a real in-process sqlite DB (via toAsyncDb) so the runner sees
+    // concrete pending rows without the worker-pool lifecycle that makes a
+    // :memory: pool's readstate handle transient.
     const raw = new Database(":memory:");
     raw.exec(`create table readstate_schema_migrations (
       version text primary key,
       completed_at integer
     ) strict`);
-    raw.query(
-      "insert or ignore into readstate_schema_migrations (version, completed_at) values ('8', null)",
-    ).run();
+    const structural = Object.keys(READSTATE_MIGRATIONS).filter(
+      (v) => readStateMigrationEntry(v)?.kind === "structural",
+    );
+    // Sanity: the manifest really does contain structural versions to cover.
+    expect(structural.length).toBeGreaterThan(0);
+    for (const version of structural) {
+      raw.query(
+        "insert or ignore into readstate_schema_migrations (version, completed_at) values (?, null)",
+      ).run(version);
+    }
     const readStateDb = toAsyncDb(raw);
     // The runner reads pending migrations from db.readState() (or db itself).
     const fakeDb = { readState: () => readStateDb } as unknown as DbLike;
@@ -197,10 +209,20 @@ describe("runPendingReadStateMigrationsWithRetry", () => {
     await expect(runPendingReadStateMigrationsWithRetry(fakeDb, { attempts: 2, delayMs: 1 }))
       .resolves.toBeUndefined();
 
-    const row = await readStateDb
-      .query("select completed_at from readstate_schema_migrations where version = '8'")
-      .get<{ completed_at: number | null }>();
-    expect(row?.completed_at).not.toBeNull();
+    for (const version of structural) {
+      const row = await readStateDb
+        .query("select completed_at from readstate_schema_migrations where version = ?")
+        .get<{ completed_at: number | null }>(version);
+      expect(row?.completed_at).not.toBeNull();
+    }
+
+    // A marker row for a version the manifest does not know must still fail
+    // fast — the manifest is the source of truth, not the DB.
+    raw.query(
+      "insert or ignore into readstate_schema_migrations (version, completed_at) values ('999', null)",
+    ).run();
+    await expect(runPendingReadStateMigrationsWithRetry(fakeDb, { attempts: 1, delayMs: 1 }))
+      .rejects.toThrow(/Unknown read-state schema version v999/);
     raw.close();
   });
 });

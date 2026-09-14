@@ -9,6 +9,7 @@
   import { createSearchRoomsQuery } from "$lib/queries/search-rooms";
   import { forwardMessage } from "$lib/mutations/message";
   import ChatInput from "./ChatInput.svelte";
+  import { messagingState } from "./messaging-state.svelte";
   import { createMentionSearch } from "$lib/tiptap/mentions";
   import { toast } from "@foxui/core";
 
@@ -19,22 +20,24 @@
     open = $bindable(false),
     spaceId,
     fromRoomId,
-    messageId,
+    messageIds,
   }: {
     open: boolean;
     spaceId: string;
-    /** The room the forwarded message currently lives in. */
+    /** The room the forwarded messages currently live in. */
     fromRoomId: string;
-    messageId: string;
+    /** The message(s) to forward. */
+    messageIds: string[];
   } = $props();
 
-  // WYSIWYG composer body (markdown + blocks), bound from ChatInput.
+  // Composer body, bound from ChatInput. `body`/`bodyBlocks` mirror the
+  // editor for the modal's own reactivity; the sent body is read from the
+  // editor via `composerRef.getBlocks()` at forward time.
   let body = $state("");
   let bodyBlocks: Block[] | undefined = $state();
-  // DIDs mentioned in the commentary, kept in sync by ChatInput. Used for
-  // the legacy markdown body path — rich-text bodies carry mentions in
-  // their blocks' `#didMention` facets.
-  let bodyMentions: string[] = $state([]);
+  /** The forward commentary editor. (`composer` is taken by the design
+   *  modal's snippet prop below, so this ref is named for what it holds.) */
+  let composerRef: { getBlocks: () => Block[] } | undefined = $state();
 
   // Room-name search term typed into the modal's input. The design modal
   // owns the input (bind:query); when non-empty we search the server for
@@ -48,7 +51,6 @@
     if (open) {
       body = "";
       bodyBlocks = undefined;
-      bodyMentions = [];
     }
   });
 
@@ -159,18 +161,30 @@
   });
 
   async function handleForward(roomIds: string[]) {
-    const hasBlocks = !!bodyBlocks && bodyBlocks.length > 0;
+    // Read the commentary from the editor rather than the `blocks` binding:
+    // that binding stays undefined until the modal's editor is edited, so an
+    // empty (or only-pasted) commentary would otherwise take the legacy
+    // markdown branch.
+    const blocks = composerRef?.getBlocks() ?? bodyBlocks ?? [];
     await Promise.all(
       roomIds.map((roomId) =>
-        forwardMessage(spaceId, fromRoomId, messageId, roomId, body, {
-          ...(hasBlocks ? { blocks: bodyBlocks } : {}),
-          ...(!hasBlocks && bodyMentions.length > 0 ? { mentions: bodyMentions } : {}),
-        }),
+        Promise.all(
+          messageIds.map((messageId) =>
+            forwardMessage(spaceId, fromRoomId, messageId, roomId, { blocks }),
+          ),
+        ),
       ),
     );
     toast.success(
-      `Message forwarded to ${roomIds.length} room${roomIds.length > 1 ? "s" : ""}`,
+      `Forwarded ${messageIds.length} message${messageIds.length > 1 ? "s" : ""} to ${roomIds.length} room${roomIds.length > 1 ? "s" : ""}`,
     );
+    // Forwarding consumes the selection — leave select mode (Signal/WhatsApp
+    // pattern) so the composer returns to normal after a multi-message
+    // forward. Harmless for the single-message toolbar path (state is
+    // already normal; setNormal preserves the draft).
+    if (messagingState.current.kind === "selecting") {
+      messagingState.setNormal();
+    }
   }
 </script>
 
@@ -182,9 +196,9 @@
 >
   {#snippet composer()}
     <ChatInput
+      bind:this={composerRef}
       bind:content={body}
       bind:blocks={bodyBlocks}
-      bind:mentions={bodyMentions}
       placeholder="Say something with the forwarded message…"
       onEnter={() => Promise.resolve()}
       sendOnEnter={false}

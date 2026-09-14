@@ -25,6 +25,14 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "nod
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkerRequest, WorkerResponse } from "./types.ts";
+import {
+  READSTATE_MIGRATIONS,
+  readStateMigrationEntry,
+} from "./readStateVersions.ts";
+import {
+  GLOBAL_MIGRATIONS,
+  globalMigrationEntry,
+} from "./globalVersions.ts";
 import { dbPath, spacesDir as resolveSpacesDir } from "./paths.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -150,6 +158,48 @@ function initializeVersionedSchema(
 }
 
 /**
+ * The global version list lives in globalVersions.ts (shared with the
+ * main-thread migration runner, which types its task map against it). Sorted
+ * numerically so upgrade order never depends on object-key ordering rules.
+ */
+const GLOBAL_VERSION_KEYS = Object.keys(GLOBAL_MIGRATIONS).sort(
+  (a, b) => Number(a) - Number(b),
+);
+
+/**
+ * Schedule the async data migration for a single global version (if it has
+ * one). The boot runner executes the registered task and stamps completion;
+ * structural versions are not scheduled — the schema exec created their tables.
+ */
+function scheduleGlobalMigration(db: Database, version: string): void {
+  if (globalMigrationEntry(version)?.kind === "data") {
+    db.query(
+      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
+    ).run(version);
+  }
+}
+
+/**
+ * Apply every version in `(fromExclusive, toInclusive]` in order: its
+ * structural `up` (if any), then its async data marker (if it is a data
+ * version). Traversing the whole range means a DB that jumps several versions
+ * in one deploy still runs every skipped data migration, instead of only the
+ * newest one.
+ */
+function applyGlobalUpgrades(
+  db: Database,
+  fromExclusive: number,
+  toInclusive: number,
+): void {
+  for (const version of GLOBAL_VERSION_KEYS) {
+    const num = parseInt(version, 10);
+    if (num <= fromExclusive || num > toInclusive) continue;
+    globalMigrationEntry(version)?.up?.(db);
+    scheduleGlobalMigration(db, version);
+  }
+}
+
+/**
  * Global DB upgrades are additive. Apply the idempotent current schema and
  * advance an older numeric version in place so cross-space derived state
  * (especially membership edges) is never discarded by a table addition.
@@ -168,21 +218,21 @@ function initializeGlobalSchema(db: Database, expectedVersion: string): void {
 
   const schema = readFileSync(GLOBAL_SCHEMA_PATH, "utf-8");
   if (!row) {
+    // Fresh DB: the schema file already creates every table, so only the
+    // current version's own task (if it has one) needs scheduling.
     db.exec(schema);
     db.exec(
       `insert into global_schema_version (id, version) values (1, '${expectedVersion}')`,
     );
-    db.query(
-      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
-    ).run(expectedVersion);
+    scheduleGlobalMigration(db, expectedVersion);
     return;
   }
 
   if (row.version === expectedVersion) {
+    // Current version: re-apply the schema (heals a table added in this
+    // version) and ensure this version's task marker exists.
     db.exec(schema);
-    db.query(
-      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
-    ).run(expectedVersion);
+    scheduleGlobalMigration(db, expectedVersion);
     return;
   }
 
@@ -194,266 +244,17 @@ function initializeGlobalSchema(db: Database, expectedVersion: string): void {
 
   db.transaction(() => {
     db.exec(schema);
+    applyGlobalUpgrades(db, actual, expected);
     db.query("update global_schema_version set version = ? where id = 1").run(expectedVersion);
-    db.query(
-      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
-    ).run(expectedVersion);
   })();
 }
 
-interface Migration {
-  version: number;
-  up: (db: Database) => void;
-}
-
-const MIGRATIONS: Migration[] = [
-  {
-    version: 2,
-    up(db: Database) {
-      db.exec(`
-        create table if not exists user_thread_activity (
-          user_did      text not null,
-          thread_id     text not null,
-          last_active_at integer not null,
-          updated_at    integer not null default (unixepoch() * 1000),
-          primary key (user_did, thread_id)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_user_thread_activity_user
-          on user_thread_activity(user_did, last_active_at desc)
-      `);
-    },
-  },
-  {
-    version: 3,
-    up(db: Database) {
-      // Web push tables. The schema file (readStateSchema.sql) also
-      // declares these with `create table if not exists` so a fresh DB
-      // gets them at exec time; this migration exists so an existing v2
-      // readstate DB advances its version row to 3 (the schema exec alone
-      // would create the tables but leave the version stale).
-      db.exec(`
-        create table if not exists push_subscriptions (
-          user_did        text not null,
-          endpoint        text not null,
-          p256dh          text not null,
-          auth            text not null,
-          expiration_time integer,
-          created_at      integer not null default (unixepoch() * 1000),
-          updated_at      integer not null default (unixepoch() * 1000),
-          primary key (user_did, endpoint)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_push_subs_user
-          on push_subscriptions(user_did)
-      `);
-      db.exec(`
-        create table if not exists push_user_default (
-          user_did text primary key,
-          level    text not null check(level in ('silent','quiet','engaged','busy')) default 'engaged',
-          updated_at integer not null default (unixepoch() * 1000)
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists push_preferences (
-          user_did  text not null,
-          space_id  text not null,
-          level     text not null check(level in ('silent','quiet','engaged','busy')),
-          updated_at integer not null default (unixepoch() * 1000),
-          primary key (user_did, space_id)
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists user_room_participation (
-          user_did         text not null,
-          room_id          text not null,
-          last_message_at  integer not null,     -- epoch ms of the user's latest message in the room
-          updated_at       integer not null default (unixepoch() * 1000),
-          primary key (user_did, room_id)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_user_room_participation_user
-          on user_room_participation(user_did, last_message_at desc)
-      `);
-      db.exec(`
-        create table if not exists notification_state (
-          user_did            text not null,
-          room_id             text not null,
-          first_unseen_at     integer,           -- epoch ms of the first unseen message in this batch
-          first_unseen_msg_id text,              -- anchor message ULID
-          unseen_count        integer not null default 0,
-          notified            integer not null default 0 check(notified in (0,1)),
-          pushed_at           integer,
-          updated_at          integer not null default (unixepoch() * 1000),
-          primary key (user_did, room_id)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_notification_state_due
-          on notification_state(notified, first_unseen_at)
-      `);
-    },
-  },
-  {
-    version: 4,
-    up(db: Database) {
-      // Feature flags. The schema file (readStateSchema.sql) also declares
-      // these with `create table if not exists` so a fresh DB gets them at
-      // exec time; this migration exists so an existing v3 readstate DB
-      // advances its version row to 4.
-      db.exec(`
-        create table if not exists feature_flags (
-          key             text primary key,
-          global_enabled  integer not null default 0 check(global_enabled in (0, 1)),
-          updated_at      integer not null default (unixepoch() * 1000)
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists feature_flag_assignments (
-          flag_key   text not null,
-          user_did   text not null,
-          updated_at integer not null default (unixepoch() * 1000),
-          primary key (flag_key, user_did)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_ff_assignments_flag
-          on feature_flag_assignments(flag_key)
-      `);
-    },
-  },
-  {
-    version: 5,
-    up(db: Database) {
-      // Per-space split (§1f): read_positions gains a denormalized
-      // `space_did` column so unread sums can be scoped per space without
-      // joining entities (which moves to per-space DBs). Purely additive —
-      // no data loss.
-      const cols = db
-        .query<{ name: string }, []>(
-          "select name from pragma_table_info('read_positions')",
-        )
-        .all()
-        .map((r) => r.name);
-      if (!cols.includes("space_did")) {
-        db.exec(
-          "alter table read_positions add column space_did text not null default ''",
-        );
-      }
-    },
-  },
-  {
-    version: 6,
-    up(db: Database) {
-      db.exec(`
-        create table if not exists readstate_schema_migrations (
-          version text primary key,
-          completed_at integer
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists user_space_membership (
-          user_did        text not null,
-          space_did       text not null,
-          state           text not null check(state in ('joined', 'left')),
-          source          text not null,
-          source_event_id text not null,
-          updated_at      integer not null default (unixepoch() * 1000),
-          primary key (user_did, space_did)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_user_space_membership_user_state
-          on user_space_membership(user_did, state, updated_at desc)
-      `);
-      db.query(
-        "insert or ignore into readstate_schema_migrations (version, completed_at) values ('6', null)",
-      ).run();
-    },
-  },
-  {
-    version: 7,
-    up(db: Database) {
-      // Per-space split (§1f): user_thread_activity gains a denormalized
-      // `space_did` column so the sidebar/unread queries can scope engaged
-      // threads per space instead of scanning every thread the user has
-      // engaged with across all spaces. Purely additive — no data loss.
-      // The column is backfilled from the global `entity_space` index by the
-      // v7 read-state post-migration task (see userSpaceMembershipMigration.ts).
-      const cols = db
-        .query<{ name: string }, []>(
-          "select name from pragma_table_info('user_thread_activity')",
-        )
-        .all()
-        .map((r) => r.name);
-      if (!cols.includes("space_did")) {
-        db.exec(
-          "alter table user_thread_activity add column space_did text not null default ''",
-        );
-      }
-      db.exec(`
-        create index if not exists idx_user_thread_activity_user_space
-          on user_thread_activity(user_did, space_did, last_active_at desc)
-      `);
-      db.query(
-        "insert or ignore into readstate_schema_migrations (version, completed_at) values ('7', null)",
-      ).run();
-    },
-  },
-  {
-      // Per-user space ordering. The schema file (readStateSchema.sql) also
-      // declares this with `create table if not exists` so a fresh DB gets
-      // it at exec time; this migration exists so an existing v7 readstate
-      // DB advances its version row to 8.
-      version: 8,
-      up(db: Database) {
-        db.exec(`
-          create table if not exists space_order (
-            user_did   text not null,
-            space_did  text not null,
-            position   integer not null,
-            updated_at integer not null default (unixepoch() * 1000),
-            primary key (user_did, space_did)
-          ) strict
-        `);
-        db.exec(`
-          create index if not exists idx_space_order_user_position
-            on space_order(user_did, position)
-        `);
-        db.query(
-          "insert or ignore into readstate_schema_migrations (version, completed_at) values ('8', null)",
-        ).run();
-      },
-    },
-  {
-    // Roomy Pro bridge tokens. The schema file (readStateSchema.sql) also
-    // declares this with `create table if not exists` so a fresh DB gets it
-    // at exec time; this migration exists so an existing v8 readstate DB
-    // advances its version row to 9. Structural-only — no async task.
-    version: 9,
-    up(db: Database) {
-      db.exec(`
-        create table if not exists bridge_token_grants (
-          grantor_did        text primary key,
-          space_did          text not null,
-          granted_at         integer not null default (unixepoch() * 1000),
-          spent_at           integer,
-          capacity_snapshot  integer not null
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_bridge_token_grants_space
-          on bridge_token_grants(space_did)
-      `);
-      db.query(
-        "insert or ignore into readstate_schema_migrations (version, completed_at) values ('9', null)",
-      ).run();
-    },
-  },
-];
+// The read-state version list lives in readStateVersions.ts (shared with the
+// main-thread migration runner, which types its task map against it). Sorted
+// numerically so upgrade order never depends on object-key ordering rules.
+const READSTATE_VERSION_KEYS = Object.keys(READSTATE_MIGRATIONS).sort(
+  (a, b) => Number(a) - Number(b),
+);
 
 function initializeReadStateSchema(
   db: Database,
@@ -485,21 +286,30 @@ function initializeReadStateSchema(
 
   const currentVersion = parseInt(row.version, 10);
   const expectedNum = parseInt(expectedVersion, 10);
-
   if (currentVersion < expectedNum) {
     const upsertVersion = db.prepare(
       "update readstate_schema_version set version = ? where id = 1",
     );
-    for (const migration of MIGRATIONS) {
-      if (
-        migration.version > currentVersion &&
-        migration.version <= expectedNum
-      ) {
-        db.transaction(() => {
-          migration.up(db);
-          upsertVersion.run(String(migration.version));
-        })();
-      }
+    // `Object.keys` on a numeric-key object yields ascending integer order, so
+    // the manifest is already the ordered migration list.
+    for (const version of READSTATE_VERSION_KEYS) {
+      const num = parseInt(version, 10);
+      if (num <= currentVersion || num > expectedNum) continue;
+      const entry = readStateMigrationEntry(version);
+      db.transaction(() => {
+        // Structural DDL for this version (if any). The schema exec above has
+        // already created every `create table if not exists` in the schema
+        // file, so only genuine ALTERs carry an `up`.
+        entry?.up?.(db);
+        // Data versions schedule an async task for the boot runner; structural
+        // versions have no async work and simply advance the version row.
+        if (entry?.kind === "data") {
+          db.query(
+            "insert or ignore into readstate_schema_migrations (version, completed_at) values (?, null)",
+          ).run(version);
+        }
+        upsertVersion.run(version);
+      })();
     }
   }
 }

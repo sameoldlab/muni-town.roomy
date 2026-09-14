@@ -741,3 +741,296 @@ describe("SyncConnection — heartbeat", () => {
 		).toThrow(/pongTimeoutMs .* must be < intervalMs/);
 	});
 });
+describe("SyncConnection — failed handshake never wedges the reconnect loop", () => {
+  // Regression: Node's undici WebSocket fires `error` and then never fires
+  // `close` when the handshake fails (bad ticket, origin 502, DNS failure).
+  // The reconnect path is driven by `onclose`, so such a socket used to wedge
+  // the connection permanently: no open socket, no pending reconnect, no logs.
+  it("schedules a reconnect when the socket errors without ever closing", async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = new SyncConnection({
+        fetchTicket: async () => "t",
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        reconnectDelay: () => 50,
+      });
+      const statuses: string[] = [];
+      conn.onStatusChange((s) => statuses.push(s.state));
+
+      const p = conn.connect().catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lastSocket).not.toBeNull();
+
+      // Handshake fails: error with the socket still in CONNECTING, and no close.
+      const dead = lastSocket!;
+      dead._emitError();
+      expect(dead.readyState).toBe(0);
+      await p;
+
+      // Grace period then abandon → reconnecting, instead of idle forever.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(statuses).toContain("reconnecting");
+
+      // The stale socket is detached and a fresh attempt is made.
+      expect(dead.onclose).toBeNull();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(sockets.length).toBeGreaterThan(1);
+      expect(lastSocket).not.toBe(dead);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not reconnect twice when a late close arrives after being abandoned", async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = new SyncConnection({
+        fetchTicket: async () => "t",
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        reconnectDelay: () => 50,
+      });
+      const p = conn.connect().catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const dead = lastSocket!;
+      dead._emitError();
+      await p;
+      await vi.advanceTimersByTimeAsync(1000); // abandoned + reconnect scheduled
+      const afterAbandon = sockets.length;
+
+      // A real socket that later emits close must not double-schedule:
+      // its handlers were stripped, so this is a no-op.
+      expect(dead.onclose).toBeNull();
+      dead._emitClose(1006, "late");
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(sockets.length).toBe(afterAbandon + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps waiting for a healthy socket that opens normally", async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = new SyncConnection({
+        fetchTicket: async () => "t",
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        backoffBaseMs: 1,
+      });
+      const p = conn.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      lastSocket!._open();
+      await p;
+      expect(conn.status.state).toBe("open");
+      // No spurious reconnect long after the (would-be) timeout.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(conn.status.state).toBe("open");
+      expect(sockets.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("SyncConnection — maxReconnectAttempts / onGiveUp", () => {
+  it("gives up after the cap and reports the attempt number", async () => {
+    vi.useFakeTimers();
+    try {
+      const gaveUp: number[] = [];
+      const conn = new SyncConnection({
+        fetchTicket: async () => {
+          throw new Error("boom");
+        },
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        reconnectDelay: () => 10,
+        maxReconnectAttempts: 3,
+        onGiveUp: (info) => gaveUp.push(info.attempt),
+      });
+
+      void conn.connect().catch(() => {});
+      // 3 capped attempts, then give up instead of looping forever.
+      for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(20);
+
+      expect(gaveUp).toHaveLength(1);
+      expect(gaveUp[0]).toBe(4); // 1-based: attempts 1,2,3 then give up
+      expect(conn.status.state).toBe("closed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never trips the cap while connects still succeed", async () => {
+    vi.useFakeTimers();
+    try {
+      const gaveUp: number[] = [];
+      const conn = new SyncConnection({
+        fetchTicket: async () => "t",
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        reconnectDelay: () => 10,
+        maxReconnectAttempts: 2,
+        onGiveUp: (info) => gaveUp.push(info.attempt),
+      });
+
+      const p = conn.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      lastSocket!._open();
+      await p;
+
+      // Successful opens reset the counter, so repeated drops never give up.
+      for (let i = 0; i < 5; i++) {
+        lastSocket!._emitClose(1006, "drop");
+        await vi.advanceTimersByTimeAsync(15);
+        lastSocket!._open();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(gaveUp).toHaveLength(0);
+      expect(conn.status.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("SyncConnection — hanging ticket fetch (no socket yet)", () => {
+  // The watchdog must also cover the window before a socket exists: a
+  // fetchTicket that never settles would otherwise hang the attempt forever,
+  // leaving no socket and no scheduled reconnect.
+  it("abandons and retries when fetchTicket never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const conn = new SyncConnection({
+        fetchTicket: () =>
+          calls++ === 0
+            ? new Promise<string>(() => {}) // hangs forever
+            : Promise.resolve("t"),
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        reconnectDelay: () => 10,
+        connectTimeoutMs: 5000,
+      });
+      const outcomes: string[] = [];
+      void conn.connect().then(
+        () => outcomes.push("resolved"),
+        (e) => outcomes.push(`rejected: ${e.message}`),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Nothing opened; the attempt must be abandoned rather than hang.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toContain("rejected");
+
+      // And a fresh attempt must actually be made.
+      await vi.advanceTimersByTimeAsync(20);
+      expect(calls).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a ticket that resolves after the attempt was abandoned", async () => {
+    vi.useFakeTimers();
+    try {
+      const resolvers: ((t: string) => void)[] = [];
+      const conn = new SyncConnection({
+        fetchTicket: () => new Promise<string>((res) => resolvers.push(res)),
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+        reconnectDelay: () => 10,
+        connectTimeoutMs: 1000,
+      });
+      void conn.connect().catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000); // abandoned
+      const before = sockets.length;
+
+      // The stale ticket lands late; no socket may be created for it.
+      resolvers[0]?.("stale");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("SyncConnection — concurrent connect() calls", () => {
+  // connect() must be idempotent even while a ticket fetch is still pending
+  // (before any socket exists). Otherwise a second caller starts a rival
+  // attempt, invalidates the first via the epoch guard, and the two race —
+  // one rejects with "abandoned" while both hold a ticket.
+  it("shares one in-flight attempt instead of starting a rival", async () => {
+    vi.useFakeTimers();
+    try {
+      const resolvers: ((t: string) => void)[] = [];
+      const conn = new SyncConnection({
+        fetchTicket: () => new Promise<string>((res) => resolvers.push(res)),
+        wsUrl: "wss://srv/",
+        webSocketImpl: makeMockWS(),
+      });
+      const p1 = conn.connect();
+      const p2 = conn.connect();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // One ticket fetch, not two.
+      expect(resolvers).toHaveLength(1);
+
+      resolvers[0]?.("t");
+      await vi.advanceTimersByTimeAsync(0);
+      lastSocket!._open();
+      await expect(p1).resolves.toBeUndefined();
+      await expect(p2).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("SyncConnection — attempt lifecycle edge cases", () => {
+  // Sharing the in-flight attempt must not make connect() sticky: once an
+  // attempt settles, the next call has to start a fresh one (callers
+  // legitimately retry after a failure).
+  it("starts a fresh attempt after the previous one settled", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const conn = new SyncConnection({
+        fetchTicket: async () => {
+          calls++;
+          throw new Error("nope");
+        },
+        wsUrl: "wss://srv/",
+        reconnectDelay: () => 0,
+      });
+      await conn.connect().catch(() => {});
+      const after1 = calls;
+      await conn.connect().catch(() => {});
+      expect(calls).toBeGreaterThan(after1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // close() during a pending ticket fetch must settle the caller's promise.
+  it("settles a pending connect when close() is called", async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = new SyncConnection({
+        fetchTicket: () => new Promise<string>(() => {}),
+        wsUrl: "wss://srv/",
+      });
+      const p = conn.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      conn.close();
+      await expect(p).rejects.toThrow(/closed/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test --isolate",
     "perf": "bun run perf/measure.ts",
+    "trace:smoke": "bun run perf/trace-smoke.ts",
     "test:e2e": "bun test src/e2e/"
   },
   "dependencies": {
@@ -18,6 +19,12 @@
     "@atproto/identity": "^0.4.12",
     "@atproto/xrpc-server": "^0.10.19",
     "@did-plc/lib": "^0.0.4",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^2.11.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "@qdrant/js-client-rest": "^1.19.0",
     "@roomy-space/sdk": "workspace:*",
     "arktype": "^2.1.29",

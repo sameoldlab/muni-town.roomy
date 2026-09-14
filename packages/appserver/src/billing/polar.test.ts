@@ -10,9 +10,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   _clearPolarCache,
   _expirePolarCache,
+  createCheckoutSession,
   getCachedCustomerState,
   getCustomerState,
   getPolarConfig,
+  listProSubscribers,
   resolveCapacity,
   ROOMY_PRO_CAPACITY,
   PolarUnavailableError,
@@ -25,6 +27,7 @@ const CONFIG: PolarConfig = {
   endpoint: "https://sandbox-api.polar.sh/v1",
   accessToken: "polar_oat_test",
   roomyProProductId: "prod_roomy_pro",
+  appOrigin: "https://roomy.space",
 };
 
 function polarState(partial?: Partial<PolarCustomerState>): PolarCustomerState {
@@ -76,11 +79,20 @@ describe("getPolarConfig", () => {
     process.env.POLAR_ACCESS_TOKEN = "polar_oat_x";
     process.env.ROOMY_PRO_PRODUCT_ID = "prod_x";
     delete process.env.POLAR_ENDPOINT;
+    delete process.env.ROOMY_APP_ORIGIN;
     const cfg = getPolarConfig();
     expect(cfg).not.toBeNull();
     expect(cfg?.endpoint).toBe("https://api.polar.sh/v1");
     expect(cfg?.accessToken).toBe("polar_oat_x");
     expect(cfg?.roomyProProductId).toBe("prod_x");
+    expect(cfg?.appOrigin).toBe("https://roomy.space");
+  });
+
+  test("honors ROOMY_APP_ORIGIN + strips trailing slash", () => {
+    process.env.POLAR_ACCESS_TOKEN = "polar_oat_x";
+    process.env.ROOMY_PRO_PRODUCT_ID = "prod_x";
+    process.env.ROOMY_APP_ORIGIN = "https://app.roomy.space/";
+    expect(getPolarConfig()?.appOrigin).toBe("https://app.roomy.space");
   });
 
   test("honors POLAR_ENDPOINT + strips trailing slash", () => {
@@ -437,5 +449,189 @@ describe("getCachedCustomerState / resolveGrantorCapacityWith", () => {
     const after = await resolveGrantorCapacityWith(CONFIG, DID, { force: true });
     expect(after).toEqual({ capacity: ROOMY_PRO_CAPACITY, stale: false });
     expect(fetches).toBe(2);
+  });
+});
+
+// ─── checkout-session creation ────────────────────────────────────────────
+
+describe("createCheckoutSession", () => {
+  const DID = "did:plc:buyer-user";
+  const SUCCESS_URL = "https://roomy.space/user/settings/subscription?checkout={CHECKOUT_ID}";
+
+  test("POSTs product + external_customer_id + success_url, returns id+url", async () => {
+    let body: unknown;
+    stubFetch((url, init) => {
+      expect(url).toBe("https://sandbox-api.polar.sh/v1/checkouts/");
+      expect(init?.method).toBe("POST");
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer polar_oat_test");
+      expect(headers["Content-Type"]).toBe("application/json");
+      body = JSON.parse(String(init?.body));
+      return Response.json({ id: "chk_123", url: "https://buy.polar.sh/session/abc" }, { status: 201 });
+    });
+
+    const session = await createCheckoutSession(CONFIG, {
+      externalCustomerId: DID,
+      successUrl: SUCCESS_URL,
+    });
+
+    expect(body).toEqual({
+      products: [CONFIG.roomyProProductId],
+      external_customer_id: DID,
+      success_url: SUCCESS_URL,
+    });
+    expect(session).toEqual({ id: "chk_123", url: "https://buy.polar.sh/session/abc" });
+  });
+
+  test("non-201 → PolarUnavailableError", async () => {
+    stubFetch(() => new Response("nope", { status: 422 }));
+    try {
+      await createCheckoutSession(CONFIG, {
+        externalCustomerId: DID,
+        successUrl: SUCCESS_URL,
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PolarUnavailableError);
+    }
+  });
+
+  test("malformed body → PolarUnavailableError", async () => {
+    stubFetch(() => Response.json({ id: "chk_123" }, { status: 201 }));
+    try {
+      await createCheckoutSession(CONFIG, {
+        externalCustomerId: DID,
+        successUrl: SUCCESS_URL,
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PolarUnavailableError);
+    }
+  });
+
+  test("network failure → PolarUnavailableError", async () => {
+    stubFetch(() => {
+      throw new TypeError("fetch failed");
+    });
+    try {
+      await createCheckoutSession(CONFIG, {
+        externalCustomerId: DID,
+        successUrl: SUCCESS_URL,
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PolarUnavailableError);
+    }
+  });
+});
+
+// ─── subscriptions list (Roomy Pro subscribers enumeration) ──────────────
+
+describe("listProSubscribers", () => {
+  const DID1 = "did:plc:sub-1";
+  const DID2 = "did:plc:sub-2";
+
+  function subItem(partial?: Partial<{ status: string; product_id: string; external_id: string | null }>) {
+    const ext =
+      partial?.external_id === undefined ? "did:plc:x" : partial.external_id;
+    const { external_id: _omit, ...rest } = partial ?? {};
+    return {
+      status: "active",
+      product_id: CONFIG.roomyProProductId,
+      customer: { external_id: ext },
+      ...rest,
+    };
+  }
+
+  function listResponse(items: unknown[], maxPage = 1) {
+    return Response.json(
+      { items, pagination: { total_count: items.length, max_page: maxPage } },
+      { status: 200 },
+    );
+  }
+
+  test("returns external_ids of active/trialing Pro subscriptions", async () => {
+    stubFetch(() =>
+      listResponse([
+        subItem({ status: "active", external_id: DID1 }),
+        subItem({ status: "trialing", external_id: DID2 }),
+      ]),
+    );
+
+    const set = await listProSubscribers(CONFIG);
+    expect(set.has(DID1)).toBe(true);
+    expect(set.has(DID2)).toBe(true);
+  });
+
+  test("excludes inactive/canceled/lapsed statuses", async () => {
+    stubFetch(() =>
+      listResponse([
+        subItem({ status: "active", external_id: DID1 }),
+        subItem({ status: "canceled", external_id: DID2 }),
+        subItem({ status: "revoked", external_id: "did:plc:revoked" }),
+        subItem({ status: "incomplete", external_id: "did:plc:incomplete" }),
+      ]),
+    );
+
+    const set = await listProSubscribers(CONFIG);
+    expect(set.size).toBe(1);
+    expect(set.has(DID1)).toBe(true);
+  });
+
+  test("ignores items without a customer external_id", async () => {
+    stubFetch(() =>
+      listResponse([
+        subItem({ status: "active", external_id: null }),
+        subItem({ status: "active", external_id: DID1 }),
+      ]),
+    );
+
+    const set = await listProSubscribers(CONFIG);
+    expect(set.size).toBe(1);
+    expect(set.has(DID1)).toBe(true);
+  });
+
+  test("paginates via page/limit until max_page", async () => {
+    const seenPages: string[] = [];
+    stubFetch((url) => {
+      const page = new URL(url).searchParams.get("page") ?? "1";
+      seenPages.push(page);
+      if (page === "1") {
+        return listResponse(
+          [subItem({ status: "active", external_id: DID1 })],
+          2,
+        );
+      }
+      return listResponse(
+        [subItem({ status: "active", external_id: DID2 })],
+        2,
+      );
+    });
+
+    const set = await listProSubscribers(CONFIG);
+    expect(seenPages).toEqual(["1", "2"]);
+    expect(set.has(DID1)).toBe(true);
+    expect(set.has(DID2)).toBe(true);
+  });
+
+  test("non-200 (e.g. 403 missing subscriptions:read scope) → PolarUnavailableError", async () => {
+    stubFetch(() => new Response("Forbidden", { status: 403 }));
+    await expect(listProSubscribers(CONFIG)).rejects.toBeInstanceOf(
+      PolarUnavailableError,
+    );
+  });
+
+  test("malformed body → PolarUnavailableError", async () => {
+    stubFetch(() => Response.json({ nope: true }, { status: 200 }));
+    await expect(listProSubscribers(CONFIG)).rejects.toBeInstanceOf(
+      PolarUnavailableError,
+    );
+  });
+
+  test("network failure → PolarUnavailableError", async () => {
+    stubFetch(() => Promise.reject(new TypeError("fetch failed")));
+    await expect(listProSubscribers(CONFIG)).rejects.toBeInstanceOf(
+      PolarUnavailableError,
+    );
   });
 });

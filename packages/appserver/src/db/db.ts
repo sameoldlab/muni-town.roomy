@@ -31,32 +31,16 @@ import { dbPath, spacesDir } from "./paths.ts";
 export const SPACE_SCHEMA_VERSION = "2";
 
 /**
- * Global DB schema version (`data/global.sqlite`). Bump whenever
- * schema-global.sql changes. Global changes are additive and migrate in place;
- * never wipe this DB on a version bump because per-space cursors do not track
- * whether its cross-space indexes were rebuilt.
+ * Global DB schema version (`data/global.sqlite`) — re-exported from the
+ * version manifest (`./globalVersions.ts`). Bump by adding a version to
+ * `GLOBAL_MIGRATIONS`; the constant and the async-task key type both follow.
  *
- * `.2`: added the global `profiles` table (authoritative per-user Roomy
- * profile).
- *
- * `.3`: added the global `entity_space` entity→space index (Phase 3),
- * replacing the monolithic DB's `entities.stream_id` lookup for
- * `openSpaceDbForEntity`.
- *
- * `.4`: added the global `pending_links` embed-sweeper index (Phase 3),
- * dual-written during materialization so the sweeper can find pending
- * embed links across all per-space DBs with one query.
- *
- * `.5`: added the global `mentions` index (mentions subscription) — one row
- * per (mentioned DID, message), dual-written during materialization so the
- * `mentions:<did>` sync topic can backfill via getMentions and deleteMessage
- * can resolve a deleted message's mentioned DIDs.
- *
- * `.6`: added resumable global post-migration tracking and schedules a
- * one-time repair of active joined-space edges from per-space membership
- * truth. This recovers global DBs wiped by the v4→v5 deployment bug.
+ * Global changes are additive and migrate in place; never wipe this DB on a
+ * version bump because per-space cursors do not track whether its cross-space
+ * indexes were rebuilt. See `globalVersions.ts` for the per-version history.
  */
-export const GLOBAL_SCHEMA_VERSION = "8";
+import { GLOBAL_SCHEMA_VERSION } from "./globalVersions.ts";
+export { GLOBAL_SCHEMA_VERSION };
 
 /**
  * Default pool size (per-space workers). Override via `APPSERVER_DB_POOL_SIZE`.

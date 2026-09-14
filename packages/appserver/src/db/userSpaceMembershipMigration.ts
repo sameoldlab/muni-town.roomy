@@ -18,6 +18,10 @@
 import { decode } from "@atcute/cbor";
 import type { DbLike } from "./types.ts";
 import { classifyMembershipEvent, type MembershipIntent } from "../queries/userSpaceMembership.ts";
+import {
+  readStateMigrationEntry,
+  type ReadStateAsyncVersion,
+} from "./readStateVersions.ts";
 import { log } from "../log.ts";
 
 interface RawEvent {
@@ -204,23 +208,21 @@ export async function backfillUserThreadActivitySpaceDid(
 }
 
 /**
- * Async/data migrations keyed by the read-state schema version that scheduled
- * them. Structural DDL is applied synchronously by the DB worker; these tasks
- * may scan the event log and therefore run from the main thread.
+ * Async data migrations keyed by the read-state schema version that scheduled
+ * them. Structural DDL is applied synchronously by the DB worker.
+ *
+ * Typed as `Record<ReadStateAsyncVersion, …>`, where `ReadStateAsyncVersion` is
+ * derived from `READSTATE_MIGRATIONS`. Adding a `kind: "data"` version to the
+ * manifest therefore fails the typecheck until a task is registered here, and
+ * registering a task for a `kind: "structural"` version is a type error — so
+ * the two lists can no longer drift into a boot-time crash loop.
  */
-const READSTATE_MIGRATION_TASKS: Record<string, ReadStateMigrationTask> = {
+const READSTATE_MIGRATION_TASKS: Record<
+  ReadStateAsyncVersion,
+  ReadStateMigrationTask
+> = {
   "6": recoverUserSpaceMembership,
   "7": backfillUserThreadActivitySpaceDid,
-  // Schema v8 ("per-user space reordering", TASK-28) is structural-only:
-  // the space_order table + index are created synchronously by the DB worker.
-  // It needs no event-log scan, so no async task exists — register a no-op so
-  // runPendingReadStateMigrations stamps it complete instead of crashing the
-  // boot loop with "No read-state post-migration task registered for schema 8".
-  "8": async () => {},
-  // Schema v9 ("Roomy Pro bridge tokens", TASK-69) is structural-only: the
-  // bridge_token_grants table + index are created synchronously by the DB
-  // worker. Same no-op rationale as v8.
-  "9": async () => {},
 };
 
 /**
@@ -244,13 +246,23 @@ export async function runPendingReadStateMigrations(
     .all<PendingMigration>();
 
   for (const { version } of pending) {
-    const task = READSTATE_MIGRATION_TASKS[version];
-    if (!task) {
-      throw new Error(`No read-state post-migration task registered for schema v${version}`);
+    const entry = readStateMigrationEntry(version);
+    if (!entry) {
+      // Unknown version: the manifest is the source of truth, so a marker row
+      // for a version absent from it means a schema file the running code does
+      // not know. Fail fast rather than serve with un-migrated state.
+      throw new Error(
+        `Unknown read-state schema version v${version} (not in READSTATE_MIGRATIONS)`,
+      );
     }
+    // Only data versions have a registered task; a structural version has no
+    // async work, so boot just stamps the marker. The type of `entry.kind`
+    // guarantees the corresponding task exists (see the task-map type above).
+    const task =
+      entry.kind === "data" ? READSTATE_MIGRATION_TASKS[version as ReadStateAsyncVersion] : null;
 
     log.info("startup", `running read-state post-migration v${version}`);
-    await task(db);
+    if (task) await task(db);
     await readStateDb.run(
       `update readstate_schema_migrations
           set completed_at = ?

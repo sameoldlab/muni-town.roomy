@@ -1,6 +1,7 @@
 import type { StreamDid } from "@roomy-space/sdk";
 import type { DbLike } from "./types.ts";
 import { log } from "../log.ts";
+import { globalMigrationEntry, type GlobalAsyncVersion } from "./globalVersions.ts";
 
 interface PendingMigration {
   version: string;
@@ -12,21 +13,28 @@ type GlobalMigrationTask = (
 ) => Promise<void>;
 
 /**
- * Async/data migrations keyed by the global schema version that scheduled
- * them. Structural DDL is applied synchronously by the DB worker; these tasks
- * may fan out across per-space DBs and therefore run from the main thread.
+ * Async data migrations keyed by the global schema version that scheduled them.
+ * Structural DDL is applied synchronously by the DB worker.
+ *
+ * Typed as `Record<GlobalAsyncVersion, …>`, where `GlobalAsyncVersion` is
+ * derived from `GLOBAL_MIGRATIONS`. Adding a `kind: "data"` version fails the
+ * typecheck until a task is registered here; registering a task for a
+ * `kind: "structural"` version is a type error. The two lists cannot drift.
  */
-const GLOBAL_MIGRATION_TASKS: Record<string, GlobalMigrationTask> = {
+const GLOBAL_MIGRATION_TASKS: Record<GlobalAsyncVersion, GlobalMigrationTask> = {
+  // v6: reconstruct active joinedSpace edges from per-space membership truth
+  // (recovers global DBs wiped by the v4→v5 deployment bug).
   "6": repairGlobalMembership,
-  // v7: additive DDL only — the `search_backfill_cursor` table is created
-  // by the schema exec; no data migration is needed. Kept registered so an
-  // interrupted v7 upgrade still completes on the next boot.
-  "7": noopMigration,
   // v8: `federation_receiver_permissions.kind` widened from
   // ('user','role') to ('members','user','role') — SQLite can't alter a
   // CHECK, so the table is rebuilt. Runs before per-stream replay, so
   // 'members' grants replayed from the event log insert cleanly.
   "8": rebuildReceiverPermissionsConstraint,
+  // v9: the `mentions` table gained `kind` ('mention' | 'reply'). The
+  // schema exec creates the new column on fresh DBs, but an existing DB's
+  // table predates it — add the column and backfill existing rows to
+  // 'mention' so the dual-write never hits a missing column.
+  "9": backfillMentionsKind,
 };
 
 
@@ -85,8 +93,42 @@ async function rebuildReceiverPermissionsConstraint(
     },
   ]);
 }
-/** No-op for additive-DDL-only bumps (the table is created by the schema exec). */
-async function noopMigration(): Promise<void> {}
+
+/**
+ * v9: add `mentions.kind` ('mention' | 'reply', default 'mention').
+ *
+ * The schema exec creates the column on fresh DBs, but an existing global DB
+ * predates it. SQLite can't add a table column in a `create table if not
+ * exists`, so this ALTERs the table and backfills every existing row to
+ * 'mention'. Idempotent: a DB that already has the column (fresh v9 install
+ * or a completed migration) is a no-op.
+ */
+async function backfillMentionsKind(
+  db: DbLike,
+  _streamDids: StreamDid[],
+): Promise<void> {
+  const globalDb = db.global?.();
+  if (!globalDb) return;
+
+  const current = await globalDb
+    .query("select sql from sqlite_master where type = 'table' and name = 'mentions'")
+    .get<{ sql: string }>();
+  // Fresh database on the current schema — the column already exists.
+  if (!current || current.sql.includes("kind")) return;
+
+  await globalDb.transaction([
+    {
+      type: "exec",
+      sql: `alter table mentions add column kind text not null default 'mention' check(kind in ('mention','reply'))`,
+    },
+    // Backfill is implicit: the DEFAULT stamps 'mention' into every
+    // existing row. Keep the row explicit for clarity/safety.
+    {
+      type: "exec",
+      sql: `update mentions set kind = 'mention' where kind is null`,
+    },
+  ]);
+}
 
 /**
  * Run incomplete global post-migrations in version order.
@@ -112,13 +154,21 @@ export async function runPendingGlobalMigrations(
     .all<PendingMigration>();
 
   for (const { version } of pending) {
-    const task = GLOBAL_MIGRATION_TASKS[version];
-    if (!task) {
-      throw new Error(`No global post-migration task registered for schema v${version}`);
+    const entry = globalMigrationEntry(version);
+    if (!entry) {
+      // Unknown version: the manifest is the source of truth, so a marker row
+      // for a version absent from it means a schema the running code does not
+      // know. Fail fast rather than migrate against an unknown shape.
+      throw new Error(
+        `Unknown global schema version v${version} (not in GLOBAL_MIGRATIONS)`,
+      );
     }
 
     log.info("startup", `running global post-migration v${version}`);
-    await task(db, streamDids);
+    if (entry.kind === "data") {
+      await GLOBAL_MIGRATION_TASKS[version as GlobalAsyncVersion](db, streamDids);
+    }
+
     await globalDb.run(
       `update global_schema_migrations
           set completed_at = ?

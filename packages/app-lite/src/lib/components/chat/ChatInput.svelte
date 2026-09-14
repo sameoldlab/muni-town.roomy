@@ -42,11 +42,13 @@
      */
     mentions?: string[];
     /**
-     * When editing a rich-text message, the decoded blocks that seeded this
-     * editor. When present, the editor initializes from
+     * The decoded blocks that seeded this editor — a rich-text message being
+     * re-edited, or the per-room composer document being recalled on return.
+     * When present, the editor initializes from
      * `blocksToProseMirrorDoc(initialBlocks)` instead of the markdown
      * `content` string, so structured messages open as their decoded text
-     * (not the base64-encoded wire body) and stay rich-text on save.
+     * (not the base64-encoded wire body) and stay rich-text on save. For the
+     * composer this keeps stored mentions re-rendering as chips.
      */
     initialBlocks?: Block[];
     /** Server-search fetcher for `@user` mentions (hits `getMembers?search=`). */
@@ -108,6 +110,34 @@
       tiptap?.commands.deleteRange({ from: boundary, to: boundary + 1 });
     }
     await onEnter(content, mentions, currentBlocks);
+  }
+
+  /**
+   * Submit the editor's current content, exactly as the Enter key does.
+   *
+   * The composer's Send button calls this instead of going through its own
+   * path: the two entry points must produce byte-identical bodies, including
+   * the trailing-autolink flush that `wrappedOnEnter` performs before
+   * serializing. Any second entry point that serializes independently
+   * reintroduces the divergence this exists to prevent.
+   */
+  export async function submit() {
+    if (disabled) return;
+    await wrappedOnEnter();
+  }
+
+  /**
+   * The editor's current content as blocks+facets, flushed the same way a
+   * submit would flush it (trailing autolink committed first).
+   *
+   * Callers that build their own message (e.g. the forward modal, which
+   * sends one commentary body to several rooms) must read the body through
+   * this rather than the `blocks` binding, which stays `undefined` until the
+   * first edit.
+   */
+  export function getBlocks(): Block[] {
+    flushTrailingAutolink();
+    return tiptap ? proseMirrorDocToBlocks(tiptap.getJSON()) : (blocks ?? []);
   }
 
   /**
@@ -251,9 +281,10 @@
   onDestroy(() => {
     tiptap?.destroy();
     // Reset the shared module-level binding so deferred setInputFocus/clearInput
-    // calls (e.g. from messagingState.setNormal() in a route $effect) don't
-    // land on a destroyed editor whose commandManager is null. Only the
-    // composer owns this binding, and only if it's still the current editor.
+    // calls (e.g. from messagingState.setReplyTo()/clear-context or a route's
+    // setNormal) don't land on a destroyed editor whose commandManager is
+    // null. Only the composer owns this binding, and only if it's still the
+    // current editor.
     if (composer && editor === tiptap) editor = undefined;
   });
 
