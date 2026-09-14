@@ -334,10 +334,11 @@ export const prose: Record<string, EndpointProse> = {
   "space.roomy.space.sendEvents": {
     description:
       "Sends a batch of Roomy events to a space stream. The appserver validates authorization per-event, then writes events directly to the events DB and materializes inline. This is the write path behind every client action (messages, reactions, room changes, …).",
-    auth: "Authenticated; per-event authorization via writeAuth (admin, membership, and room write rules).",
+    auth: "Authenticated; per-event authorization via writeAuth (admin, membership, and room write rules, plus a narrow service self-write set for the appserver's own DID).",
     notes: [
       "Events are CBOR payloads appended to the stream's event log in a single transaction.",
       "Materialization happens inline: the batch is applied to the view tables and invalidation signals are emitted before the response returns.",
+      "The appserver's own DID (APPSERVER_DID) may write addMemberRole/removeMemberRole without space membership or admin — it is the root of trust for the space stream. Every other event type still follows the normal rules.",
       "See the sendEvents procedure plan in packages/appserver/docs/plans for the full event catalogue.",
     ],
   },
@@ -807,6 +808,15 @@ export const prose: Record<string, EndpointProse> = {
     auth: "Admin allowlist (APPSERVER_ADMIN_DIDS).",
     notes: [
       "Per-grant processing (read-time validity): Polar validity check per grantor (300s TTL cache).",
+    ],
+  },
+  "space.roomy.admin.reconcileProMembers": {
+    description:
+      "On-demand Roomy Pro members-role reconciliation: sweeps the Roomy Space's 'Members' role against Polar's live Pro-subscriber set — adding paying subscribers and removing lapsed tracked ones — then reports what changed. This is the operator-triggered companion to the periodic sweep; both share the same fail-safe semantics (a Polar outage aborts with no role mutation rather than guessing a subscriber set).",
+    auth: "Admin allowlist (APPSERVER_ADMIN_DIDS). Requires the Polar organization access token to carry the `subscriptions:read` scope.",
+    notes: [
+      "Only removes DIDs the sweep itself previously granted and tracked (see pro_role_grants); a manually-assigned member who is not a subscriber is left untouched.",
+      "Idempotent: a run with no desync writes nothing.",
     ],
   },
 
