@@ -173,35 +173,38 @@ describe("runPendingReadStateMigrationsWithRetry", () => {
     expect(row?.completed_at).not.toBeNull();
   });
 
-  test("is a no-op for structural-only schema v8 (space_order)", async () => {
-    // Schema v8 (per-user space reordering) only adds the space_order table in
-    // the DB worker — no async data task exists. A pending v8 row must be
-    // stamped complete rather than throwing; otherwise the appserver crash-
-    // loops at boot (regression for the staging 502s).
+  test("is a no-op for structural-only read-state versions (v8–v10)", async () => {
+    // A structural-only bump adds its tables in the DB worker and schedules a
+    // pending `readstate_schema_migrations` row, but registers no async data
+    // task. Every such version MUST be registered as a no-op, otherwise boot
+    // crash-loops with "No read-state post-migration task registered for
+    // schema vN". v8, v9 and v10 each regressed this way.
     //
     // Use a real in-process sqlite DB (via toAsyncDb) so the read-state
-    // migration runner sees a concrete pending v8 row without the worker-pool
+    // migration runner sees a concrete pending row without the worker-pool
     // lifecycle that makes a :memory: pool's readstate handle transient.
-    const raw = new Database(":memory:");
-    raw.exec(`create table readstate_schema_migrations (
-      version text primary key,
-      completed_at integer
-    ) strict`);
-    raw.query(
-      "insert or ignore into readstate_schema_migrations (version, completed_at) values ('8', null)",
-    ).run();
-    const readStateDb = toAsyncDb(raw);
-    // The runner reads pending migrations from db.readState() (or db itself).
-    const fakeDb = { readState: () => readStateDb } as unknown as DbLike;
+    for (const version of ["8", "9", "10"]) {
+      const raw = new Database(":memory:");
+      raw.exec(`create table readstate_schema_migrations (
+        version text primary key,
+        completed_at integer
+      ) strict`);
+      raw.query(
+        "insert or ignore into readstate_schema_migrations (version, completed_at) values (?, null)",
+      ).run(version);
+      const readStateDb = toAsyncDb(raw);
+      // The runner reads pending migrations from db.readState() (or db itself).
+      const fakeDb = { readState: () => readStateDb } as unknown as DbLike;
 
-    await expect(runPendingReadStateMigrationsWithRetry(fakeDb, { attempts: 2, delayMs: 1 }))
-      .resolves.toBeUndefined();
+      await expect(runPendingReadStateMigrationsWithRetry(fakeDb, { attempts: 2, delayMs: 1 }))
+        .resolves.toBeUndefined();
 
-    const row = await readStateDb
-      .query("select completed_at from readstate_schema_migrations where version = '8'")
-      .get<{ completed_at: number | null }>();
-    expect(row?.completed_at).not.toBeNull();
-    raw.close();
+      const row = await readStateDb
+        .query("select completed_at from readstate_schema_migrations where version = ?")
+        .get<{ completed_at: number | null }>(version);
+      expect(row?.completed_at).not.toBeNull();
+      raw.close();
+    }
   });
 });
 

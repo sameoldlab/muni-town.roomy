@@ -221,6 +221,10 @@ const READSTATE_MIGRATION_TASKS: Record<string, ReadStateMigrationTask> = {
   // bridge_token_grants table + index are created synchronously by the DB
   // worker. Same no-op rationale as v8.
   "9": async () => {},
+  // Schema v10 ("Roomy Pro members-area role grants", TASK-81) is
+  // structural-only: the pro_role_grants table is created synchronously by
+  // the DB worker. Same no-op rationale as v8/v9.
+  "10": async () => {},
 };
 
 /**
