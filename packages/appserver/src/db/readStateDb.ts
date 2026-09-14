@@ -1,11 +1,10 @@
 /**
- * Read-state schema version constant.
+ * Read-state schema version — re-exported from the version manifest.
  *
- * The read-state database lifecycle is now managed by the SQLite worker
- * (see worker.ts). This module exists solely to export the version constant
- * so that db.ts can pass it to the worker during init.
- *
- * Bump whenever readStateSchema.sql changes.
- * Uses a separate versioning namespace from the materialisation DB.
+ * The read-state DB lifecycle is owned by the SQLite worker (see worker.ts).
+ * The version and migration list live in `./readStateVersions.ts`, which is the
+ * single source of truth imported by both the worker thread and the main
+ * thread; this module exists only to keep the historic import path stable for
+ * callers in db.ts and the tests.
  */
-export const READSTATE_SCHEMA_VERSION = "10";
+export { READSTATE_SCHEMA_VERSION } from "./readStateVersions.ts";

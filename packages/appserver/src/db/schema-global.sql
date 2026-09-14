@@ -24,9 +24,11 @@ create table if not exists global_schema_version (
 ) strict;
 
 -- Tracks asynchronous/data post-migrations separately from structural DDL.
--- A schema bump inserts its version with completed_at null; startup runs the
--- registered idempotent task and stamps completion only after the whole task
--- succeeds, so interrupted deployments retry safely.
+-- Only versions declared `kind: "data"` in GLOBAL_MIGRATIONS
+-- (globalVersions.ts) get a row here (the worker inserts it at upgrade time);
+-- startup runs the registered task and stamps completion only after the whole
+-- task succeeds, so interrupted deployments retry safely. Structural versions
+-- never appear here.
 create table if not exists global_schema_migrations (
   version text primary key,
   completed_at integer
