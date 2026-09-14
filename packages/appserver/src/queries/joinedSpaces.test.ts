@@ -7,6 +7,7 @@ import {
   recordPersonalSpaceMembership,
   selectJoinedSpaces,
 } from "./joinedSpaces.ts";
+import { getSpaceUnreadStats } from "./readPositions.ts";
 import { setUserSpaceMembership } from "./userSpaceMembership.ts";
 
 const USER = UserDid.assert("did:plc:test-user");
@@ -151,6 +152,95 @@ describe("selectJoinedSpaces", () => {
     expect(left).toHaveLength(1);
     expect(left[0]).toMatchObject({ id: SPACE, isMember: false, isAdmin: false });
   });
+
+  test("stored space_order rows override the default updated_at order", async () => {
+    const { mainDb } = setup();
+    const SPACE_B = StreamDid.assert("did:web:space-b.example");
+    const SPACE_C = StreamDid.assert("did:web:space-c.example");
+
+    // Seed three fully materialised spaces with membership intent. Join
+    // times are staggered so the default order (updated_at desc) is
+    // C, B, A.
+    for (const [i, space] of [SPACE, SPACE_B, SPACE_C].entries()) {
+      const db = openSpaceDb(space);
+      await seedEntity(space, space);
+      await seedEntity(space, USER);
+      await db.run("insert into comp_info (entity, name) values (?, ?)", [
+        space,
+        `Space ${i}`,
+      ]);
+      await db.run("insert into edges (head, tail, label) values (?, ?, 'member')", [
+        space,
+        USER,
+      ]);
+      await setUserSpaceMembership(
+        openReadStateDb(),
+        USER,
+        space,
+        "joined",
+        "test",
+        `01TEST000000000000000000000${i}`,
+      );
+    }
+
+    // Default order: most recently joined first.
+    const before = await selectJoinedSpaces(mainDb, USER);
+    expect(before.map((s) => s.id)).toEqual([SPACE_C, SPACE_B, SPACE]);
+
+    // Store an explicit order: A, C, B.
+    await mainDb.run(
+      "insert into space_order (user_did, space_did, position) values (?, ?, ?)",
+      [USER, SPACE, 0],
+    );
+    await mainDb.run(
+      "insert into space_order (user_did, space_did, position) values (?, ?, ?)",
+      [USER, SPACE_C, 1],
+    );
+    await mainDb.run(
+      "insert into space_order (user_did, space_did, position) values (?, ?, ?)",
+      [USER, SPACE_B, 2],
+    );
+
+    const after = await selectJoinedSpaces(mainDb, USER);
+    expect(after.map((s) => s.id)).toEqual([SPACE, SPACE_C, SPACE_B]);
+  });
+
+  test("spaces without a stored position sort after ordered ones", async () => {
+    const { mainDb } = setup();
+    const SPACE_B = StreamDid.assert("did:web:space-b.example");
+
+    for (const [i, space] of [SPACE, SPACE_B].entries()) {
+      const db = openSpaceDb(space);
+      await seedEntity(space, space);
+      await seedEntity(space, USER);
+      await db.run("insert into comp_info (entity, name) values (?, ?)", [
+        space,
+        `Space ${i}`,
+      ]);
+      await db.run("insert into edges (head, tail, label) values (?, ?, 'member')", [
+        space,
+        USER,
+      ]);
+      await setUserSpaceMembership(
+        openReadStateDb(),
+        USER,
+        space,
+        "joined",
+        "test",
+        `01TEST000000000000000000000${i}`,
+      );
+    }
+
+    // Only SPACE_B has an explicit position; SPACE (joined later) has none
+    // and must sort after the ordered one.
+    await mainDb.run(
+      "insert into space_order (user_did, space_did, position) values (?, ?, ?)",
+      [USER, SPACE_B, 0],
+    );
+
+    const spaces = await selectJoinedSpaces(mainDb, USER);
+    expect(spaces.map((s) => s.id)).toEqual([SPACE_B, SPACE]);
+  });
 });
 
 describe("recordPersonalSpaceMembership", () => {
@@ -204,6 +294,44 @@ describe("recordPersonalSpaceMembership", () => {
     await joinIntent(USER, SPACE);
 
     expect(await selectJoinedSpaces(mainDb, USER)).toHaveLength(1);
+  });
+
+  test("getSpaceUnreadStats counts engaged threads belonging to the space only", async () => {
+    const { mainDb } = setup();
+    const OTHER = StreamDid.assert("did:web:other-space.example");
+
+    // Two threads in this space, one thread in another space.
+    const t1 = "thread-in-space-1";
+    const t2 = "thread-in-space-2";
+    const tOther = "thread-in-other-space";
+    const spaceDb = openSpaceDb(SPACE);
+    for (const t of [t1, t2]) {
+      await spaceDb.run("insert into entities (id, stream_id) values (?, ?)", [t, SPACE]);
+    }
+    const otherDb = openSpaceDb(OTHER);
+    await otherDb.run("insert into entities (id, stream_id) values (?, ?)", [tOther, OTHER]);
+
+    // User engaged with all three threads.
+    const rs = openReadStateDb();
+    for (const [t, space] of [[t1, SPACE], [t2, SPACE], [tOther, OTHER]] as const) {
+      await rs.run(
+        "insert into user_thread_activity (user_did, thread_id, space_did, last_active_at) values (?, ?, ?, ?)",
+        [USER, t, space, Date.now()],
+      );
+    }
+
+    // Unread counts: t1 has 3 unread, t2 has 0, tOther has 5.
+    for (const [t, n] of [[t1, 3], [t2, 0], [tOther, 5]] as const) {
+      await rs.run(
+        "insert into read_positions (user_did, room_id, space_did, seen_up_to, unread_count) values (?, ?, ?, '0', ?)",
+        [USER, t, SPACE, n],
+      );
+    }
+
+    const stats = await getSpaceUnreadStats(rs, spaceDb, USER, SPACE);
+    // Only t1 (3 unread) belongs to this space; tOther is excluded.
+    expect(stats.unreadCount).toBe(3);
+    expect(stats.unreadThreadCount).toBe(1);
   });
 });
 

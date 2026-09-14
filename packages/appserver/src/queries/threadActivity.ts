@@ -20,7 +20,8 @@
  */
 
 import type { DbLike } from "../db/types.ts";
-import { decodeContent } from "../db/content.ts";
+import { decodeContent, decodeRichTextBody } from "../db/content.ts";
+import { RICHTEXT_MIME, blocksToPlaintext } from "@roomy-space/sdk";
 import { hydrateProfiles } from "./profileStore.ts";
 
 export interface ThreadMember {
@@ -38,13 +39,15 @@ export interface ThreadMessage {
 
 export interface ThreadActivity {
   id: string;
+  /** `thread` (canonically linked from a channel) or `channel`. */
+  kind: "thread" | "channel";
   name: string | null;
   /** Canonical parent channel ID (head of the canonical 'link' edge), null if none. */
   canonicalParent: string | null;
-  /** Latest message timestamp in this thread (ISO string), null if no messages. */
+  /** Latest message timestamp in this room (ISO string), null if no messages. */
   latestTimestamp: string | null;
   latestMembers: ThreadMember[];
-  /** The most recent message in this thread, null if no messages. */
+  /** The most recent message in this room, null if no messages. */
   latestMessage: ThreadMessage | null;
 }
 
@@ -52,17 +55,25 @@ export type ThreadScope =
   | { kind: "space"; spaceId: string }
   | { kind: "channel"; channelId: string };
 
+export interface ListActivityOptions {
+  /** Room kinds to include (defaults to `["thread"]`). */
+  kinds?: Array<"thread" | "channel">;
+}
+
 /**
- * Threads visible in this scope, with activity metadata.
+ * Rooms visible in this scope with activity metadata.
+ *
+ * Space scope can include channels via `opts.kinds` (the space index board);
+ * channel scope is always threads. Each row carries its `kind`.
  *
  * Supports cursor-based pagination via the `activity_item` table's
  * `last_activity_at` column. Cursor format: `"<last_activity_at>::<room_id>"`.
- * Returns at most `limit` threads (default 50), plus a `cursor` for the next
+ * Returns at most `limit` rooms (default 50), plus a `cursor` for the next
  * page (null when there are no more results).
  *
- * Threads with no messages (no `activity_item` row) get sort key 0, so they
- * sort last (after all active threads) and don't block pagination past active
- * threads.
+ * Rooms with no messages (no `activity_item` row) get sort key 0, so they
+ * sort last (after all active rooms) and don't block pagination past active
+ * rooms.
  *
  * The caller is responsible for filtering by read access — this helper does
  * not check permissions.
@@ -72,10 +83,12 @@ export async function listThreadActivity(
   scope: ThreadScope,
   limit = 50,
   cursor?: string | null,
+  search?: string | null,
+  opts: ListActivityOptions = {},
 ): Promise<{ threads: ThreadActivity[]; cursor: string | null }> {
-  // Step 1: select the candidate threads in scope, with cursor pagination.
+  // Step 1: select the candidate rooms in scope, with cursor pagination.
   // LEFT JOIN activity_item so we can order/filter by last_activity_at even
-  // for threads with no messages (they get NULL -> COALESCE to 0).
+  // for rooms with no messages (they get NULL -> COALESCE to 0).
   let cursorTs: number | null = null;
   let cursorId: string | null = null;
   if (cursor) {
@@ -85,6 +98,9 @@ export async function listThreadActivity(
       cursorId = cursor.slice(sepIdx + 2);
     }
   }
+
+  const kinds = opts.kinds ?? ["thread"];
+  if (kinds.length === 0) return { threads: [], cursor: null };
 
   const conditions: string[] = [];
   const params: (string | number)[] = [];
@@ -96,8 +112,19 @@ export async function listThreadActivity(
     conditions.push("link_e.head = ?");
     params.push(scope.channelId);
   }
-  conditions.push("cr.label = 'space.roomy.thread'");
+  conditions.push(`cr.label in (${kinds.map(() => "?").join(",")})`);
+  params.push(
+    ...kinds.map((k) => (k === "thread" ? "space.roomy.thread" : "space.roomy.channel")),
+  );
   conditions.push("coalesce(cr.deleted, 0) = 0");
+
+  // Optional case-insensitive substring filter on room name. Applied in
+  // SQL (not JS) so cursor pagination stays correct — filtering after the
+  // page fetch would skip matches and misalign the cursor.
+  if (search && search.trim() !== "") {
+    conditions.push("ci.name like ?");
+    params.push(`%${search.trim()}%`);
+  }
 
   // Cursor: newest-first by last_activity_at, tiebreak by room_id.
   if (cursorTs !== null && cursorId !== null) {
@@ -115,7 +142,7 @@ export async function listThreadActivity(
 
   const threads = await db
     .query(
-      `select e.id as id, ci.name as name,
+      `select e.id as id, ci.name as name, cr.label as label,
               coalesce(ai.last_activity_at, 0) as sort_key
          from entities e
          join comp_room cr on cr.entity = e.id
@@ -126,7 +153,7 @@ export async function listThreadActivity(
         order by sort_key desc, e.id asc
         limit ?`,
     )
-    .all<{ id: string; name: string | null; sort_key: number }>([...params, limit + 1]);
+    .all<{ id: string; name: string | null; label: string | null; sort_key: number }>([...params, limit + 1]);
 
   if (threads.length === 0) return { threads: [], cursor: null };
 
@@ -135,14 +162,58 @@ export async function listThreadActivity(
   const pageThreads = hasMore ? threads.slice(0, limit) : threads;
 
   const threadIds = pageThreads.map((t) => t.id);
-  const ph = threadIds.map(() => "?").join(",");
+  const activityByRoom = await fetchRoomActivity(db, threadIds);
 
-  // Step 2: batch-fetch latest timestamps for all threads at once.
-  //
-  // Forwarded messages are forward-reference entities with no comp_content of
-  // their own — their content/timestamp lives on the original message reached
-  // via the `forward` edge. We follow that edge so a thread created by
-  // forwarding messages still surfaces a latest timestamp (the original's).
+  const results: ThreadActivity[] = pageThreads.map((t) => {
+    const act = activityByRoom.get(t.id);
+    return {
+      id: t.id,
+      kind: t.label === "space.roomy.channel" ? "channel" : "thread",
+      name: t.name,
+      canonicalParent: act?.canonicalParent ?? null,
+      latestTimestamp: act?.latestTimestamp ?? null,
+      latestMembers: act?.latestMembers ?? [],
+      latestMessage: act?.latestMessage ?? null,
+    };
+  });
+
+  // Compute next cursor from the last visible thread.
+  let nextCursor: string | null = null;
+  if (hasMore) {
+    const last = pageThreads[pageThreads.length - 1]!;
+    nextCursor = `${last.sort_key}::${last.id}`;
+  }
+
+  return { threads: results, cursor: nextCursor };
+}
+
+/**
+ * Batch-fetch activity metadata for a set of rooms: latest message
+ * timestamp, up to 3 unique recent participants, canonical parent channel,
+ * and the latest message (content decoded to plaintext). Shared by
+ * `listThreadActivity` and `space.roomy.search.rooms` so search results
+ * render with the same activity columns as the board views.
+ *
+ * Forwarded messages are forward-reference entities with no own
+ * content/author — their timestamp and author live on the original message
+ * reached via the `forward` edge. We follow that edge (coalescing the
+ * message's own content with the forwarded original's) so a room created by
+ * forwarding messages still reports a latest timestamp, recent participants
+ * (the original authors), and a latest message.
+ *
+ * Rooms with no messages are absent from the map (or carry empty arrays) —
+ * callers treat that as "no activity".
+ */
+export async function fetchRoomActivity(
+  db: DbLike,
+  roomIds: string[],
+): Promise<Map<string, ThreadActivity>> {
+  const out = new Map<string, ThreadActivity>();
+  if (roomIds.length === 0) return out;
+
+  const ph = roomIds.map(() => "?").join(",");
+
+  // Latest timestamps for all rooms at once.
   const latestRows = await db
     .query(
       `select e.room as room,
@@ -156,16 +227,12 @@ export async function listThreadActivity(
           and (cc.entity is not null or forward_e.tail is not null)
         group by e.room`,
     )
-    .all<{ room: string; ts: number | null }>([...threadIds]);
+    .all<{ room: string; ts: number | null }>([...roomIds]);
   const latestMap = new Map(latestRows.map((r) => [r.room, r.ts]));
 
-  // Step 3: batch-fetch recent participants (up to 3 per thread).
-  // We fetch all and group in JS.
-  //
-  // For forwarded messages the author edge lives on the original (reached via
-  // the `forward` edge), so we coalesce the message's own author with the
-  // forwarded original's author. The original's author then counts as a
-  // recent participant of the thread it was forwarded into.
+  // Recent participants (up to 3 per room). For forwarded messages the
+  // author edge lives on the original (reached via the `forward` edge), so
+  // we coalesce the message's own author with the forwarded original's.
   const participantRows = await db
     .query(
       `select msg.room as room,
@@ -190,9 +257,8 @@ export async function listThreadActivity(
         group by msg.room, coalesce(author_e.tail, fwd_author_e.tail)
         order by msg.room, ts desc`,
     )
-    .all<{ room: string; did: string; name: string | null; avatar: string | null; ts: number | null }>([...threadIds]);
+    .all<{ room: string; did: string; name: string | null; avatar: string | null; ts: number | null }>([...roomIds]);
 
-  // Group participants by room, take top 3 per room.
   const participantsMap = new Map<string, ThreadMember[]>();
   for (const r of participantRows) {
     let arr = participantsMap.get(r.room);
@@ -205,7 +271,7 @@ export async function listThreadActivity(
     }
   }
 
-  // Step 4: batch-fetch canonical parent for all threads.
+  // Canonical parent per room.
   const parentRows = await db
     .query(
       `select tail, head from edges
@@ -213,16 +279,11 @@ export async function listThreadActivity(
           and label = 'link'
           and coalesce(json_extract(payload, '$.canonical_parent'), 0) = 1`,
     )
-    .all<{ tail: string; head: string }>([...threadIds]);
+    .all<{ tail: string; head: string }>([...roomIds]);
   const parentMap = new Map(parentRows.map((r) => [r.tail, r.head]));
 
-  // Step 5: batch-fetch latest message for all threads.
-  // SQLite doesn't support LIMIT per group, so we fetch all messages
-  // and pick the latest per thread in JS.
-  //
-  // Forwarded messages have no own content/author — follow the `forward` edge
-  // to the original and coalesce so a thread created solely by forwarding
-  // still reports a latest message (the original's content/author/timestamp).
+  // Latest message per room. SQLite doesn't support LIMIT per group, so we
+  // fetch all messages and pick the latest per room in JS.
   const latestMsgRows = await db
     .query(
       `select e.room as room,
@@ -245,7 +306,8 @@ export async function listThreadActivity(
          left join comp_info author_info
            on author_info.entity = coalesce(author_e.tail, fwd_author_e.tail)
         where e.room in (${ph})
-          and (cc.entity is not null or forward_e.tail is not null)`,
+          and (cc.entity is not null or forward_e.tail is not null)
+          and coalesce(cc.timestamp, fwd_cc.timestamp) is not null`,
     )
     .all<
       {
@@ -258,9 +320,8 @@ export async function listThreadActivity(
         author_avatar: string | null;
         timestamp: number | null;
       }
-    >([...threadIds]);
+    >([...roomIds]);
 
-  // Pick the latest message per thread (highest timestamp).
   const latestMsgMap = new Map<
     string,
     {
@@ -280,17 +341,28 @@ export async function listThreadActivity(
     }
   }
 
-  const results: ThreadActivity[] = pageThreads.map((t) => {
-    const latest = latestMap.get(t.id);
-    const members = participantsMap.get(t.id) ?? [];
-    const parent = parentMap.get(t.id);
-    const latestMsgRow = latestMsgMap.get(t.id);
+  for (const roomId of roomIds) {
+    const latest = latestMap.get(roomId);
+    const members = participantsMap.get(roomId) ?? [];
+    const parent = parentMap.get(roomId);
+    const latestMsgRow = latestMsgMap.get(roomId);
 
     let latestMessage: ThreadMessage | null = null;
     if (latestMsgRow && latestMsgRow.author_did) {
       latestMessage = {
         id: latestMsgRow.id,
-        content: decodeContent(latestMsgRow.mime_type, latestMsgRow.data),
+        // Rich-text bodies are base64-encoded on the wire (decodeContent
+        // base64s non-text mimeTypes). Decode them to plaintext so the board
+        // preview shows readable text, not the encoded blob. Legacy text/*
+        // content is already plaintext and stays as-is.
+        content: (() => {
+          const { mime_type: mime, data } = latestMsgRow;
+          if (mime === RICHTEXT_MIME) {
+            const blocks = decodeRichTextBody(mime, data);
+            return blocks ? blocksToPlaintext(blocks) : "";
+          }
+          return decodeContent(mime, data);
+        })(),
         author: {
           did: latestMsgRow.author_did,
           name: latestMsgRow.author_name,
@@ -302,17 +374,16 @@ export async function listThreadActivity(
       };
     }
 
-    return {
-      id: t.id,
-      name: t.name,
+    out.set(roomId, {
+      id: roomId,
+      kind: "thread",
+      name: null,
       canonicalParent: parent ?? null,
-      latestTimestamp: latest
-        ? new Date(latest).toISOString()
-        : null,
+      latestTimestamp: latest ? new Date(latest).toISOString() : null,
       latestMembers: members,
       latestMessage,
-    };
-  });
+    });
+  }
 
   // Resolve participant + latest-message author profiles from the global
   // store (with an in-memory cache). A user's profile entity lives in their
@@ -320,7 +391,7 @@ export async function listThreadActivity(
   // above is null for cross-stream users. The global `profiles` table is
   // authoritative; the per-space value (if any) acts as a fallback.
   const membersToHydrate: ThreadMember[] = [];
-  for (const t of results) {
+  for (const t of out.values()) {
     membersToHydrate.push(...t.latestMembers);
     if (t.latestMessage?.author) membersToHydrate.push(t.latestMessage.author);
   }
@@ -333,12 +404,5 @@ export async function listThreadActivity(
     },
   );
 
-  // Compute next cursor from the last visible thread.
-  let nextCursor: string | null = null;
-  if (hasMore) {
-    const last = pageThreads[pageThreads.length - 1]!;
-    nextCursor = `${last.sort_key}::${last.id}`;
-  }
-
-  return { threads: results, cursor: nextCursor };
+  return out;
 }

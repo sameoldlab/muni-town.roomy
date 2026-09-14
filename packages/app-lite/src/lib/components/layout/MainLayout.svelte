@@ -12,10 +12,18 @@
   import { wideSidebar } from "./wide-sidebar.svelte";
   import NavbarSpaceInfo from "./NavbarSpaceInfo.svelte";
   import SyncStatusBanner from "./SyncStatusBanner.svelte";
-  import EnableNotificationsBanner from "./EnableNotificationsBanner.svelte";
+  import SearchBar from "./SearchBar.svelte";
   import ServerBar from "$lib/components/sidebar/ServerBar.svelte";
+  import EnableNotificationsBanner from "./EnableNotificationsBanner.svelte";
+  import { page } from "$app/state";
+  let searchExpanded = $state(false);
 
-let {
+  // On the search result pages the navbar searchbar takes over the navbar:
+  // the page-provided title slot is hidden (the title becomes the
+  // searchbar's placeholder) so the bar spans the full width.
+  const onSearchPage = $derived(page.url.pathname.endsWith("/search"));
+
+  let {
     children,
   }: {
     children: Snippet;
@@ -85,7 +93,17 @@ let {
 >
   <EnableNotificationsBanner />
   <Navbar {compact} class={compact ? "h-11 dark:bg-base-900/20" : "dark:bg-base-900/20"}>
-    <div class="flex items-center min-w-0">
+    <!-- Page-provided navbar content is visually hidden while the mobile
+         searchbar is expanded (the searchbar takes over the whole navbar in
+         that state). CSS hiding — not {#if} — so components like
+         NavbarSpaceInfo stay mounted and keep their reactive state (their
+         cleanup would otherwise null the current room the moment the
+         searchbar opens). -->
+    <div
+      class="flex items-center min-w-0 min-h-0 overflow-visible"
+      class:invisible={searchExpanded}
+      class:pointer-events-none={searchExpanded}
+    >
       <div class="flex gap-2 items-center ml-2 sm:hidden">
         <ToggleNavigation bind:isSidebarVisible={mobileSidebar.visible} />
       </div>
@@ -99,9 +117,18 @@ let {
       {/if}
     </div>
 
-    {#if navbar.content}
-      {@render navbar.content?.()}
-    {/if}
+    <div
+      class="flex items-center min-w-0 grow basis-0"
+      class:invisible={searchExpanded}
+      class:pointer-events-none={searchExpanded}
+      class:hidden={onSearchPage}
+    >
+      {#if navbar.content}
+        {@render navbar.content?.()}
+      {/if}
+    </div>
+
+    <SearchBar bind:expanded={searchExpanded} />
   </Navbar>
 
   <div class="flex flex-col h-full max-h-full overflow-y-hidden">

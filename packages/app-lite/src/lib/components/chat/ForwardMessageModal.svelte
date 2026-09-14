@@ -6,8 +6,11 @@
     type ForwardTarget,
   } from "@roomy/design/components/modals/ForwardMessageModal.svelte";
   import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
+  import { createSearchRoomsQuery } from "$lib/queries/search-rooms";
   import { forwardMessage } from "$lib/mutations/message";
   import ChatInput from "./ChatInput.svelte";
+  import { messagingState } from "./messaging-state.svelte";
+  import { createMentionSearch } from "$lib/tiptap/mentions";
   import { toast } from "@foxui/core";
 
   type SidebarChannel =
@@ -17,18 +20,31 @@
     open = $bindable(false),
     spaceId,
     fromRoomId,
-    messageId,
+    messageIds,
   }: {
     open: boolean;
     spaceId: string;
-    /** The room the forwarded message currently lives in. */
+    /** The room the forwarded messages currently live in. */
     fromRoomId: string;
-    messageId: string;
+    /** The message(s) to forward. */
+    messageIds: string[];
   } = $props();
 
-  // WYSIWYG composer body (markdown + blocks), bound from ChatInput.
+  // Composer body, bound from ChatInput. `body`/`bodyBlocks` mirror the
+  // editor for the modal's own reactivity; the sent body is read from the
+  // editor via `composerRef.getBlocks()` at forward time.
   let body = $state("");
   let bodyBlocks: Block[] | undefined = $state();
+  /** The forward commentary editor. (`composer` is taken by the design
+   *  modal's snippet prop below, so this ref is named for what it holds.) */
+  let composerRef: { getBlocks: () => Block[] } | undefined = $state();
+
+  // Room-name search term typed into the modal's input. The design modal
+  // owns the input (bind:query); when non-empty we search the server for
+  // every matching channel/thread in the space instead of relying on the
+  // cached activeThreads list (which is capped at 8 and only includes
+  // recently-active threads).
+  let searchQuery = $state("");
 
   // Reset the composer each time the modal opens.
   $effect(() => {
@@ -42,13 +58,19 @@
     enabled: open,
   });
 
-  const targets = $derived.by<ForwardTarget[]>(() => {
+  const roomsSearchQuery = createSearchRoomsQuery(
+    () => spaceId,
+    () => searchQuery,
+  );
+
+  // Candidate targets from the cached sidebar: channels the user can write
+  // to (with their recently active threads), plus writable active threads
+  // of unreadable channels. Readable channels' threads render under the
+  // channel as "suggested".
+  const sidebarTargets = $derived.by<ForwardTarget[]>(() => {
     const meta = metaQuery.data;
     if (!meta) return [];
 
-    // Candidate targets: channels the user can write to (with their recently
-    // active threads), plus writable active threads of unreadable channels.
-    // Readable channels' threads render under the channel as "suggested".
     const out: ForwardTarget[] = [];
     const seen = new Set<string>();
     const push = (id: string, name?: string) => {
@@ -87,8 +109,44 @@
     return out;
   });
 
+  // Searching: the server is authoritative. Search results already carry
+  // read-access filtering + names; dedupe channels and threads by id.
+  const searchTargets = $derived.by<ForwardTarget[]>(() => {
+    const rooms = roomsSearchQuery.data?.rooms ?? [];
+    const out: ForwardTarget[] = [];
+    const seen = new Set<string>();
+    for (const r of rooms) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push({ id: r.id, name: r.name });
+    }
+    return out;
+  });
+
+  const searching = $derived(searchQuery.trim().length > 0);
+
   const fetchState = $derived.by((): ForwardFetchState => {
     if (!open) return { status: "idle" };
+
+    // Server search in flight: show the loading state for the first term
+    // only, so the initial open (no query) renders instantly from cache.
+    if (searching) {
+      if (roomsSearchQuery.isPending && !roomsSearchQuery.data) {
+        return { status: "loading" };
+      }
+      if (roomsSearchQuery.isError) {
+        return {
+          status: "error",
+          message:
+            roomsSearchQuery.error instanceof Error
+              ? roomsSearchQuery.error.message
+              : "Failed to search rooms",
+        };
+      }
+      const data = searchTargets.filter((t) => t.id !== fromRoomId);
+      return { status: "success", data };
+    }
+
     if (metaQuery.isPending) return { status: "loading" };
     if (metaQuery.isError)
       return {
@@ -98,31 +156,54 @@
             ? metaQuery.error.message
             : "Failed to load rooms",
       };
-    const data = targets.filter((t) => t.id !== fromRoomId);
+    const data = sidebarTargets.filter((t) => t.id !== fromRoomId);
     return { status: "success", data };
   });
 
   async function handleForward(roomIds: string[]) {
+    // Read the commentary from the editor rather than the `blocks` binding:
+    // that binding stays undefined until the modal's editor is edited, so an
+    // empty (or only-pasted) commentary would otherwise take the legacy
+    // markdown branch.
+    const blocks = composerRef?.getBlocks() ?? bodyBlocks ?? [];
     await Promise.all(
       roomIds.map((roomId) =>
-        forwardMessage(spaceId, fromRoomId, messageId, roomId, body),
+        Promise.all(
+          messageIds.map((messageId) =>
+            forwardMessage(spaceId, fromRoomId, messageId, roomId, { blocks }),
+          ),
+        ),
       ),
     );
     toast.success(
-      `Message forwarded to ${roomIds.length} room${roomIds.length > 1 ? "s" : ""}`,
+      `Forwarded ${messageIds.length} message${messageIds.length > 1 ? "s" : ""} to ${roomIds.length} room${roomIds.length > 1 ? "s" : ""}`,
     );
+    // Forwarding consumes the selection — leave select mode (Signal/WhatsApp
+    // pattern) so the composer returns to normal after a multi-message
+    // forward. Harmless for the single-message toolbar path (state is
+    // already normal; setNormal preserves the draft).
+    if (messagingState.current.kind === "selecting") {
+      messagingState.setNormal();
+    }
   }
 </script>
 
-<ForwardMessageModal bind:open {fetchState} onForward={handleForward}>
+<ForwardMessageModal
+  bind:open
+  bind:query={searchQuery}
+  {fetchState}
+  onForward={handleForward}
+>
   {#snippet composer()}
     <ChatInput
+      bind:this={composerRef}
       bind:content={body}
       bind:blocks={bodyBlocks}
       placeholder="Say something with the forwarded message…"
       onEnter={() => Promise.resolve()}
       sendOnEnter={false}
       setFocus={true}
+      mentionSearch={createMentionSearch(spaceId, fromRoomId)}
     />
   {/snippet}
 </ForwardMessageModal>

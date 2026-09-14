@@ -32,11 +32,49 @@ export const STREAM_HANDLE_NSID = () =>
 	optional("STREAM_HANDLE_NSID", "space.roomy.space.handle.dev");
 
 export const BRIDGE_DATA_DIR = () => optional("BRIDGE_DATA_DIR", "./data");
+
+/**
+ * Reconnect backoff for live Roomy sync connections (ms).
+ *
+ * The bridge holds one live WebSocket per bridged space. When the appserver
+ * is failing, every connection drops and the SDK schedules a reconnect. These
+ * two knobs bound the shared circuit-breaker backoff (see live-gateway.ts):
+ * the base delay for the first failure and the maximum cap. Defaults are
+ * deliberately conservative (5s base, 5min cap) so a degraded appserver
+ * isn't hammered by a synchronized reconnect storm.
+ */
+export const BRIDGE_RECONNECT_BASE_MS = () =>
+	parseInt(optional("BRIDGE_RECONNECT_BASE_MS", "5000"), 10);
+export const BRIDGE_RECONNECT_MAX_MS = () =>
+	parseInt(optional("BRIDGE_RECONNECT_MAX_MS", "300000"), 10);
 export const BRIDGE_DB_PATH = () =>
 	optional("BRIDGE_DB_PATH", `${BRIDGE_DATA_DIR()}/bridge.sqlite`);
 export const PORT = () => parseInt(optional("PORT", "3301"), 10);
 export const ENABLE_GUILD_MEMBERS_INTENT = () =>
 	process.env.ENABLE_GUILD_MEMBERS_INTENT !== "false";
+
+/**
+ * Roomy space (DID) and room (channel ULID) where the bridge posts system
+ * messages (capacity alerts for Roomy admins). Both must be set for system
+ * messages to be sent; a missing/partial pair disables them. The bridge's
+ * ATProto account must be a member of the space with write access to the
+ * channel. Examples:
+ *   SYSTEM_SPACE=did:plc:abc123
+ *   SYSTEM_CHANNEL=01KZBRQMEP2FTE079YRVDFKGTA
+ */
+export const SYSTEM_SPACE = () => optional("SYSTEM_SPACE", "");
+export const SYSTEM_CHANNEL = () => optional("SYSTEM_CHANNEL", "");
+
+/**
+ * Ops kill switch for capacity enforcement. When set to "true"/"1",
+ * per-guild capacity checks are disabled globally: every bridged space
+ * passes, regardless of member count vs Roomy Pro capacity. Emergency
+ * manual re-enable for when the appserver's membership picture is wrong
+ * (e.g. unprovisioned spaces, Polar outage). Off by default.
+ */
+export const BRIDGE_CAPACITY_KILL_SWITCH = () =>
+	process.env.BRIDGE_CAPACITY_KILL_SWITCH === "true" ||
+	process.env.BRIDGE_CAPACITY_KILL_SWITCH === "1";
 
 export const Level = type(
 	'"debug" | "info" | "warn" | "error" | undefined',

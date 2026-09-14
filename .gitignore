@@ -7,6 +7,7 @@ node_modules
 .output
 .vercel
 .netlify
+.toolchain
 .wrangler
 /.svelte-kit
 /dist
@@ -57,3 +58,6 @@ gha-creds-*.json
 dist-staging
 build-staging
 build.old
+
+# Storybook build output
+storybook-static

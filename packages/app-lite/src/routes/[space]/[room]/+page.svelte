@@ -7,19 +7,41 @@
   import { setNavbar } from "$lib/components/layout/navbar.svelte";
   import { setCurrentRoom } from "$lib/components/layout/current-room.svelte";
   import { spaceNavigation } from "$lib/components/layout/last-room.svelte";
-  import { messagingState, closeToolbar } from "$lib/components/chat/messaging-state.svelte";
+  import { closeToolbar, messagingState } from "$lib/components/chat/messaging-state.svelte";
   import ToggleTabs from "@roomy/design/components/layout/ToggleTabs.svelte";
   import { createRoomMetadataQuery } from "$lib/queries/room-metadata";
   import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
   import { updateSeen } from "$lib/mutations/update-seen";
   import ChatArea from "$lib/components/chat/ChatArea.svelte";
   import ChatInputArea from "$lib/components/chat/ChatInputArea.svelte";
+  import ForwardMessageModal from "$lib/components/chat/ForwardMessageModal.svelte";
+  import type { Message } from "$lib/queries/messages";
   import ChannelBoardView from "$lib/components/thread/ChannelBoardView.svelte";
   import SeoMeta from "$lib/components/seo/SeoMeta.svelte";
   import { resolveBlobUrl } from "$lib/utils";
 
   const spaceId = $derived(page.params.space!);
   const roomId = $derived(page.params.room!);
+  // Search deep-link target (`?message=`), e.g. from search results or a
+  // forward context link — ChatArea scrolls to and briefly highlights it.
+  const highlightMessage = $derived(
+    page.url.searchParams.get("message") ?? undefined,
+  );
+
+  // ── Forward modal ───────────────────────────────────────────────────────
+  // Owned here (not ChatArea/ChatInputArea) so both the per-message toolbar
+  // forward and select mode's multi-message forward share one modal, and its
+  // state survives hover-toolbar and select-mode lifetimes. `forwardSource`
+  // is the source room for the messages being forwarded.
+  let forwardMessages = $state<Message[] | null>(null);
+  let isForwardModalOpen = $state(false);
+  let forwardSourceRoom = $state<string | null>(null);
+
+  function openForward(messages: Message[]) {
+    forwardMessages = messages;
+    forwardSourceRoom = roomId;
+    isForwardModalOpen = true;
+  }
 
   useTopicSubscription(
     () => sync_.ctx?.topicManager ?? null,
@@ -27,12 +49,22 @@
   );
 
   $effect(() => {
-    // Reset any lingering reply/thread context from a previous room.
-    // Writes to module-level $state are wrapped in untrack() to avoid
-    // reactive cascades (effect_update_depth_exceeded).
+    // Composer document activation is owned by ChatInputArea ($effect.pre on
+    // roomId) so the editor always seeds from the recalled per-room draft
+    // before its subtree mounts. Here: drop the mobile toolbar from a
+    // previous room and point the sync connection at the new room. Writes to
+    // module-level $state are wrapped in untrack() to avoid reactive cascades
+    // (effect_update_depth_exceeded).
     untrack(() => {
-      messagingState.setNormal();
       closeToolbar();
+      // Selecting is room-scoped: cancel it when leaving the room so a stale
+      // selection never carries into the next room's composer.
+      if (
+        messagingState.current.kind === "selecting" ||
+        messagingState.current.kind === "threading"
+      ) {
+        messagingState.setNormal();
+      }
       sync_.setActiveRoom(roomId);
     });
     updateSeen(roomId).catch(() => {});
@@ -156,26 +188,25 @@
   });
 
   // ── Tab state ─────────────────────────────────────────────────────────────
+  // The Chat/Threads tab is per-entry state: it starts in Chat on every room
+  // visit, so navigating from a channel in Threads view to another channel
+  // always lands in Chat.
   const channelTabList = ["Chat", "Threads"] as const;
-  let channelActiveTab = $state<(typeof channelTabList)[number]>(
-    spaceNavigation.get(spaceId)?.viewMode === "threads" ? "Threads" : "Chat",
-  );
+  let channelActiveTab = $state<(typeof channelTabList)[number]>("Chat");
 
-  // Re-sync from stored state when spaceId changes (component reuse across
-  // spaces — SvelteKit reuses the same page component for the same route
-  // pattern, so $state() only initializes once).
+  // Reset to Chat whenever the room changes. Navigating between rooms reuses
+  // this page component (same route pattern), so without this the tab would
+  // carry over from the previous room. Declared before the hash effect below
+  // so an explicit URL hash (ToggleTabs navigation, back/forward) wins.
   $effect(() => {
-    const sid = spaceId;
-    untrack(() => {
-      const stored = spaceNavigation.get(sid)?.viewMode;
-      channelActiveTab = stored === "threads" ? "Threads" : "Chat";
-    });
+    void roomId; // track room changes
+    channelActiveTab = "Chat";
   });
 
   // Sync tab state from URL hash — clicking a toggle tab navigates to the hash,
   // which gives the user working browser back/forward between views.
   // Only reacts when a hash is present; on initial load with no hash the
-  // stored view mode (or default "Chat") is preserved.
+  // default "Chat" is preserved.
   $effect(() => {
     if (page.url.hash === "#chat") {
       channelActiveTab = "Chat";
@@ -184,13 +215,10 @@
     }
   });
 
-  // Persist the active tab as a shared view mode ("chat" / "threads") so the
-  // space index page can pick it up and vice versa.
+  // Remember the last room in this space so the server bar and space switcher
+  // can redirect back to it when re-entering the space.
   $effect(() => {
-    spaceNavigation.set(spaceId, {
-      destination: { kind: "room", id: roomId },
-      viewMode: channelActiveTab === "Threads" ? "threads" : "chat",
-    });
+    spaceNavigation.set(spaceId, { kind: "room", id: roomId });
   });
 
 
@@ -217,9 +245,12 @@
     {/if}
 
     {#if roomKind === "channel"}
-      <span class="grow sm:hidden"></span>
+      <!-- On narrow navbar containers the toggle floats right-aligned,
+           immediately left of the search icon; once the container is wide
+           enough for the searchbar it centers in the navbar. -->
+      <span class="grow @min-[40rem]:hidden"></span>
       <div
-        class="sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2"
+        class="@min-[40rem]:absolute @min-[40rem]:left-1/2 @min-[40rem]:top-1/2 @min-[40rem]:-translate-x-1/2 @min-[40rem]:-translate-y-1/2"
       >
         <ToggleTabs
           items={channelTabList.map((x) => ({
@@ -240,7 +271,7 @@
     <div class="relative flex-1 min-h-0">
       <!-- Chat view - always rendered but visibility toggled -->
       <div class="absolute inset-0 flex flex-col" class:hidden={channelActiveTab !== "Chat"}>
-        <ChatArea spaceId={effectiveSpaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
+        <ChatArea spaceId={effectiveSpaceId} {roomId} {highlightMessage} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} onForward={openForward} /> 
       </div>
 
       <!-- Threads view - always rendered but visibility toggled -->
@@ -251,11 +282,28 @@
 
     <!-- Chat input area - only shown in chat view -->
     {#if showChatInput}
-      <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
+      <!-- Keyed per room: the Tiptap editor holds its document internally, so
+           without a remount an editor carried across room switches keeps the
+           previous room's text. Remounting re-seeds from the recalled per-room
+           composer document (draft string + blocks). -->
+      {#key roomId}
+        <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} onForwardSelection={openForward} />
+      {/key}
     {/if}
   {:else}
     <!-- Thread rooms only have chat view -->
-    <ChatArea spaceId={effectiveSpaceId} {roomId} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} />
-    <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} />
+    <ChatArea spaceId={effectiveSpaceId} {roomId} {highlightMessage} onSeen={() => { if (roomUnreadCount > 0) updateSeen(roomId).catch(() => {}); }} onForward={openForward} />
+    {#key roomId}
+      <ChatInputArea spaceId={effectiveSpaceId} {roomId} canWrite={roomCanWrite} {disableUploads} onForwardSelection={openForward} />
+    {/key}
+  {/if}
+
+  {#if forwardMessages && forwardSourceRoom}
+    <ForwardMessageModal
+      bind:open={isForwardModalOpen}
+      spaceId={effectiveSpaceId}
+      fromRoomId={forwardSourceRoom}
+      messageIds={forwardMessages.map((m) => m.id)}
+    />
   {/if}
 </div>

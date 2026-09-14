@@ -44,63 +44,6 @@
         }
       }
     },
-    "p": {
-      "type": "object",
-      "properties": {
-        "n": {
-          "type": "string"
-        },
-        "u": {
-          "type": "string"
-        }
-      }
-    },
-    "thumb": {
-      "type": "object",
-      "required": [
-        "u"
-      ],
-      "properties": {
-        "u": {
-          "type": "string"
-        },
-        "d": {
-          "type": "string"
-        },
-        "h": {
-          "type": "integer"
-        },
-        "m": {
-          "type": "string"
-        },
-        "w": {
-          "type": "integer"
-        }
-      }
-    },
-    "vid": {
-      "type": "object",
-      "required": [
-        "u"
-      ],
-      "properties": {
-        "u": {
-          "type": "string"
-        },
-        "d": {
-          "type": "string"
-        },
-        "h": {
-          "type": "integer"
-        },
-        "m": {
-          "type": "string"
-        },
-        "w": {
-          "type": "integer"
-        }
-      }
-    },
     "embed": {
       "type": "object",
       "properties": {
@@ -124,18 +67,18 @@
         },
         "p": {
           "type": "ref",
-          "ref": "#p"
+          "ref": "#au"
         },
         "t": {
           "type": "string"
         },
         "thumb": {
           "type": "ref",
-          "ref": "#thumb"
+          "ref": "#imgs"
         },
         "vid": {
           "type": "ref",
-          "ref": "#vid"
+          "ref": "#imgs"
         }
       }
     },
@@ -208,26 +151,7 @@
         }
       }
     },
-    "forwardedFrom": {
-      "type": "object",
-      "required": [
-        "messageId",
-        "name",
-        "roomId"
-      ],
-      "properties": {
-        "messageId": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "roomId": {
-          "type": "string"
-        }
-      }
-    },
-    "messages": {
+    "message": {
       "type": "object",
       "required": [
         "authorDid",
@@ -300,19 +224,168 @@
         }
       }
     },
+    "forwardedFrom": {
+      "type": "object",
+      "required": [
+        "messageId",
+        "name",
+        "roomId"
+      ],
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "roomId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "ref",
+          "ref": "#message"
+        }
+      }
+    },
+    "reply": {
+      "type": "object",
+      "required": [
+        "messageId"
+      ],
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "ref",
+          "ref": "#message"
+        }
+      }
+    },
+    "messages": {
+      "type": "object",
+      "required": [
+        "authorDid",
+        "authorName",
+        "content",
+        "id",
+        "linkEmbeds",
+        "media",
+        "reactions",
+        "roomId",
+        "spaceId",
+        "timestamp"
+      ],
+      "properties": {
+        "authorDid": {
+          "type": "string"
+        },
+        "authorName": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "linkEmbeds": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#linkEmbeds"
+          }
+        },
+        "media": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#media"
+          }
+        },
+        "reactions": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#reactions"
+          }
+        },
+        "roomId": {
+          "type": "string"
+        },
+        "spaceId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "authorAvatar": {
+          "type": "string"
+        },
+        "authorHandle": {
+          "type": "string"
+        },
+        "forwardedFrom": {
+          "type": "ref",
+          "ref": "#forwardedFrom"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "reply": {
+          "type": "ref",
+          "ref": "#reply"
+        },
+        "replyTo": {
+          "type": "string"
+        },
+        "roomKind": {
+          "type": "string"
+        },
+        "roomName": {
+          "type": "string"
+        },
+        "sort_idx": {
+          "type": "string"
+        },
+        "spaceAvatar": {
+          "type": "string"
+        },
+        "spaceName": {
+          "type": "string"
+        },
+        "system": {
+          "type": "boolean"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": [
+        "messages"
+      ],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#messages"
+          }
+        },
+        "cursor": {
+          "type": "string"
+        }
+      }
+    },
     "main": {
       "type": "query",
       "parameters": {
         "type": "params",
         "required": [
-          "q",
-          "spaceId"
+          "q"
         ],
         "properties": {
           "q": {
-            "type": "string"
-          },
-          "spaceId": {
             "type": "string"
           },
           "cursor": {
@@ -320,28 +393,20 @@
           },
           "limit": {
             "type": "string"
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "spaceId": {
+            "type": "string"
           }
         }
       },
       "output": {
         "encoding": "application/json",
         "schema": {
-          "type": "object",
-          "required": [
-            "messages"
-          ],
-          "properties": {
-            "messages": {
-              "type": "array",
-              "items": {
-                "type": "ref",
-                "ref": "#messages"
-              }
-            },
-            "cursor": {
-              "type": "string"
-            }
-          }
+          "type": "ref",
+          "ref": "#output"
         }
       }
     }

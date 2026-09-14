@@ -23,23 +23,32 @@
   import { cn } from "@roomy/design/utils";
   import { Markdown } from "tiptap-markdown";
   import { blocksToProseMirrorDoc, proseMirrorDocToBlocks } from "@roomy-space/sdk";
-  import type { Block, ProseMirrorDoc } from "@roomy-space/sdk";
+  import type { Block, ProseMirrorDoc, ProseMirrorMark, ProseMirrorNode } from "@roomy-space/sdk";
 
   type Props = {
     content: string;
     /**
      * Blocks+facets form of the editor content, kept in sync with `content`
-     * on every update. The send path uses this when the `richtext-schema`
-     * feature flag is enabled; `content` (markdown) remains for the legacy
-     * path and for messaging-state's string `input` binding.
+     * on every update. The send path uses this when the composer produced
+     * blocks; `content` (markdown) remains for the legacy path and for
+     * messaging-state's string `input` binding.
      */
     blocks?: Block[];
     /**
-     * When editing a rich-text message, the decoded blocks that seeded this
-     * editor. When present, the editor initializes from
+     * DIDs of the users mentioned in the editor, kept in sync on every
+     * update. The composer reads these itself on send; inline editors (e.g.
+     * edit-message) bind this to surface the mentions to their save path —
+     * legacy markdown messages carry mentions in the sidecar, not in blocks.
+     */
+    mentions?: string[];
+    /**
+     * The decoded blocks that seeded this editor — a rich-text message being
+     * re-edited, or the per-room composer document being recalled on return.
+     * When present, the editor initializes from
      * `blocksToProseMirrorDoc(initialBlocks)` instead of the markdown
      * `content` string, so structured messages open as their decoded text
-     * (not the base64-encoded wire body) and stay rich-text on save.
+     * (not the base64-encoded wire body) and stay rich-text on save. For the
+     * composer this keeps stored mentions re-rendering as chips.
      */
     initialBlocks?: Block[];
     /** Server-search fetcher for `@user` mentions (hits `getMembers?search=`). */
@@ -65,6 +74,7 @@
   let {
     content = $bindable(""),
     blocks = $bindable(),
+    mentions = $bindable(),
     initialBlocks,
     mentionSearch,
     context,
@@ -103,19 +113,81 @@
   }
 
   /**
-   * The composer editor schema (StarterKit + link) has no `userMention` /
-   * `channelThreadMention` marks. `blocksToProseMirrorDoc` emits those marks
-   * for `#didMention` / `#roomRef` facets, so loading such a doc directly
-   * would crash the editor (`There is no mark type userMention in this
-   * schema`). Drop those marks before seeding the editor — the mention text
-   * itself stays (as plain text), only its special formatting is lost.
+   * Submit the editor's current content, exactly as the Enter key does.
+   *
+   * The composer's Send button calls this instead of going through its own
+   * path: the two entry points must produce byte-identical bodies, including
+   * the trailing-autolink flush that `wrappedOnEnter` performs before
+   * serializing. Any second entry point that serializes independently
+   * reintroduces the divergence this exists to prevent.
    */
-  function stripUnsupportedMarks(doc: ProseMirrorDoc): ProseMirrorDoc {
+  export async function submit() {
+    if (disabled) return;
+    await wrappedOnEnter();
+  }
+
+  /**
+   * The editor's current content as blocks+facets, flushed the same way a
+   * submit would flush it (trailing autolink committed first).
+   *
+   * Callers that build their own message (e.g. the forward modal, which
+   * sends one commentary body to several rooms) must read the body through
+   * this rather than the `blocks` binding, which stays `undefined` until the
+   * first edit.
+   */
+  export function getBlocks(): Block[] {
+    flushTrailingAutolink();
+    return tiptap ? proseMirrorDocToBlocks(tiptap.getJSON()) : (blocks ?? []);
+  }
+
+  /**
+   * When re-editing a rich-text message, `blocksToProseMirrorDoc` reconstructs
+   * `#didMention` / `#roomRef` facets as `userMention` / `channelThreadMention`
+   * MARKS on text nodes. The composer schema registers those names as NODES
+   * (the @tiptap Mention extension), so loading a doc carrying the marks
+   * directly would crash the editor (`There is no mark type userMention in
+   * this schema`).
+   *
+   * When the matching node extension is registered (mentionSearch/context
+   * provided), convert each mention-marked text run into a mention NODE so
+   * the mention survives the edit as a chip and re-serializes to its facet on
+   * save. When the extension is absent, drop the mark — the mention text
+   * stays, only its special formatting is lost (the old behaviour).
+   */
+  function normalizeMentionMarks(
+    doc: ProseMirrorDoc,
+    supported: { userMention: boolean; channelThreadMention: boolean },
+  ): ProseMirrorDoc {
     const walk = (node: ProseMirrorDoc): void => {
-      if (node.marks) {
-        node.marks = node.marks.filter(
-          (m) => m.type !== "userMention" && m.type !== "channelThreadMention",
-        );
+      if (node.content) {
+        const out: ProseMirrorNode[] = [];
+        for (const child of node.content) {
+          if (child.type === "text" && child.marks?.length) {
+            const mentionMark = child.marks.find(
+              (m): m is ProseMirrorMark & { type: "userMention" | "channelThreadMention" } =>
+                m.type === "userMention" || m.type === "channelThreadMention",
+            );
+            if (mentionMark) {
+              if (supported[mentionMark.type]) {
+                // The marked text is the mention span (`@label` / `#label`);
+                // rebuild the atomic mention node the composer would have
+                // produced, keeping the facet's id and recovering the label
+                // from the text.
+                out.push({
+                  type: mentionMark.type,
+                  attrs: {
+                    ...mentionMark.attrs,
+                    label: (child.text ?? "").replace(/^[@#]/, ""),
+                  },
+                });
+                continue;
+              }
+              child.marks = child.marks.filter((m) => m !== mentionMark);
+            }
+          }
+          out.push(child);
+        }
+        node.content = out;
       }
       for (const child of node.content ?? []) walk(child);
     };
@@ -156,7 +228,10 @@
     // parent sees the initial markdown/blocks even before the user types.
     const initialDoc =
       initialBlocks && initialBlocks.length > 0
-        ? stripUnsupportedMarks(blocksToProseMirrorDoc(initialBlocks))
+        ? normalizeMentionMarks(blocksToProseMirrorDoc(initialBlocks), {
+            userMention: !!mentionSearch,
+            channelThreadMention: !!context,
+          })
         : null;
 
     tiptap = new Editor({
@@ -176,11 +251,13 @@
       onUpdate: (ctx) => {
         content = ctx.editor.storage.markdown.getMarkdown();
         blocks = proseMirrorDocToBlocks(ctx.editor.getJSON());
+        mentions = extractMentionDids(ctx.editor);
       },
     });
     if (initialDoc) {
       content = tiptap.storage.markdown.getMarkdown();
       blocks = proseMirrorDocToBlocks(tiptap.getJSON());
+      mentions = extractMentionDids(tiptap);
     }
     // Only the composer registers as the module-level editor that
     // clearInput()/setInputFocus() target. Inline editors (edit-message)
@@ -204,9 +281,10 @@
   onDestroy(() => {
     tiptap?.destroy();
     // Reset the shared module-level binding so deferred setInputFocus/clearInput
-    // calls (e.g. from messagingState.setNormal() in a route $effect) don't
-    // land on a destroyed editor whose commandManager is null. Only the
-    // composer owns this binding, and only if it's still the current editor.
+    // calls (e.g. from messagingState.setReplyTo()/clear-context or a route's
+    // setNormal) don't land on a destroyed editor whose commandManager is
+    // null. Only the composer owns this binding, and only if it's still the
+    // current editor.
     if (composer && editor === tiptap) editor = undefined;
   });
 

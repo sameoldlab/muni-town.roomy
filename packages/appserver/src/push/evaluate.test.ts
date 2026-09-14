@@ -178,11 +178,6 @@ async function seedFixture(db: DbLike): Promise<void> {
   await setUserDefault(db, BUSY_READER, "busy");
   await setUserDefault(db, QUIET_READER, "quiet");
   await setUserDefault(db, BANNED_BUSY, "busy");
-  // Enable push-notifications globally so recipients pass the per-user flag
-  // gate added in evaluatePush.
-  await db.run(
-    "insert into readstate.feature_flags (key, global_enabled, updated_at) values ('push-notifications', 1, (unixepoch() * 1000))",
-  );
   // Subscriptions: only busy reader + quiet reader + banned user have devices.
   await addSubscription(db, BUSY_READER);
   await addSubscription(db, QUIET_READER);
@@ -431,11 +426,8 @@ describe("push/evaluate — Engaged digest path", () => {
     );
     await spaceDb.run("insert into edges (head, tail, label) values (?, ?, 'author')", [theirMsg, ENGAGED_READER]);
 
-    // Read-state side: flag + subscription, NO participation row yet (the
+    // Read-state side: subscription, NO participation row yet (the
     // backfill must populate it).
-    await readStateDb.run(
-      "insert into feature_flags (key, global_enabled, updated_at) values ('push-notifications', 1, (unixepoch() * 1000))",
-    );
     await upsertSubscription(readStateDb, {
       userDid: ENGAGED_READER,
       endpoint: "https://push.test/split",
@@ -539,7 +531,7 @@ describe("push/evaluate — Engaged digest path", () => {
 // ── Phase 3: Mention routing ───────────────────────────────────────────────
 
 /** Build a createMessage job with a given ordinal and optional mentions. */
-function msgJobWithMentions(ordinal: number, mentions?: string[]) {
+function msgJobWithMentions(ordinal: number, mentions?: string[], repliedToDids?: string[]) {
   const suffix = String(ordinal).padStart(6, "0");
   return {
     spaceId: SPACE,
@@ -548,6 +540,7 @@ function msgJobWithMentions(ordinal: number, mentions?: string[]) {
     authorDid: AUTHOR as UserDid,
     timestamp: 1_000_000 + ordinal * 1000,
     mentions,
+    repliedToDids,
   };
 }
 
@@ -604,6 +597,57 @@ describe("push/evaluate — Phase 3 mention routing", () => {
     // Even with 0 prior unseen messages, a mention fires immediately.
     const deliveries = await evaluatePush(db, db, msgJobWithMentions(1, [ENGAGED_READER]));
     expect(deliveries.find((d) => d.userDid === ENGAGED_READER)).toBeDefined();
+  });
+
+  test("quiet + repliedTo → immediate message push (reply treated like mention)", async () => {
+    const db = freshDb();
+    await seedFixture(db);
+    _resetParticipationBackfillCache();
+    // QUIET_READER is quiet; the message directly replies to one of their
+    // messages → immediate push, no mention needed.
+    const deliveries = await evaluatePush(db, db, msgJobWithMentions(1, [], [QUIET_READER]));
+    const push = deliveries.find((d) => d.userDid === QUIET_READER);
+    expect(push).toBeDefined();
+    expect(push!.payload.type).toBe("message");
+    expect(push!.payload.roomName).toBe("general");
+  });
+
+  test("engaged + repliedTo → immediate message push (threshold bypassed)", async () => {
+    const db = freshDb();
+    await seedFixture(db);
+    _resetParticipationBackfillCache();
+    await addSubscription(db, ENGAGED_READER);
+    await addParticipation(db, ENGAGED_READER, CHANNEL, 500_000);
+
+    // 0 prior unseen messages — normally the digest path needs 5; a reply
+    // fires immediately.
+    const deliveries = await evaluatePush(db, db, msgJobWithMentions(1, [], [ENGAGED_READER]));
+    const push = deliveries.find((d) => d.userDid === ENGAGED_READER);
+    expect(push).toBeDefined();
+    expect(push!.payload.type).toBe("message");
+    expect(await notifState(db, ENGAGED_READER, CHANNEL)).toBeUndefined();
+  });
+
+  test("quiet, neither mentioned nor repliedTo → no push (unchanged)", async () => {
+    const db = freshDb();
+    await seedFixture(db);
+    _resetParticipationBackfillCache();
+    // Message mentions ENGAGED_READER and replies to nobody QUIET_READER
+    // knows — quiet should still be skipped.
+    const deliveries = await evaluatePush(db, db, msgJobWithMentions(1, [ENGAGED_READER], [BUSY_READER]));
+    expect(deliveries.find((d) => d.userDid === QUIET_READER)).toBeUndefined();
+  });
+
+  test("author who replies to their own message is never pushed", async () => {
+    const db = freshDb();
+    await seedFixture(db);
+    _resetParticipationBackfillCache();
+    // AUTHOR is excluded by the author self-exclusion even when listed as
+    // repliedTo (replies to self are also filtered earlier, but the
+    // dispatcher must never notify the message author).
+    await setUserDefault(db, AUTHOR, "quiet");
+    const deliveries = await evaluatePush(db, db, msgJobWithMentions(1, [], [AUTHOR]));
+    expect(deliveries.find((d) => d.userDid === AUTHOR)).toBeUndefined();
   });
 
   test("engaged + not mentioned → digest path (unchanged, regression)", async () => {

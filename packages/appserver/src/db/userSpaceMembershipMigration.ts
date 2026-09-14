@@ -18,6 +18,10 @@
 import { decode } from "@atcute/cbor";
 import type { DbLike } from "./types.ts";
 import { classifyMembershipEvent, type MembershipIntent } from "../queries/userSpaceMembership.ts";
+import {
+  readStateMigrationEntry,
+  type ReadStateAsyncVersion,
+} from "./readStateVersions.ts";
 import { log } from "../log.ts";
 
 interface RawEvent {
@@ -135,12 +139,90 @@ interface PendingMigration {
 type ReadStateMigrationTask = (db: DbLike) => Promise<void>;
 
 /**
- * Async/data migrations keyed by the read-state schema version that scheduled
- * them. Structural DDL is applied synchronously by the DB worker; these tasks
- * may scan the event log and therefore run from the main thread.
+ * Backfill `user_thread_activity.space_did` for rows written before the v7
+ * schema added the column (they default to ''). The owning space of each
+ * thread is resolved from the global `entity_space` index (entity → space),
+ * then the read-state rows are updated in place. Idempotent and resumable.
  */
-const READSTATE_MIGRATION_TASKS: Record<string, ReadStateMigrationTask> = {
+export async function backfillUserThreadActivitySpaceDid(
+  db: DbLike,
+): Promise<void> {
+  const readStateDb = db.readState?.() ?? db;
+  const globalDb = db.global?.();
+  if (!globalDb) {
+    log.info("startup", "no global DB handle; skipping user_thread_activity space_did backfill");
+    return;
+  }
+
+  // Distinct thread_ids still missing a space_did.
+  const missing = await readStateDb
+    .query(
+      `select distinct thread_id from user_thread_activity where space_did = ''`,
+    )
+    .all<{ thread_id: string }>();
+  if (missing.length === 0) {
+    log.info("startup", "user_thread_activity space_did backfill: nothing to do");
+    return;
+  }
+
+  // Resolve each thread's owning space from the global entity_space index in
+  // batched `in (...)` chunks.
+  const spaceByThread = new Map<string, string>();
+  const CHUNK = 500;
+  for (let i = 0; i < missing.length; i += CHUNK) {
+    const chunk = missing.slice(i, i + CHUNK).map((r) => r.thread_id);
+    const ph = chunk.map(() => "?").join(",");
+    const rows = await globalDb
+      .query(
+        `select entity_id, space_did from entity_space where entity_id in (${ph})`,
+      )
+      .all<{ entity_id: string; space_did: string }>(...chunk);
+    for (const r of rows) spaceByThread.set(r.entity_id, r.space_did);
+  }
+
+  // Update rows in place, one transaction per chunk.
+  let updated = 0;
+  for (let i = 0; i < missing.length; i += CHUNK) {
+    const chunk = missing.slice(i, i + CHUNK);
+    const steps: Array<{
+      type: "run";
+      sql: string;
+      params: unknown[];
+    }> = [];
+    for (const { thread_id } of chunk) {
+      const spaceDid = spaceByThread.get(thread_id);
+      if (!spaceDid) continue; // thread not in entity_space — leave '' (unresolvable)
+      steps.push({
+        type: "run",
+        sql: `update user_thread_activity set space_did = ? where thread_id = ? and space_did = ''`,
+        params: [spaceDid, thread_id],
+      });
+    }
+    if (steps.length > 0) {
+      await readStateDb.transaction(steps);
+      updated += steps.length;
+    }
+  }
+
+  log.info("startup", `user_thread_activity space_did backfill updated ${updated} rows`);
+}
+
+/**
+ * Async data migrations keyed by the read-state schema version that scheduled
+ * them. Structural DDL is applied synchronously by the DB worker.
+ *
+ * Typed as `Record<ReadStateAsyncVersion, …>`, where `ReadStateAsyncVersion` is
+ * derived from `READSTATE_MIGRATIONS`. Adding a `kind: "data"` version to the
+ * manifest therefore fails the typecheck until a task is registered here, and
+ * registering a task for a `kind: "structural"` version is a type error — so
+ * the two lists can no longer drift into a boot-time crash loop.
+ */
+const READSTATE_MIGRATION_TASKS: Record<
+  ReadStateAsyncVersion,
+  ReadStateMigrationTask
+> = {
   "6": recoverUserSpaceMembership,
+  "7": backfillUserThreadActivitySpaceDid,
 };
 
 /**
@@ -164,13 +246,23 @@ export async function runPendingReadStateMigrations(
     .all<PendingMigration>();
 
   for (const { version } of pending) {
-    const task = READSTATE_MIGRATION_TASKS[version];
-    if (!task) {
-      throw new Error(`No read-state post-migration task registered for schema v${version}`);
+    const entry = readStateMigrationEntry(version);
+    if (!entry) {
+      // Unknown version: the manifest is the source of truth, so a marker row
+      // for a version absent from it means a schema file the running code does
+      // not know. Fail fast rather than serve with un-migrated state.
+      throw new Error(
+        `Unknown read-state schema version v${version} (not in READSTATE_MIGRATIONS)`,
+      );
     }
+    // Only data versions have a registered task; a structural version has no
+    // async work, so boot just stamps the marker. The type of `entry.kind`
+    // guarantees the corresponding task exists (see the task-map type above).
+    const task =
+      entry.kind === "data" ? READSTATE_MIGRATION_TASKS[version as ReadStateAsyncVersion] : null;
 
     log.info("startup", `running read-state post-migration v${version}`);
-    await task(db);
+    if (task) await task(db);
     await readStateDb.run(
       `update readstate_schema_migrations
           set completed_at = ?

@@ -167,6 +167,9 @@ describe("channel federation — full HTTP E2E chain", () => {
       originSpaceName: "Test Space",
       permission: "readwrite",
     });
+    // No messages in the channel yet → no unread marker on the federated row
+    // (the sidebar renders unreadCount > 0 as the unread dot).
+    expect(fedChannel?.unreadCount).toBe(0);
 
     // 6. ADMIN_B configures a receiver grant for MEMBER_B (on B's stream).
     res = await send(ADMIN_B, B, {
@@ -226,6 +229,43 @@ describe("channel federation — full HTTP E2E chain", () => {
     body = await res.json();
     expect(Array.isArray(body.messages)).toBe(true);
     expect(body.messages.length).toBeGreaterThanOrEqual(1);
+
+    // 11. The federated channel follows native-channel unread semantics.
+    // MEMBER_B's earlier getMetadata (step 8) lazily created her read
+    // position at 0; the message at step 9 bumped it to 1 — so the
+    // receiving space's sidebar now shows the unread dot for a federated
+    // channel (the fix for "federated channels never show unreads").
+    res = await ctx.authedFetch(MEMBER_B)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=${B}`,
+    );
+    expect(res.status).toBe(200);
+    body = await res.json();
+    let fedAfterMsg = (body.sidebar.orphans ?? []).find(
+      (ch: { id: string }) => ch.id === CHANNEL,
+    );
+    expect(fedAfterMsg?.unreadCount).toBeGreaterThan(0);
+
+    // 12. Marking the federated room read clears the receiving-space
+    // sidebar dot (updateSeen resolves federated access the same way reads
+    // do, and invalidates B's metadata for this user).
+    res = await ctx.authedFetch(MEMBER_B)(
+      `${ctx.baseUrl}/xrpc/space.roomy.room.updateSeen`,
+      {
+        method: "POST",
+        body: JSON.stringify({ roomId: CHANNEL }),
+      },
+    );
+    expect(res.status).toBe(200);
+
+    res = await ctx.authedFetch(MEMBER_B)(
+      `${ctx.baseUrl}/xrpc/space.roomy.space.getMetadata?spaceId=${B}`,
+    );
+    expect(res.status).toBe(200);
+    body = await res.json();
+    fedAfterMsg = (body.sidebar.orphans ?? []).find(
+      (ch: { id: string }) => ch.id === CHANNEL,
+    );
+    expect(fedAfterMsg?.unreadCount).toBe(0);
   });
 
   test("a federated channel placed in a category by reorder stays there", async () => {
@@ -308,6 +348,80 @@ describe("channel federation — full HTTP E2E chain", () => {
       `${ctx.baseUrl}/xrpc/space.roomy.room.getMetadata?roomId=${CHANNEL}`,
     );
     expect(res.status).toBe(403);
+  });
+
+  test("a members-wide receiver grant grants every B member", async () => {
+    // Request → approve → origin grant (readwrite ceiling).
+    await send(ADMIN_B, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.request.v0",
+      federatingSpaceDid: B,
+    });
+    await send(ADMIN_A, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.respond.v0",
+      federatingSpaceDid: B,
+      approve: true,
+    });
+    await send(ADMIN_A, A, {
+      id: newUlid(),
+      $type: "space.roomy.federation.setRoomPermission.v0",
+      federatingSpaceDid: B,
+      roomId: CHANNEL,
+      permission: "readwrite",
+    });
+
+    // ADMIN_B grants readwrite to ALL of B's members via a single
+    // kind='members' grant (grantee = B's space DID).
+    let res = await send(ADMIN_B, B, {
+      id: newUlid(),
+      $type: "space.roomy.federation.setReceiverPermission.v0",
+      originSpaceId: A,
+      roomId: CHANNEL,
+      grantee: B,
+      kind: "members",
+      permission: "readwrite",
+    });
+    expect(res.status).toBe(200);
+
+    // MEMBER_B and MEMBER_C (neither individually granted) both get access.
+    for (const member of [MEMBER_B, MEMBER_C]) {
+      res = await ctx.authedFetch(member)(
+        `${ctx.baseUrl}/xrpc/space.roomy.room.getMetadata?roomId=${CHANNEL}`,
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.canRead).toBe(true);
+      expect(body.canWrite).toBe(true);
+    }
+
+    // A member can WRITE through the members grant (on A's stream).
+    res = await send(MEMBER_C, A, {
+      id: newUlid(),
+      $type: "space.roomy.message.createMessage.v0",
+      room: CHANNEL,
+      body: {
+        mimeType: "text/plain",
+        data: { $bytes: base64("hello via members grant") },
+      },
+      extensions: {},
+    });
+    expect(res.status).toBe(200);
+
+    // The grant shows up in B's grant view with kind='members'.
+    res = await ctx.authedFetch(ADMIN_B)(
+      `${ctx.baseUrl}/xrpc/space.roomy.federation.getGrants?spaceId=${B}`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.receiverGrants).toContainEqual({
+      originSpaceId: A,
+      originSpaceName: "Test Space",
+      roomId: CHANNEL,
+      grantee: B,
+      kind: "members",
+      permission: "readwrite",
+    });
   });
 
   test("A-side revoke drops the channel from B's grant view", async () => {

@@ -1,0 +1,176 @@
+{
+  "lexicon": 1,
+  "id": "space.roomy.search.rooms",
+  "defs": {
+    "latestMembers": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "nullable": [
+        "avatar",
+        "name"
+      ],
+      "properties": {
+        "did": {
+          "type": "string"
+        },
+        "avatar": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "author": {
+      "type": "object",
+      "required": [
+        "did"
+      ],
+      "nullable": [
+        "avatar",
+        "name"
+      ],
+      "properties": {
+        "did": {
+          "type": "string"
+        },
+        "avatar": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "latestMessage": {
+      "type": "object",
+      "required": [
+        "author",
+        "content",
+        "id"
+      ],
+      "properties": {
+        "author": {
+          "type": "ref",
+          "ref": "#author"
+        },
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "required": [
+        "latestMembers"
+      ],
+      "properties": {
+        "latestMembers": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#latestMembers"
+          }
+        },
+        "latestMessage": {
+          "type": "ref",
+          "ref": "#latestMessage"
+        },
+        "latestTimestamp": {
+          "type": "string"
+        }
+      }
+    },
+    "rooms": {
+      "type": "object",
+      "required": [
+        "activity",
+        "canWrite",
+        "id",
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "activity": {
+          "type": "ref",
+          "ref": "#activity"
+        },
+        "canWrite": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "knownValues": [
+            "channel",
+            "thread"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "channelId": {
+          "type": "string"
+        },
+        "channelName": {
+          "type": "string"
+        },
+        "unread": {
+          "type": "boolean"
+        },
+        "unreadCount": {
+          "type": "integer"
+        }
+      }
+    },
+    "main": {
+      "type": "query",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "q",
+          "spaceId"
+        ],
+        "properties": {
+          "q": {
+            "type": "string"
+          },
+          "spaceId": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "rooms"
+          ],
+          "properties": {
+            "rooms": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#rooms"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

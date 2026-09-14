@@ -10,8 +10,9 @@ import {
 } from "@roomy-space/sdk";
 import type { BridgeRepository } from "../db/repository.ts";
 import type { DiscordMessageData } from "../discord/data.ts";
-import { MsgType } from "../discord/data.ts";
+import { MESSAGE_FLAG_HAS_SNAPSHOT, MsgType } from "../discord/data.ts";
 import { createLogger } from "../logger.ts";
+import { getCapacityGate } from "../roomy/capacity.ts";
 import type { RoomyGateway } from "../roomy/gateway.ts";
 import {
 	type MentionContext,
@@ -140,11 +141,16 @@ export async function ingestDiscordMessage(
 		return handleThreadStarterMessage(message, repo, roomy);
 	}
 
-	// Forwarded message (type 26): forward the original message into the
-	// target channel's Roomy room. Forwards carry empty content and reference
-	// the original message via messageReference — they must not be treated as
-	// ordinary (empty) messages or as replies.
-	if (message.type === MsgType.MessageForward) {
+	// Forwarded message: forward the original message into the target
+	// channel's Roomy room. Discord has no dedicated forward message type —
+	// a forward is an ordinary DEFAULT message (type 0) carrying the
+	// HAS_SNAPSHOT flag (1 << 14) and a `messageSnapshots` array, with
+	// `messageReference` pointing at the original. Forwards must not be
+	// treated as ordinary (empty) messages or as replies.
+	const isForward =
+		((message.flags ?? 0) & MESSAGE_FLAG_HAS_SNAPSHOT) !== 0 ||
+		(message.messageSnapshots?.length ?? 0) > 0;
+	if (isForward) {
 		writeSkipRecord("forward", message);
 		return handleForwardMessage(message, repo, roomy);
 	}
@@ -194,6 +200,17 @@ export async function ingestDiscordMessage(
 			continue;
 		}
 
+		// Capacity enforcement: halt sync for this space while the bridged
+		// guild is over the space's member capacity.
+		if (!(await getCapacityGate().isEnabled(guildId, spaceDid))) {
+			log.warn(
+				`capacity: sync halted for ${spaceDid} (guild ${guildId}); skipping message ${messageId}`,
+				{ guildId, spaceDid, messageId },
+			);
+			writeSkipRecord("capacity_over_limit", message, spaceDid);
+			continue;
+		}
+
 		// Resolve the Roomy room for this channel or thread
 		const roomyRoomId = repo.getRoomyRoomId(spaceDid, channelId);
 		if (!roomyRoomId) {
@@ -212,7 +229,7 @@ export async function ingestDiscordMessage(
 		const attachments = buildAttachments(message, repo, spaceDid);
 
 		// Sync author profile before sending the message.
-		await syncUserProfile(message.author, [spaceDid], repo, roomy);
+		await syncUserProfile(message.author, [spaceDid], repo, roomy, guildId);
 
 		// Skip messages with no content and no attachments
 		if (!message.content && attachments.length === 0) {
@@ -429,6 +446,17 @@ async function handleThreadStarterMessage(
 			continue;
 		}
 
+		// Capacity enforcement: halt sync for this space while the bridged
+		// guild is over the space's member capacity.
+		if (!(await getCapacityGate().isEnabled(guildId, spaceDid))) {
+			log.warn(
+				`capacity: sync halted for ${spaceDid} (guild ${guildId}); skipping thread starter ${messageId}`,
+				{ guildId, spaceDid, messageId },
+			);
+			writeSkipRecord("capacity_over_limit", message, spaceDid);
+			continue;
+		}
+
 		const threadRoomyId = repo.getRoomyId(spaceDid, "thread", threadId);
 		if (!threadRoomyId) {
 			log.debug(
@@ -506,13 +534,15 @@ async function handleThreadStarterMessage(
 }
 
 /**
- * Handle a Discord forwarded message (type 26): forward the original message
- * into the target channel's Roomy room.
+ * Handle a Discord forwarded message: forward the original message into the
+ * target channel's Roomy room.
  *
- * Discord represents a forward as a message with empty content whose
- * `messageReference` points at the original message (in the source channel).
- * `message.channelId` is the channel the user forwarded into. We mirror this
- * to Roomy with a `forwardMessages.v0` event targeting the destination room.
+ * Discord represents a forward as an ordinary DEFAULT message (type 0)
+ * carrying the HAS_SNAPSHOT flag (1 << 14) and a `messageSnapshots` array,
+ * whose `messageReference` points at the original message (in the source
+ * channel). `message.channelId` is the channel the user forwarded into. We
+ * mirror this to Roomy with a `forwardMessages.v0` event targeting the
+ * destination room.
  */
 async function handleForwardMessage(
 	message: DiscordMessageData,
@@ -555,6 +585,17 @@ async function handleForwardMessage(
 		if (existing) {
 			log.debug(`Skipping forward ${messageId}: already synced to ${spaceDid}`);
 			writeSkipRecord("forward_already_synced", message, spaceDid);
+			continue;
+		}
+
+		// Capacity enforcement: halt sync for this space while the bridged
+		// guild is over the space's member capacity.
+		if (!(await getCapacityGate().isEnabled(guildId, spaceDid))) {
+			log.warn(
+				`capacity: sync halted for ${spaceDid} (guild ${guildId}); skipping forward ${messageId}`,
+				{ guildId, spaceDid, messageId },
+			);
+			writeSkipRecord("capacity_over_limit", message, spaceDid);
 			continue;
 		}
 

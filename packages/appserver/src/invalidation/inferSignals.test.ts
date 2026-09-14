@@ -19,8 +19,10 @@ import type { MessageDto } from "../queries/selectMessages.ts";
 import type {
   AppliedEvent,
   InvalidationEvent,
+  MessageDiffOp,
   QueryInvalidation,
   QueryNsid,
+  RoomMetadataDiff,
 } from "./types.ts";
 import type { DbLike } from "../db/types.ts";
 
@@ -68,6 +70,11 @@ function findRoomMetadataDiff(signals: InvalidationEvent[]) {
 
 function findMentionDiffs(signals: InvalidationEvent[]) {
   return signals.filter((s) => s.kind === "mentionDiff");
+}
+
+/** Read the optional `kind` off a mention op (add/update variants only). */
+function kindOfOp(op: MessageDiffOp): "mention" | "reply" | undefined {
+  return "kind" in op ? op.kind : undefined;
 }
 /**
  * Materialize a message into a fresh in-memory DB and return a DbLike
@@ -204,6 +211,7 @@ describe("inferSignals: message events", () => {
     // (author's activeThreads). The getSpaces broadcast is gone — the
     // roomMetadataDiff handles the unread-count patch instead.
     const nsids = invalidatedNsids(signals);
+    expect(nsids).toContain("space.roomy.space.getThreads");
     expect(nsids).toContain("space.roomy.room.getMetadata");
     expect(nsids).toContain("space.roomy.room.getThreads");
     expect(nsids).toContain("space.roomy.space.getMetadata");
@@ -337,6 +345,95 @@ describe("inferSignals: message events", () => {
     );
     expect(signals).toHaveLength(0);
   });
+
+  it("createMessage in a federated room invalidates the receiving spaces", async () => {
+    const { asyncDb } = seedMessageDb({
+      id: EVENT_ID,
+      roomId: ROOM_ID,
+      authorDid: USER_DID,
+      authorName: "Alice",
+      content: "hello",
+    });
+    // Seed a read_positions row so the unread bump has a user to report.
+    await asyncDb.run(
+      "insert into readstate.read_positions (user_did, room_id, seen_up_to, unread_count) values (?, ?, ?, ?)",
+      [USER_DID, ROOM_ID, "0", 1],
+    );
+
+    // A federation: ROOM_ID (stream A = STREAM_DID) is granted to B and C.
+    const globalDb = new Database(":memory:");
+    globalDb.exec(
+      `create table if not exists space_federations (
+         space_id text not null,
+         federating_space_did text not null,
+         status text not null,
+         primary key (space_id, federating_space_did)
+       ) strict;`,
+    );
+    globalDb.exec(
+      `create table if not exists federation_room_permissions (
+         space_id text not null,
+         federating_space_did text not null,
+         room_id text not null,
+         permission text not null,
+         primary key (space_id, federating_space_did, room_id)
+       ) strict;`,
+    );
+    for (const home of ["did:web:space-b.example", "did:web:space-c.example"]) {
+      globalDb.run(
+        "insert into space_federations (space_id, federating_space_did, status) values (?, ?, 'active')",
+        [STREAM_DID, home],
+      );
+      globalDb.run(
+        "insert into federation_room_permissions (space_id, federating_space_did, room_id, permission) values (?, ?, ?, 'readwrite')",
+        [STREAM_DID, home, ROOM_ID],
+      );
+    }
+    // The handler reads messages + read state from the space DB and the
+    // federation registry from the global DB; the same object exposes both.
+    const db: DbLike = Object.assign(toAsyncDb(globalDb), {
+      global: () => toAsyncDb(globalDb),
+      ...asyncDb,
+    });
+
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.message.createMessage.v0",
+        roomId: ROOM_ID,
+        details: { content: "hello", authorName: "Alice" },
+      }),
+      db,
+    );
+
+    // One fed roomMetadataDiff per receiving space, plus the metadata +
+    // getSpaces invalidations for each.
+    const fedDiffs = signals.filter(
+      (s): s is { kind: "roomMetadataDiff"; signal: RoomMetadataDiff } =>
+        s.kind === "roomMetadataDiff" && s.signal.spaceId !== STREAM_DID,
+    );
+    expect(fedDiffs).toHaveLength(2);
+    const fedHomes = fedDiffs
+      .map((s) => s.signal.spaceId)
+      .sort();
+    expect(fedHomes).toEqual([
+      "did:web:space-b.example" as StreamDid,
+      "did:web:space-c.example" as StreamDid,
+    ]);
+    for (const diff of fedDiffs) {
+      expect(diff.signal.roomId).toBe(ROOM_ID);
+      expect(diff.signal.delta).toBe(1);
+      expect(diff.signal.users).toContain(USER_DID);
+    }
+
+    // Receiving-space metadata invalidations for every fed home.
+    const metaInvalidations = signals.filter(
+      (s) =>
+        s.kind === "queryInvalidation" &&
+        s.signal.nsid === "space.roomy.space.getMetadata" &&
+        s.signal.params["spaceId"] !== STREAM_DID,
+    );
+    expect(metaInvalidations).toHaveLength(2);
+  });
   it("editMessage produces a messageDiff update keyed by messageId, not the edit event id", async () => {
     const MESSAGE_ID = "01HXSXKBQ4TESTMSG00000000A" as Ulid;
     const EDIT_EVENT_ID = "01HXSXKBQ4TESTEDIT0000000B" as Ulid;
@@ -383,7 +480,9 @@ describe("inferSignals: message events", () => {
 
     const nsids = invalidatedNsids(signals);
     expect(nsids).toContain("space.roomy.room.getMetadata");
-    // editMessage should NOT invalidate space-level queries (no unread change).
+    // An edit can change the latest-message preview on the space index board.
+    expect(nsids).toContain("space.roomy.space.getThreads");
+    // editMessage should NOT invalidate space metadata (no unread change).
     expect(nsids).not.toContain("space.roomy.space.getMetadata");
   });
 
@@ -408,10 +507,11 @@ describe("inferSignals: message events", () => {
       expect(diff!.signal.ops[0]).toEqual({ op: "remove", key: MESSAGE_ID });
       expect(diff!.signal.ops[0]!.key).not.toBe(DELETE_EVENT_ID);
     }
-
     const nsids = invalidatedNsids(signals);
     expect(nsids).toContain("space.roomy.room.getMetadata");
     expect(nsids).toContain("space.roomy.space.getMetadata");
+    // Deleting a room's latest message can reorder/drop it on the index board.
+    expect(nsids).toContain("space.roomy.space.getThreads");
   });
 });
 
@@ -421,7 +521,7 @@ describe("inferSignals: message events", () => {
 describe("inferSignals: mentions", () => {
   const MENTIONED = "did:plc:bob" as UserDid;
 
-  it("createMessage emits a mentionDiff per mentioned DID (excluding the author)", async () => {
+  it("createMessage emits a mentionDiff per mentioned DID, self-mentions included, with kind='mention'", async () => {
     const { asyncDb } = seedMessageDb({
       id: EVENT_ID,
       roomId: ROOM_ID,
@@ -433,20 +533,26 @@ describe("inferSignals: mentions", () => {
       makeEvent({
         type: "space.roomy.message.createMessage.v0",
         roomId: ROOM_ID,
-        details: { mentions: [MENTIONED, USER_DID] }, // self-mention excluded
+        details: { mentions: [MENTIONED, USER_DID] }, // self-mention flows through
       }),
       asyncDb,
     );
     const mentionDiffs = findMentionDiffs(signals);
-    expect(mentionDiffs).toHaveLength(1);
-    const md = mentionDiffs[0]!;
-    if (md.kind === "mentionDiff") {
-      expect(md.signal.did).toBe(MENTIONED);
+    const dids = mentionDiffs
+      .map((md) => (md.kind === "mentionDiff" ? md.signal.did : undefined))
+      .sort();
+    expect(dids).toEqual([MENTIONED, USER_DID].sort());
+    const md = mentionDiffs.find(
+      (s) => s.kind === "mentionDiff" && s.signal.did === MENTIONED,
+    );
+    if (md?.kind === "mentionDiff") {
       expect(md.signal.spaceId).toBe(STREAM_DID);
       expect(md.signal.roomId).toBe(ROOM_ID);
       expect(md.signal.ops).toHaveLength(1);
       expect(md.signal.ops[0]!.op).toBe("add");
       expect(md.signal.ops[0]!.key).toBe(EVENT_ID);
+      // The op payload exposes the mention kind so live frames show it.
+      expect(kindOfOp(md.signal.ops[0]!)).toBe("mention");
     }
   });
 
@@ -492,6 +598,171 @@ describe("inferSignals: mentions", () => {
       expect(md.signal.did).toBe(MENTIONED);
       expect(md.signal.ops[0]!.op).toBe("update");
       expect(md.signal.ops[0]!.key).toBe(EVENT_ID);
+      expect(kindOfOp(md.signal.ops[0]!)).toBe("mention");
+    }
+  });
+
+  it("createMessage emits a kind='reply' mentionDiff for the replied-to author (depth-1)", async () => {
+    const TARGET = "01HXSXKBQ4TESTTARGET0000001" as Ulid;
+    const { db, asyncDb } = seedMessageDb({
+      id: EVENT_ID,
+      roomId: ROOM_ID,
+      authorDid: USER_DID,
+      authorName: "Alice",
+      content: "replying @bob",
+    });
+    // Seed the replied-to message (by MENTIONED) and a `reply` edge from the
+    // new message — mirroring what applyBatch materialises before the router
+    // calls inferSignals.
+    db.run("insert into entities (id, stream_id, room, sort_idx) values (?, ?, ?, ?)", [
+      TARGET, STREAM_DID, ROOM_ID, TARGET,
+    ]);
+    // The replied-to message's author is MENTIONED — edges.tail references
+    // entities(id), so the author entity must exist first.
+    db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [
+      MENTIONED, MENTIONED,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'author')", [
+      TARGET, MENTIONED,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'reply')", [
+      EVENT_ID, TARGET,
+    ]);
+
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.message.createMessage.v0",
+        roomId: ROOM_ID,
+        details: { mentions: [] },
+      }),
+      asyncDb,
+    );
+    const mentionDiffs = findMentionDiffs(signals);
+    expect(mentionDiffs).toHaveLength(1);
+    const md = mentionDiffs[0]!;
+    if (md.kind === "mentionDiff") {
+      expect(md.signal.did).toBe(MENTIONED);
+      expect(md.signal.ops).toHaveLength(1);
+      expect(md.signal.ops[0]!.op).toBe("add");
+      expect(kindOfOp(md.signal.ops[0]!)).toBe("reply");
+    }
+  });
+
+  it("reply to one's own message emits no reply diff", async () => {
+    const TARGET = "01HXSXKBQ4TESTTARGET0000001" as Ulid;
+    const { db, asyncDb } = seedMessageDb({
+      id: EVENT_ID,
+      roomId: ROOM_ID,
+      authorDid: USER_DID,
+      authorName: "Alice",
+      content: "replying to self",
+    });
+    // Replied-to message authored by the reply's own author (USER_DID).
+    db.run("insert into entities (id, stream_id, room, sort_idx) values (?, ?, ?, ?)", [
+      TARGET, STREAM_DID, ROOM_ID, TARGET,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'author')", [
+      TARGET, USER_DID,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'reply')", [
+      EVENT_ID, TARGET,
+    ]);
+
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.message.createMessage.v0",
+        roomId: ROOM_ID,
+        details: { mentions: [] },
+      }),
+      asyncDb,
+    );
+    expect(findMentionDiffs(signals)).toHaveLength(0);
+  });
+
+  it("replied-to author also mentioned gets a single kind='reply' op", async () => {
+    const TARGET = "01HXSXKBQ4TESTTARGET0000001" as Ulid;
+    const { db, asyncDb } = seedMessageDb({
+      id: EVENT_ID,
+      roomId: ROOM_ID,
+      authorDid: USER_DID,
+      authorName: "Alice",
+      content: "replying @bob",
+    });
+    db.run("insert into entities (id, stream_id, room, sort_idx) values (?, ?, ?, ?)", [
+      TARGET, STREAM_DID, ROOM_ID, TARGET,
+    ]);
+    // The replied-to message's author is MENTIONED — edges.tail references
+    // entities(id), so the author entity must exist first.
+    db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [
+      MENTIONED, MENTIONED,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'author')", [
+      TARGET, MENTIONED,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'reply')", [
+      EVENT_ID, TARGET,
+    ]);
+
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.message.createMessage.v0",
+        roomId: ROOM_ID,
+        details: { mentions: [MENTIONED] }, // mentioned AND replied-to
+      }),
+      asyncDb,
+    );
+    // Exactly one op for MENTIONED, kind='reply' (overlap upgrade mirrors the
+    // mentions-index row upgrade — no duplicate mention op).
+    const mentionDiffs = findMentionDiffs(signals);
+    expect(mentionDiffs).toHaveLength(1);
+    const md = mentionDiffs[0]!;
+    if (md.kind === "mentionDiff") {
+      expect(md.signal.did).toBe(MENTIONED);
+      expect(md.signal.ops).toHaveLength(1);
+      expect(kindOfOp(md.signal.ops[0]!)).toBe("reply");
+    }
+  });
+
+  it("editMessage emits a kind='reply' update op for the replied-to author", async () => {
+    const TARGET = "01HXSXKBQ4TESTTARGET0000001" as Ulid;
+    const { db, asyncDb } = seedMessageDb({
+      id: EVENT_ID,
+      roomId: ROOM_ID,
+      authorDid: USER_DID,
+      authorName: "Alice",
+      content: "edited",
+    });
+    db.run("insert into entities (id, stream_id, room, sort_idx) values (?, ?, ?, ?)", [
+      TARGET, STREAM_DID, ROOM_ID, TARGET,
+    ]);
+    // The replied-to message's author is MENTIONED — edges.tail references
+    // entities(id), so the author entity must exist first.
+    db.run("insert or ignore into entities (id, stream_id) values (?, ?)", [
+      MENTIONED, MENTIONED,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'author')", [
+      TARGET, MENTIONED,
+    ]);
+    db.run("insert into edges (head, tail, label) values (?, ?, 'reply')", [
+      EVENT_ID, TARGET,
+    ]);
+
+    const signals = await inferSignals(
+      makeEvent({
+        type: "space.roomy.message.editMessage.v0",
+        roomId: ROOM_ID,
+        details: { messageId: EVENT_ID, mentions: [] },
+      }),
+      asyncDb,
+    );
+    const mentionDiffs = findMentionDiffs(signals);
+    expect(mentionDiffs).toHaveLength(1);
+    const md = mentionDiffs[0]!;
+    if (md.kind === "mentionDiff") {
+      expect(md.signal.did).toBe(MENTIONED);
+      expect(md.signal.ops[0]!.op).toBe("update");
+      expect(md.signal.ops[0]!.key).toBe(EVENT_ID);
+      expect(kindOfOp(md.signal.ops[0]!)).toBe("reply");
     }
   });
 

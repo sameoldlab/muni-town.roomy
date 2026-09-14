@@ -2,12 +2,10 @@ packages:
   - packages/app-lite
   - packages/appserver
   - packages/docs
-  - packages/appserver-admin
   - packages/design
   - packages/sdk
   - packages/discord-bridge
   - packages/cli
-  - packages/omp-bridge
   - packages/tsconfig
 
 onlyBuiltDependencies:

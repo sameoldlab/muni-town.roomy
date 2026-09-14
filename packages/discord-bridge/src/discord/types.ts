@@ -27,10 +27,16 @@ export const desiredProperties = createDesiredPropertiesObject({
 		mentions: true,
 		mentionedChannelIds: true,
 		mentionedRoleIds: true,
+		messageSnapshots: true,
+	},
+	messageSnapshot: {
+		message: true,
 	},
 	guild: {
 		id: true,
 		channels: true,
+		ownerId: true,
+		approximateMemberCount: true,
 	},
 	channel: {
 		id: true,

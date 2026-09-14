@@ -7,6 +7,7 @@ import SuggestionSelect from "@roomy/design/components/helper/SuggestionSelect.s
 import UserMentionList from "./UserMentionList.svelte";
 import type { TypeaheadUser } from "@roomy/design/components/ui/user-typeahead/UserTypeahead.svelte";
 import { Extension, mergeAttributes } from "@tiptap/core";
+import type { MarkdownNodeSpec } from "tiptap-markdown";
 import type {
   SuggestionKeyDownProps,
   SuggestionProps,
@@ -149,6 +150,11 @@ function suggestion({
 type UserMentionProps = { search: (query: string) => Promise<TypeaheadUser[]> };
 const UserMentionExtension = Mention.extend({
   name: "userMention",
+  // Must outrank the composer's send-on-Enter keymap (priority 1000) so the
+  // suggestion popup sees Enter first and confirms the selection instead of
+  // sending the message. ProseMirror checks handleKeyDown in plugin order
+  // (extension priority, descending) and stops at the first truthy handler.
+  priority: 1001,
   // Used by `generateHTML`
   renderHTML({ HTMLAttributes, node }) {
     return [
@@ -162,6 +168,18 @@ const UserMentionExtension = Mention.extend({
       ),
       `@${node.attrs.label}`,
     ];
+  },
+  // Used by tiptap-markdown's `getMarkdown()` (the legacy text/markdown body).
+  // Emit clean `@label` instead of the renderHTML anchor so the wire body
+  // carries no raw HTML — the Discord bridge forwards it verbatim.
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node) {
+          state.write(`@${node.attrs.label}`);
+        },
+      },
+    } satisfies { markdown: MarkdownNodeSpec };
   },
 });
 
@@ -280,6 +298,11 @@ export const initUserMention = ({ search }: UserMentionProps) =>
 type SpaceContextMentionProps = { context: Item[] };
 const SpaceContextMentionExtension = Mention.extend({
   name: "channelThreadMention",
+  // Must outrank the composer's send-on-Enter keymap (priority 1000) so the
+  // suggestion popup sees Enter first and confirms the selection instead of
+  // sending the message. ProseMirror checks handleKeyDown in plugin order
+  // (extension priority, descending) and stops at the first truthy handler.
+  priority: 1001,
   // Used by `generateHTML`
   renderHTML({ HTMLAttributes, node }) {
     const { id, space, type } = JSON.parse(node.attrs.id);
@@ -294,6 +317,18 @@ const SpaceContextMentionExtension = Mention.extend({
       ),
       node.attrs.label,
     ];
+  },
+  // Used by tiptap-markdown's `getMarkdown()` (the legacy text/markdown body).
+  // Emit clean `#label` instead of the renderHTML anchor so channel/thread
+  // mentions don't leak raw HTML into bridged messages.
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node) {
+          state.write(`#${node.attrs.label}`);
+        },
+      },
+    } satisfies { markdown: MarkdownNodeSpec };
   },
 });
 export const initSpaceContextMention = ({

@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { encode } from "@atcute/cbor";
 import { StreamDid, UserDid } from "@roomy-space/sdk";
 import { closeDb, openDb, openReadStateDb } from "./db.ts";
+import { toAsyncDb } from "./syncAdapter.ts";
 import type { DbLike } from "./types.ts";
 import {
+  backfillUserThreadActivitySpaceDid,
   recoverUserSpaceMembership,
   reduceMembershipEvents,
   runPendingReadStateMigrationsWithRetry,
 } from "./userSpaceMembershipMigration.ts";
+import {
+  READSTATE_MIGRATIONS,
+  readStateMigrationEntry,
+} from "./readStateVersions.ts";
 
 const USER = UserDid.assert("did:plc:test-user");
 const SPACE = StreamDid.assert("did:web:space.example");
@@ -168,5 +175,102 @@ describe("runPendingReadStateMigrationsWithRetry", () => {
       .query("select completed_at from readstate_schema_migrations where version = '6'")
       .get<{ completed_at: number | null }>();
     expect(row?.completed_at).not.toBeNull();
+  });
+
+  test("stamps structural-only versions and refuses unknown ones", async () => {
+    // A `kind: "structural"` version has no async task: the worker created its
+    // tables via the schema exec, and boot must simply stamp the marker rather
+    // than look for a task. v8, v9 and v10 regressed this at the type level
+    // before the manifest existed; that direction is now a compile error, so
+    // this asserts the runtime behaviour the manifest drives.
+    //
+    // Use a real in-process sqlite DB (via toAsyncDb) so the runner sees
+    // concrete pending rows without the worker-pool lifecycle that makes a
+    // :memory: pool's readstate handle transient.
+    const raw = new Database(":memory:");
+    raw.exec(`create table readstate_schema_migrations (
+      version text primary key,
+      completed_at integer
+    ) strict`);
+    const structural = Object.keys(READSTATE_MIGRATIONS).filter(
+      (v) => readStateMigrationEntry(v)?.kind === "structural",
+    );
+    // Sanity: the manifest really does contain structural versions to cover.
+    expect(structural.length).toBeGreaterThan(0);
+    for (const version of structural) {
+      raw.query(
+        "insert or ignore into readstate_schema_migrations (version, completed_at) values (?, null)",
+      ).run(version);
+    }
+    const readStateDb = toAsyncDb(raw);
+    // The runner reads pending migrations from db.readState() (or db itself).
+    const fakeDb = { readState: () => readStateDb } as unknown as DbLike;
+
+    await expect(runPendingReadStateMigrationsWithRetry(fakeDb, { attempts: 2, delayMs: 1 }))
+      .resolves.toBeUndefined();
+
+    for (const version of structural) {
+      const row = await readStateDb
+        .query("select completed_at from readstate_schema_migrations where version = ?")
+        .get<{ completed_at: number | null }>(version);
+      expect(row?.completed_at).not.toBeNull();
+    }
+
+    // A marker row for a version the manifest does not know must still fail
+    // fast — the manifest is the source of truth, not the DB.
+    raw.query(
+      "insert or ignore into readstate_schema_migrations (version, completed_at) values ('999', null)",
+    ).run();
+    await expect(runPendingReadStateMigrationsWithRetry(fakeDb, { attempts: 1, delayMs: 1 }))
+      .rejects.toThrow(/Unknown read-state schema version v999/);
+    raw.close();
+  });
+});
+
+describe("backfillUserThreadActivitySpaceDid", () => {
+  test("backfills space_did from the global entity_space index", async () => {
+    const readState = openReadStateDb();
+    const global = db.global!();
+
+    // Two threads the user engaged with, both missing space_did (legacy rows).
+    const t1 = "01THREAD10000000000000000000";
+    const t2 = "01THREAD20000000000000000000";
+    for (const t of [t1, t2]) {
+      await readState.run(
+        "insert into user_thread_activity (user_did, thread_id, space_did, last_active_at) values (?, ?, '', ?)",
+        [USER, t, Date.now()],
+      );
+    }
+
+    // entity_space maps t1 → SPACE, t2 → SPACE2.
+    await global.run("insert into entity_space (entity_id, space_did) values (?, ?)", [t1, SPACE]);
+    await global.run("insert into entity_space (entity_id, space_did) values (?, ?)", [t2, SPACE2]);
+
+    await backfillUserThreadActivitySpaceDid(db);
+
+    const rows = await readState
+      .query("select thread_id, space_did from user_thread_activity order by thread_id")
+      .all<{ thread_id: string; space_did: string }>();
+    expect(rows).toEqual([
+      { thread_id: t1, space_did: SPACE },
+      { thread_id: t2, space_did: SPACE2 },
+    ]);
+  });
+
+  test("leaves unresolvable rows as ''", async () => {
+    const readState = openReadStateDb();
+    const t = "01THREAD30000000000000000000";
+    await readState.run(
+      "insert into user_thread_activity (user_did, thread_id, space_did, last_active_at) values (?, ?, '', ?)",
+      [USER, t, Date.now()],
+    );
+    // No entity_space entry for t.
+
+    await backfillUserThreadActivitySpaceDid(db);
+
+    const row = await readState
+      .query("select space_did from user_thread_activity where thread_id = ?")
+      .get<{ space_did: string }>(t);
+    expect(row?.space_did).toBe("");
   });
 });

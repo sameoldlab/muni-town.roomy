@@ -25,6 +25,14 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "nod
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkerRequest, WorkerResponse } from "./types.ts";
+import {
+  READSTATE_MIGRATIONS,
+  readStateMigrationEntry,
+} from "./readStateVersions.ts";
+import {
+  GLOBAL_MIGRATIONS,
+  globalMigrationEntry,
+} from "./globalVersions.ts";
 import { dbPath, spacesDir as resolveSpacesDir } from "./paths.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -71,11 +79,18 @@ let globalSchemaVersion: string | null = null;
 /** Max concurrently-open space DBs before LRU eviction. */
 let maxSpaceDbs = 100;
 /**
- * Worker role (Phase 4). "space" workers only open per-space DBs; "system"
- * workers own the global/read-state/event-log DBs. Defaults to "system" for
- * backward compatibility with the single-worker path.
+ * Worker role. "space" workers only open per-space DBs; "global", "readstate"
+ * and "events" workers each own exactly one of the shared DBs; "system" is the
+ * legacy combined role that owns the global/read-state/event-log DBs on one
+ * thread (used by isolated pools and kept for backward compat). Defaults to
+ * "system" for the single-worker path.
  */
-let role: "space" | "system" = "system";
+let role:
+  | "space"
+  | "system"
+  | "global"
+  | "readstate"
+  | "events" = "system";
 
 // ─── Schema paths ─────────────────────────────────────────────────────────
 
@@ -143,6 +158,48 @@ function initializeVersionedSchema(
 }
 
 /**
+ * The global version list lives in globalVersions.ts (shared with the
+ * main-thread migration runner, which types its task map against it). Sorted
+ * numerically so upgrade order never depends on object-key ordering rules.
+ */
+const GLOBAL_VERSION_KEYS = Object.keys(GLOBAL_MIGRATIONS).sort(
+  (a, b) => Number(a) - Number(b),
+);
+
+/**
+ * Schedule the async data migration for a single global version (if it has
+ * one). The boot runner executes the registered task and stamps completion;
+ * structural versions are not scheduled — the schema exec created their tables.
+ */
+function scheduleGlobalMigration(db: Database, version: string): void {
+  if (globalMigrationEntry(version)?.kind === "data") {
+    db.query(
+      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
+    ).run(version);
+  }
+}
+
+/**
+ * Apply every version in `(fromExclusive, toInclusive]` in order: its
+ * structural `up` (if any), then its async data marker (if it is a data
+ * version). Traversing the whole range means a DB that jumps several versions
+ * in one deploy still runs every skipped data migration, instead of only the
+ * newest one.
+ */
+function applyGlobalUpgrades(
+  db: Database,
+  fromExclusive: number,
+  toInclusive: number,
+): void {
+  for (const version of GLOBAL_VERSION_KEYS) {
+    const num = parseInt(version, 10);
+    if (num <= fromExclusive || num > toInclusive) continue;
+    globalMigrationEntry(version)?.up?.(db);
+    scheduleGlobalMigration(db, version);
+  }
+}
+
+/**
  * Global DB upgrades are additive. Apply the idempotent current schema and
  * advance an older numeric version in place so cross-space derived state
  * (especially membership edges) is never discarded by a table addition.
@@ -161,21 +218,21 @@ function initializeGlobalSchema(db: Database, expectedVersion: string): void {
 
   const schema = readFileSync(GLOBAL_SCHEMA_PATH, "utf-8");
   if (!row) {
+    // Fresh DB: the schema file already creates every table, so only the
+    // current version's own task (if it has one) needs scheduling.
     db.exec(schema);
     db.exec(
       `insert into global_schema_version (id, version) values (1, '${expectedVersion}')`,
     );
-    db.query(
-      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
-    ).run(expectedVersion);
+    scheduleGlobalMigration(db, expectedVersion);
     return;
   }
 
   if (row.version === expectedVersion) {
+    // Current version: re-apply the schema (heals a table added in this
+    // version) and ensure this version's task marker exists.
     db.exec(schema);
-    db.query(
-      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
-    ).run(expectedVersion);
+    scheduleGlobalMigration(db, expectedVersion);
     return;
   }
 
@@ -187,187 +244,17 @@ function initializeGlobalSchema(db: Database, expectedVersion: string): void {
 
   db.transaction(() => {
     db.exec(schema);
+    applyGlobalUpgrades(db, actual, expected);
     db.query("update global_schema_version set version = ? where id = 1").run(expectedVersion);
-    db.query(
-      "insert or ignore into global_schema_migrations (version, completed_at) values (?, null)",
-    ).run(expectedVersion);
   })();
 }
 
-interface Migration {
-  version: number;
-  up: (db: Database) => void;
-}
-
-const MIGRATIONS: Migration[] = [
-  {
-    version: 2,
-    up(db: Database) {
-      db.exec(`
-        create table if not exists user_thread_activity (
-          user_did      text not null,
-          thread_id     text not null,
-          last_active_at integer not null,
-          updated_at    integer not null default (unixepoch() * 1000),
-          primary key (user_did, thread_id)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_user_thread_activity_user
-          on user_thread_activity(user_did, last_active_at desc)
-      `);
-    },
-  },
-  {
-    version: 3,
-    up(db: Database) {
-      // Web push tables. The schema file (readStateSchema.sql) also
-      // declares these with `create table if not exists` so a fresh DB
-      // gets them at exec time; this migration exists so an existing v2
-      // readstate DB advances its version row to 3 (the schema exec alone
-      // would create the tables but leave the version stale).
-      db.exec(`
-        create table if not exists push_subscriptions (
-          user_did        text not null,
-          endpoint        text not null,
-          p256dh          text not null,
-          auth            text not null,
-          expiration_time integer,
-          created_at      integer not null default (unixepoch() * 1000),
-          updated_at      integer not null default (unixepoch() * 1000),
-          primary key (user_did, endpoint)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_push_subs_user
-          on push_subscriptions(user_did)
-      `);
-      db.exec(`
-        create table if not exists push_user_default (
-          user_did text primary key,
-          level    text not null check(level in ('silent','quiet','engaged','busy')) default 'engaged',
-          updated_at integer not null default (unixepoch() * 1000)
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists push_preferences (
-          user_did  text not null,
-          space_id  text not null,
-          level     text not null check(level in ('silent','quiet','engaged','busy')),
-          updated_at integer not null default (unixepoch() * 1000),
-          primary key (user_did, space_id)
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists user_room_participation (
-          user_did         text not null,
-          room_id          text not null,
-          last_message_at  integer not null,     -- epoch ms of the user's latest message in the room
-          updated_at       integer not null default (unixepoch() * 1000),
-          primary key (user_did, room_id)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_user_room_participation_user
-          on user_room_participation(user_did, last_message_at desc)
-      `);
-      db.exec(`
-        create table if not exists notification_state (
-          user_did            text not null,
-          room_id             text not null,
-          first_unseen_at     integer,           -- epoch ms of the first unseen message in this batch
-          first_unseen_msg_id text,              -- anchor message ULID
-          unseen_count        integer not null default 0,
-          notified            integer not null default 0 check(notified in (0,1)),
-          pushed_at           integer,
-          updated_at          integer not null default (unixepoch() * 1000),
-          primary key (user_did, room_id)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_notification_state_due
-          on notification_state(notified, first_unseen_at)
-      `);
-    },
-  },
-  {
-    version: 4,
-    up(db: Database) {
-      // Feature flags. The schema file (readStateSchema.sql) also declares
-      // these with `create table if not exists` so a fresh DB gets them at
-      // exec time; this migration exists so an existing v3 readstate DB
-      // advances its version row to 4.
-      db.exec(`
-        create table if not exists feature_flags (
-          key             text primary key,
-          global_enabled  integer not null default 0 check(global_enabled in (0, 1)),
-          updated_at      integer not null default (unixepoch() * 1000)
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists feature_flag_assignments (
-          flag_key   text not null,
-          user_did   text not null,
-          updated_at integer not null default (unixepoch() * 1000),
-          primary key (flag_key, user_did)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_ff_assignments_flag
-          on feature_flag_assignments(flag_key)
-      `);
-    },
-  },
-  {
-    version: 5,
-    up(db: Database) {
-      // Per-space split (§1f): read_positions gains a denormalized
-      // `space_did` column so unread sums can be scoped per space without
-      // joining entities (which moves to per-space DBs). Purely additive —
-      // no data loss.
-      const cols = db
-        .query<{ name: string }, []>(
-          "select name from pragma_table_info('read_positions')",
-        )
-        .all()
-        .map((r) => r.name);
-      if (!cols.includes("space_did")) {
-        db.exec(
-          "alter table read_positions add column space_did text not null default ''",
-        );
-      }
-    },
-  },
-  {
-    version: 6,
-    up(db: Database) {
-      db.exec(`
-        create table if not exists readstate_schema_migrations (
-          version text primary key,
-          completed_at integer
-        ) strict
-      `);
-      db.exec(`
-        create table if not exists user_space_membership (
-          user_did        text not null,
-          space_did       text not null,
-          state           text not null check(state in ('joined', 'left')),
-          source          text not null,
-          source_event_id text not null,
-          updated_at      integer not null default (unixepoch() * 1000),
-          primary key (user_did, space_did)
-        ) strict
-      `);
-      db.exec(`
-        create index if not exists idx_user_space_membership_user_state
-          on user_space_membership(user_did, state, updated_at desc)
-      `);
-      db.query(
-        "insert or ignore into readstate_schema_migrations (version, completed_at) values ('6', null)",
-      ).run();
-    },
-  },
-];
+// The read-state version list lives in readStateVersions.ts (shared with the
+// main-thread migration runner, which types its task map against it). Sorted
+// numerically so upgrade order never depends on object-key ordering rules.
+const READSTATE_VERSION_KEYS = Object.keys(READSTATE_MIGRATIONS).sort(
+  (a, b) => Number(a) - Number(b),
+);
 
 function initializeReadStateSchema(
   db: Database,
@@ -383,6 +270,14 @@ function initializeReadStateSchema(
     )
     .get();
   if (!row) {
+    // Fresh DB: the schema file creates user_thread_activity WITH space_did,
+    // but the per-space index is intentionally not in the schema file (see
+    // readStateSchema.sql) so it can't throw on pre-v7 DBs. Create it here for
+    // fresh DBs; the v7 migration creates it for existing DBs.
+    db.exec(`
+      create index if not exists idx_user_thread_activity_user_space
+        on user_thread_activity(user_did, space_did, last_active_at desc)
+    `);
     db.exec(
       `insert into readstate_schema_version (id, version) values (1, '${expectedVersion}')`,
     );
@@ -391,21 +286,30 @@ function initializeReadStateSchema(
 
   const currentVersion = parseInt(row.version, 10);
   const expectedNum = parseInt(expectedVersion, 10);
-
   if (currentVersion < expectedNum) {
     const upsertVersion = db.prepare(
       "update readstate_schema_version set version = ? where id = 1",
     );
-    for (const migration of MIGRATIONS) {
-      if (
-        migration.version > currentVersion &&
-        migration.version <= expectedNum
-      ) {
-        db.transaction(() => {
-          migration.up(db);
-          upsertVersion.run(String(migration.version));
-        })();
-      }
+    // `Object.keys` on a numeric-key object yields ascending integer order, so
+    // the manifest is already the ordered migration list.
+    for (const version of READSTATE_VERSION_KEYS) {
+      const num = parseInt(version, 10);
+      if (num <= currentVersion || num > expectedNum) continue;
+      const entry = readStateMigrationEntry(version);
+      db.transaction(() => {
+        // Structural DDL for this version (if any). The schema exec above has
+        // already created every `create table if not exists` in the schema
+        // file, so only genuine ALTERs carry an `up`.
+        entry?.up?.(db);
+        // Data versions schedule an async task for the boot runner; structural
+        // versions have no async work and simply advance the version row.
+        if (entry?.kind === "data") {
+          db.query(
+            "insert or ignore into readstate_schema_migrations (version, completed_at) values (?, null)",
+          ).run(version);
+        }
+        upsertVersion.run(version);
+      })();
     }
   }
 }
@@ -706,7 +610,9 @@ function dbForRequest(req: WorkerRequest): Database {
     if (!req.spaceDid) throw new Error("spaceDid required for space target");
     // Blue-green route: a "rebuild" target is the temp new-schema DB being
     // materialised; the default "canonical" target is the read-serving DB
-    // (which never wipes on schema mismatch).
+    // (which never wipes on schema mismatch). Space DBs are opened only on
+    // workers whose init set `spacesDir` (space / global / system); the
+    // readstate and events workers leave it unset and throw here.
     if (req.route === "rebuild") return openSpaceDbRebuild(req.spaceDid);
     return openSpaceDb(req.spaceDid);
   }
@@ -716,11 +622,26 @@ function dbForRequest(req: WorkerRequest): Database {
     );
   }
   if (req.targetDb === "global") {
+    if (role !== "global" && role !== "system") {
+      throw new Error(
+        `targetDb "global" not available on a ${role} worker`,
+      );
+    }
     return openGlobalDbInternal();
   }
   if (req.targetDb === "readstate") {
+    if (role !== "readstate" && role !== "system") {
+      throw new Error(
+        `targetDb "readstate" not available on a ${role} worker`,
+      );
+    }
     if (!readStateDb) throw new Error("Read-state DB not initialized (no init)");
     return readStateDb;
+  }
+  if (role !== "events" && role !== "system") {
+    throw new Error(
+      `targetDb "events" not available on a ${role} worker`,
+    );
   }
   if (!eventsDb) throw new Error("Events DB not initialized (no init)");
   return eventsDb;
@@ -821,8 +742,8 @@ function handleRequest(req: WorkerRequest): unknown {
  * on boot for every stream to make room-scoped handlers work.
  */
 function handleBackfillEntitySpace(req: WorkerRequest): { backfilled: number } {
-  if (role === "space") {
-    throw new Error("backfillEntitySpace requires the global DB (system worker)");
+  if (role !== "global" && role !== "system") {
+    throw new Error("backfillEntitySpace requires the global DB (global worker)");
   }
   if (!req.spaceDid) throw new Error("spaceDid required for backfillEntitySpace");
   const spaceDb = openSpaceDb(req.spaceDid);
@@ -855,75 +776,93 @@ function handleInit(req: WorkerRequest): {
   const eventsPath = opts.eventsDbPath ?? dbPath("roomy-events.sqlite");
 
   // Per-space split (Phase 3): lazily-created space DBs + global DB. When
-  // the read-state DB is :memory: (tests), keep the derived DBs in-memory
-  // too so tests never touch the filesystem.
-  const isMemory = readStatePath === ":memory:";
-  spacesDir = opts.spacesDir ?? (isMemory ? ":memory:" : resolveSpacesDir());
-  globalDbPath =
-    opts.globalDbPath ?? (isMemory ? ":memory:" : dbPath("global.sqlite"));
+  // any shared DB is :memory: (tests), keep the derived DBs in-memory too so
+  // tests never touch the filesystem. The fallbacks are per-role below.
+  const anyMemory =
+    readStatePath === ":memory:" ||
+    eventsPath === ":memory:" ||
+    (opts.globalDbPath ?? "") === ":memory:";
   spaceSchemaVersion = opts.spaceSchemaVersion ?? "";
   globalSchemaVersion = opts.globalSchemaVersion ?? "";
   if (opts.maxSpaceDbs !== undefined) maxSpaceDbs = opts.maxSpaceDbs;
   role = opts.role ?? "system";
 
-  // Phase 4: a "space" worker only opens per-space DBs (lazily on first
-  // request). It does NOT open the read-state, event-log or global DBs —
-  // those live on the dedicated system worker(s).
+  // Per-space DB access is only available on roles that own (or assist the
+  // ownership of) space DBs: "space" workers, the "global" worker (entity_space
+  // backfill), and the legacy "system" role. The dedicated readstate/events
+  // workers leave `spacesDir` null so a mis-routed space/global request fails
+  // loudly instead of silently serving from the wrong worker.
+  if (role === "readstate" || role === "events") {
+    spacesDir = null;
+    globalDbPath = null;
+  } else {
+    spacesDir = opts.spacesDir ?? (anyMemory ? ":memory:" : resolveSpacesDir());
+    globalDbPath =
+      opts.globalDbPath ?? (anyMemory ? ":memory:" : dbPath("global.sqlite"));
+  }
+  const openWithPragmas = (path: string): Database => {
+    const db = path === ":memory:" ? new Database(":memory:") : (() => {
+      mkdirSync(dirname(path), { recursive: true });
+      return new Database(path, { create: true });
+    })();
+    db.exec("pragma journal_mode = wal");
+    db.exec("pragma synchronous = normal");
+    db.exec("pragma foreign_keys = on");
+    db.exec("pragma busy_timeout = 5000");
+    return db;
+  };
+
+  // Role-split (system-worker split): a dedicated worker per shared DB, so a
+  // slow query on one DB no longer blocks the others. Each role opens only
+  // the DB(s) it owns; everything else stays NULL. The "space" and "global"
+  // roles set `spacesDir` so space DBs can be opened lazily (the global
+  // worker needs them for the entity_space backfill).
   if (role === "space") {
     return { readStateDbPath: "", eventsDbPath: "" };
   }
 
-  // Open read-state DB (own file, no ATTACH — Phase 3)
-  if (isMemory) {
-    readStateDb = new Database(":memory:");
-  } else {
-    mkdirSync(dirname(readStatePath), { recursive: true });
-    readStateDb = new Database(readStatePath, { create: true });
+  if (role === "global" || role === "system") {
+    // Global DB is opened lazily on first request (openGlobalDbInternal).
   }
-  readStateDb.exec("pragma journal_mode = wal");
-  readStateDb.exec("pragma synchronous = normal");
-  readStateDb.exec("pragma foreign_keys = on");
-  readStateDb.exec("pragma busy_timeout = 5000");
-  initializeReadStateSchema(
-    readStateDb,
-    READSTATE_SCHEMA_PATH,
-    opts.readStateSchemaVersion ?? "",
-  );
 
-  // Open events DB (append-only, never wiped — no schema version)
-  if (eventsPath === ":memory:") {
-    eventsDb = new Database(":memory:");
-  } else {
-    mkdirSync(dirname(eventsPath), { recursive: true });
-    eventsDb = new Database(eventsPath, { create: true });
+  if (role === "readstate" || role === "system") {
+    // Open read-state DB (own file, no ATTACH — Phase 3).
+    readStateDb = openWithPragmas(readStatePath);
+    initializeReadStateSchema(
+      readStateDb,
+      READSTATE_SCHEMA_PATH,
+      opts.readStateSchemaVersion ?? "",
+    );
   }
-  eventsDb.exec("pragma journal_mode = wal");
-  eventsDb.exec("pragma synchronous = normal");
-  eventsDb.exec("pragma busy_timeout = 5000");
-  const eventsSchemaSql = readFileSync(EVENTS_SCHEMA_PATH, "utf-8");
-  eventsDb.exec(eventsSchemaSql);
 
-  // Add columns that were added after the table was first created.
-  // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check the
-  // table info first.
-  const existingColumns = new Set(
-    eventsDb
-      .query<{ name: string }, []>(
-        "select name from pragma_table_info('stream_events')",
-      )
-      .all()
-      .map((r) => r.name),
-  );
-  if (!existingColumns.has("event_type")) {
-    eventsDb.exec("alter table stream_events add column event_type text");
-  }
-  if (!existingColumns.has("created_at")) {
-    eventsDb.exec("alter table stream_events add column created_at integer");
+  if (role === "events" || role === "system") {
+    // Open events DB (append-only, never wiped — no schema version).
+    eventsDb = openWithPragmas(eventsPath);
+    const eventsSchemaSql = readFileSync(EVENTS_SCHEMA_PATH, "utf-8");
+    eventsDb.exec(eventsSchemaSql);
+
+    // Add columns that were added after the table was first created.
+    // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check the
+    // table info first.
+    const existingColumns = new Set(
+      eventsDb
+        .query<{ name: string }, []>(
+          "select name from pragma_table_info('stream_events')",
+        )
+        .all()
+        .map((r) => r.name),
+    );
+    if (!existingColumns.has("event_type")) {
+      eventsDb.exec("alter table stream_events add column event_type text");
+    }
+    if (!existingColumns.has("created_at")) {
+      eventsDb.exec("alter table stream_events add column created_at integer");
+    }
   }
 
   return {
-    readStateDbPath: readStatePath,
-    eventsDbPath: eventsPath,
+    readStateDbPath: readStateDb ? readStatePath : "",
+    eventsDbPath: eventsDb ? eventsPath : "",
   };
 }
 

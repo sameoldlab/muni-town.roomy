@@ -12,9 +12,9 @@
   import MediaEmbed from "./embeds/MediaEmbed.svelte";
   import LinkCard from "./embeds/LinkCard.svelte";
   import ForwardContext from "./ForwardContext.svelte";
-  import { createMessageQuery } from "$lib/queries/message";
   import MessageContent from "./MessageContent.svelte";
   import ChatInput from "./ChatInput.svelte";
+  import { createMentionSearch } from "$lib/tiptap/mentions";
   import { editMessage, removeLinkEmbed } from "$lib/mutations/message";
   import type { Message } from "$lib/queries/messages";
   import { resolveBlobUrl } from "$lib/utils";
@@ -37,10 +37,13 @@
     editingMessageId: string | undefined;
     onStartEdit: (messageId: string) => void;
     onCancelEdit: () => void;
-    onOpenMobileMenu: (message: Message) => void;
     /** Requests the delete confirmation for this message (raised to ChatArea). */
     onRequestDelete: (message: Message) => void;
-    onForward: (message: Message) => void;
+    /** Forward one or more messages (modal owned by the route page). */
+    onForward: (messages: Message[]) => void;
+    /** Temporary visual emphasis for a search deep-link land; OR-ed into
+     *  the selection styling and cleared by the caller after a beat. */
+    highlighted?: boolean;
     mergeWithPrevious?: boolean;
   };
 
@@ -53,12 +56,11 @@
     editingMessageId,
     onStartEdit,
     onCancelEdit,
-    onOpenMobileMenu,
     onRequestDelete,
     onForward,
+    highlighted = false,
     mergeWithPrevious = false,
   }: Props = $props();
-
   let hovered = $state(false);
   let keepToolbarOpen = $state(false);
   let isEditing = $derived(editingMessageId === message.id);
@@ -75,6 +77,10 @@
   // the save path re-encodes the same format instead of downgrading to
   // markdown.
   let editBlocks: Block[] | undefined = $state();
+  // DIDs mentioned in the in-place editor, kept in sync by ChatInput. Only
+  // used for legacy markdown messages — rich-text messages carry mentions in
+  // their blocks' `#didMention` facets.
+  let editMentions: string[] = $state([]);
   let prevEditing = false;
   // ── Edit-mode link preview management ──────────────────────────────────
   // While editing, the author can dismiss or re-add link previews the same
@@ -89,6 +95,7 @@
   $effect.pre(() => {
     const editing = isEditing;
     if (editing && !prevEditing) {
+      editMentions = [];
       if (message.mimeType === RICHTEXT_MIME) {
         // Seed the editor from the decoded blocks (ChatInput reads these via
         // `initialBlocks`); `editContent` is synced to markdown on mount.
@@ -169,11 +176,17 @@
       return url;
     }
   }
-  let isMobile = new MediaQuery("(pointer: coarse)")
+  let isMobile = new MediaQuery("(pointer: coarse)");
   let isThreading = $derived(messagingState.current.kind === "threading");
+  let isSelecting = $derived(messagingState.current.kind === "selecting");
+
   let isSelected = $derived.by(() => {
+    if (highlighted) return true;
     const cur = messagingState.current;
-    return cur.kind === "threading" && cur.selectedMessages.some((m) => m.id === message.id);
+    return (
+      (cur.kind === "threading" || cur.kind === "selecting") &&
+      cur.selectedMessages.some((m) => m.id === message.id)
+    );
   });
   // On touch devices there is no hover, so the toolbar is shown by tapping the
   // message (see the onclick on the message box below). Only one message's
@@ -187,6 +200,7 @@
     !isSystem &&
       !isEditing &&
       !isThreading &&
+      !isSelecting &&
       ((!isMobile.current && hovered) || (isMobile.current && isToolbarOpen)) ||
       keepToolbarOpen,
   );
@@ -196,21 +210,19 @@
 
   // ── Forwards ──────────────────────────────────────────────────────────
   // A forward is a real message (authored by the forwarder) carrying a
-  // forward attachment. The bubble renders as a normal message by the
-  // ORIGINAL author; the forwarder is surfaced only in the forward context
-  // line above the author line. Fetch the original so we can render it.
+  // forward attachment. The bubble renders the embedded original (fully
+  // denormalised server-side as `forwardedFrom.message` — content, author,
+  // timestamp), with the forwarder surfaced in the forward context line
+  // above. The forwarder's own note (if any) renders as a second bubble
+  // below. No extra fetch: the original arrives with the room query.
   const forwardedFrom = $derived(message.forwardedFrom);
   const isForward = $derived(!!forwardedFrom);
-  const originalQuery = createMessageQuery(
-    () => forwardedFrom?.messageId ?? "",
-    () => forwardedFrom?.roomId ?? "",
-    { enabled: isForward },
-  );
-  const original = $derived(originalQuery.data);
-  /** The bubble's effective author: the original author when forwarding. */
-  const eff = $derived(isForward && original ? original : null);
+  /** The embedded original message (denormalised server-side). */
+  const original = $derived(forwardedFrom?.message);
   const effBridged = $derived(
-    eff ? eff.authorDid.startsWith("did:discord:") : isBridged,
+    original
+      ? original.authorDid.startsWith("did:discord:")
+      : isBridged,
   );
 
   // Edit stays author-only; space admins may delete anyone's message.
@@ -219,10 +231,12 @@
   let canDelete = $derived(isAuthor || isAdmin);
 
   function handleContextAction(e: MouseEvent) {
-    // On mobile (coarse pointer), long-press opens the drawer
-    if (isMobile.current) {
+    // On mobile (coarse pointer), long-press enters select mode — the mobile
+    // equivalent of the toolbar's "Select" action (Signal/WhatsApp pattern).
+    // A long-press inside select mode is a no-op; taps toggle selection.
+    if (isMobile.current && !isSelecting) {
       e.preventDefault();
-      onOpenMobileMenu(message);
+      messagingState.startSelectMode(message);
     }
   }
 
@@ -255,6 +269,9 @@
         // Rich-text messages stay rich-text: send the blocks (which ChatInput
         // keeps in sync) rather than the base64-encoded wire body or markdown.
         ...(isRichText ? { blocks: submittedBlocks } : {}),
+        // Legacy markdown messages carry mentions in the sidecar. Without
+        // this, mentions added while editing are silently dropped.
+        ...(!isRichText && _mentions.length > 0 ? { mentions: _mentions } : {}),
         ...(linkAttachments.length > 0 ? { attachments: linkAttachments } : {}),
       },
     );
@@ -284,20 +301,20 @@
       // On touch devices, tapping a message toggles its inline toolbar.
       // Skip when the tap lands on a link (the user is navigating, not
       // summoning the toolbar).
-      if (isMobile.current && !isThreading && !isEditing && !(e.target as Element)?.closest?.("a")) {
+      if (isMobile.current && !isThreading && !isSelecting && !isEditing && !(e.target as Element)?.closest?.("a")) {
         toggleToolbar(message.id);
       }
     }}
   >
     <MessageBubble
-      authorDid={eff ? eff.authorDid : message.authorDid}
-      authorName={eff ? (eff.authorName ?? undefined) : (message.authorName ?? undefined)}
-      authorHandle={eff ? (eff.authorHandle ?? undefined) : (message.authorHandle ?? undefined)}
-      authorAvatarUrl={eff ? (eff.authorAvatar ?? undefined) : (message.authorAvatar ?? undefined)}
-      avatarSrc={eff ? resolveBlobUrl(eff.authorAvatar) : resolveBlobUrl(message.authorAvatar)}
-      profileUrl={effBridged ? undefined : `/user/${eff ? eff.authorDid : message.authorDid}`}
-      onAvatarClick={effBridged ? undefined : () => goto(`/user/${eff ? eff.authorDid : message.authorDid}`)}
-      timestamp={new Date(eff ? eff.timestamp : message.timestamp)}
+      authorDid={original ? original.authorDid : message.authorDid}
+      authorName={original ? (original.authorName ?? undefined) : (message.authorName ?? undefined)}
+      authorHandle={original ? (original.authorHandle ?? undefined) : (message.authorHandle ?? undefined)}
+      authorAvatarUrl={original ? (original.authorAvatar ?? undefined) : (message.authorAvatar ?? undefined)}
+      avatarSrc={original ? resolveBlobUrl(original.authorAvatar) : resolveBlobUrl(message.authorAvatar)}
+      profileUrl={effBridged ? undefined : `/user/${original ? original.authorDid : message.authorDid}`}
+      onAvatarClick={effBridged ? undefined : () => goto(`/user/${original ? original.authorDid : message.authorDid}`)}
+      timestamp={new Date(original ? original.timestamp : message.timestamp)}
       isBridged={effBridged}
       isSystem={isSystem}
       mergeWithPrevious={isSystem ? false : mergeWithPrevious}
@@ -309,9 +326,13 @@
         {#if message.forwardedFrom}
           <ForwardContext
             name={message.authorName}
+            handle={message.authorHandle}
             did={message.authorDid}
             avatar={message.authorAvatar}
             timestamp={new Date(message.timestamp)}
+            {spaceId}
+            roomId={message.forwardedFrom.roomId}
+            messageId={message.forwardedFrom.messageId}
           />
         {:else if message.replyTo}
           <MessageContext context={{ kind: "replying", replyTo: { id: message.replyTo } }} roomId={roomId} />
@@ -333,11 +354,13 @@
             <ChatInput
               bind:content={editContent}
               bind:blocks={editBlocks}
+              bind:mentions={editMentions}
               initialBlocks={editBlocks}
               onEnter={handleEdit}
               placeholder="Edit message..."
               disabled={false}
               setFocus={true}
+              mentionSearch={createMentionSearch(spaceId, roomId)}
             />
             {#if editLinks.length > 0}
               <div class="flex flex-col gap-2 mt-2">
@@ -376,8 +399,6 @@
         {:else if isForward}
           {#if original}
             <MessageContent content={original.content} mimeType={original.mimeType} />
-          {:else if originalQuery.isPending}
-            <div class="h-5"></div>
           {:else}
             <span class="italic text-base-400 text-sm">Original message unavailable</span>
           {/if}
@@ -404,7 +425,7 @@
             class="shrink-0 rounded-full"
             aria-label="Save changes"
             title="Save (Enter)"
-            onclick={() => handleEdit(editContent, [], editBlocks ?? [])}
+            onclick={() => handleEdit(editContent, editMentions, editBlocks ?? [])}
           >
             <IconCheck />
           </Button>
@@ -412,15 +433,16 @@
       {/snippet}
 
       {#snippet linkEmbeds()}
-        {#if message.linkEmbeds && message.linkEmbeds.length > 0}
-          {@const withEmbed = message.linkEmbeds.filter((l) => l.embed)}
+        {@const embeds = (isForward ? original?.linkEmbeds : message.linkEmbeds) ?? []}
+        {#if embeds.length > 0}
+          {@const withEmbed = embeds.filter((l: Message["linkEmbeds"][number]) => l.embed)}
           {#if withEmbed.length > 0}
             <div class="flex flex-col gap-2 mt-1">
               {#each withEmbed as link (link.url)}
                 <LinkCard
                   url={link.url}
                   embed={link.embed}
-                  onRemove={isAuthor ? () => handleRemoveEmbed(link.url) : undefined}
+                  onRemove={!isForward && isAuthor ? () => handleRemoveEmbed(link.url) : undefined}
                 />
               {/each}
             </div>
@@ -429,10 +451,11 @@
       {/snippet}
 
       {#snippet media()}
-        {#if message.media && message.media.length > 0}
-          {@const nonLinkMedia = message.media.filter((m) => !m.type.startsWith("text/"))}
+        {@const media = (isForward ? original?.media : message.media) ?? []}
+        {#if media.length > 0}
+          {@const nonLinkMedia = media.filter((m: Message["media"][number]) => !m.type.startsWith("text/"))}
           {#if nonLinkMedia.length > 0}
-            <MediaEmbed media={nonLinkMedia.map((m) => ({ ...m, alt: m.alt ?? undefined }))} />
+            <MediaEmbed media={nonLinkMedia.map((m: Message["media"][number]) => ({ ...m, alt: m.alt ?? undefined }))} />
           {/if}
         {/if}
       {/snippet}
@@ -490,7 +513,7 @@
   </div>
 {/snippet}
 
-{#if isThreading}
+{#if isThreading || isSelecting}
   <Checkbox.Root
     aria-label="Select message"
     onclick={(e) => e.stopPropagation()}
@@ -498,12 +521,15 @@
       () => isSelected,
       () => messagingState.toggleMessageSelection(message)
     }
-    class="flex flex-col w-full relative max-w-full isolate px-4 select-none"
+    class={`flex flex-col w-full relative max-w-full isolate px-2 select-none${highlighted ? " message-highlight" : ""}`}
   >
     {@render messageBox()}
   </Checkbox.Root>
 {:else}
-  <div class="flex flex-col w-full relative max-w-full isolate px-4">
+  <div
+    class="flex flex-col w-full relative max-w-full isolate px-2"
+    class:message-highlight={highlighted}
+  >
     {@render messageBox()}
   </div>
 {/if}
@@ -525,5 +551,36 @@
   }
   :global(.editing-message .tiptap > :last-child) {
     margin-bottom: 0;
+  }
+
+  /*
+    Deep-link highlight (`?message=<id>` / notification click). The row flashes
+    accent-tinted then fades to transparent; the class stays on the recycled
+    virtualizer row for the highlight window so the target stays identified.
+    Works in both themes via a translucent accent mix. Global: the class is
+    forwarded through Checkbox.Root (thread-selection row) whose root element
+    this component cannot scope.
+  */
+  :global(.message-highlight) {
+    border-radius: 0.75rem;
+    animation: message-highlight-flash 3s ease-out forwards;
+  }
+
+  :global {
+    @keyframes message-highlight-flash {
+      0% {
+        background-color: color-mix(
+          in oklab,
+          var(--color-accent-500) 30%,
+          transparent
+        );
+        box-shadow: inset 0 0 0 1.5px
+          color-mix(in oklab, var(--color-accent-500) 55%, transparent);
+      }
+      100% {
+        background-color: transparent;
+        box-shadow: none;
+      }
+    }
   }
 </style>

@@ -177,6 +177,60 @@ describe("threadActivity", () => {
     const { threads: result } = await listThreadActivity(asyncDb, { kind: "space", spaceId: SPACE })
     expect(result.map((t) => t.id)).toEqual([THREAD_B, THREAD_C, THREAD_A]);
     expect(result[0]!.latestTimestamp).toBe(new Date(3000).toISOString());
+    // Default kinds is threads-only — every row must be a thread.
+    expect(result.every((t) => t.kind === "thread")).toBe(true);
+  });
+
+  test("space scope with kinds including channels returns channels + threads", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    // Channel activity: messages in CHANNEL (ts 1000) and OTHER_CHANNEL (ts 4000).
+    postMessage(db, CHANNEL, ALICE, 1000, "hello in channel");
+    postMessage(db, OTHER_CHANNEL, BOB, 4000, "newer channel msg");
+    postMessage(db, THREAD_A, CAROL, 2000);
+    postMessage(db, THREAD_B, DAVE, 3000);
+
+    const { threads: result } = await listThreadActivity(
+      asyncDb,
+      { kind: "space", spaceId: SPACE },
+      50,
+      null,
+      null,
+      { kinds: ["thread", "channel"] },
+    );
+
+    // Newest first: OTHER_CHANNEL(4000), THREAD_B(3000), THREAD_A(2000),
+    // CHANNEL(1000), then THREAD_C (no activity, sort key 0).
+    expect(result.map((t) => t.id)).toEqual([OTHER_CHANNEL, THREAD_B, THREAD_A, CHANNEL, THREAD_C]);
+    const channel = result.find((t) => t.id === CHANNEL)!;
+    expect(channel.kind).toBe("channel");
+    expect(channel.latestTimestamp).toBe(new Date(1000).toISOString());
+    expect(channel.latestMessage!.content).toBe("hello in channel");
+    const threadB = result.find((t) => t.id === THREAD_B)!;
+    expect(threadB.kind).toBe("thread");
+    // Channels have no canonical parent.
+    expect(channel.canonicalParent).toBeNull();
+  });
+
+  test("channel scope stays threads-only even when kinds include channels", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    postMessage(db, CHANNEL, ALICE, 1000, "channel msg");
+    postMessage(db, THREAD_A, BOB, 2000);
+    postMessage(db, THREAD_B, CAROL, 3000);
+
+    const { threads: result } = await listThreadActivity(
+      asyncDb,
+      { kind: "channel", channelId: CHANNEL },
+      50,
+      null,
+      null,
+      { kinds: ["thread", "channel"] },
+    );
+    expect(result.map((t) => t.id)).toEqual([THREAD_B, THREAD_A]);
+    expect(result.every((t) => t.kind === "thread")).toBe(true);
   });
 
   test("channel scope filters to threads canonically linked from that channel", async () => {
@@ -260,6 +314,42 @@ describe("threadActivity", () => {
     const threadA = result.find((t) => t.id === THREAD_A)!;
 
     expect(threadA.latestMessage).toBeNull();
+  });
+
+  test("content entity with a null timestamp is not surfaced as latestMessage", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    // Mirror the real-world fresh-space case: a system message ("x joined the
+    // space") whose comp_content row has NO timestamp (join materialiser writes
+    // comp_content without the timestamp column). It must not become the
+    // room's latestMessage — the wire contract requires a string timestamp.
+    const sysId = "01SYS000000000000000000000".slice(0, 26);
+    db.run("insert into entities (id, stream_id, room) values (?, ?, ?)", [
+      sysId,
+      SPACE,
+      CHANNEL,
+    ]);
+    db.run(
+      "insert into comp_content (entity, mime_type, data, last_edit) values (?, 'text/markdown', ?, ?)",
+      [sysId, Buffer.from("Alice joined the space."), sysId],
+    );
+    db.run("insert into edges (head, tail, label) values (?, ?, 'author')", [
+      sysId,
+      ALICE,
+    ]);
+
+    const { threads: result } = await listThreadActivity(
+      asyncDb,
+      { kind: "space", spaceId: SPACE },
+      50,
+      null,
+      null,
+      { kinds: ["thread", "channel"] },
+    );
+    const channel = result.find((t) => t.id === CHANNEL)!;
+    expect(channel.latestTimestamp).toBeNull();
+    expect(channel.latestMessage).toBeNull();
   });
 
   test("latestMessage content decodes text content correctly", async () => {
@@ -418,5 +508,64 @@ describe("threadActivity", () => {
     expect(result).toHaveLength(3);
     // No more pages since 3 < 50.
     expect(cursor).toBeNull();
+  });
+
+  // ── Search ───────────────────────────────────────────────────────────────
+  //
+  // The optional `search` param filters threads by a case-insensitive
+  // substring match on the thread name (comp_info.name), applied in SQL so
+  // cursor pagination stays correct.
+
+  test("search filters threads by name substring (case-insensitive)", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    postMessage(db, THREAD_A, ALICE, 1000);
+    postMessage(db, THREAD_B, BOB, 2000);
+    postMessage(db, THREAD_C, CAROL, 3000);
+
+    // Threads are named "Thread A", "Thread B", "Thread C".
+    const { threads: result } = await listThreadActivity(
+      asyncDb,
+      { kind: "space", spaceId: SPACE },
+      50,
+      null,
+      "thread b",
+    );
+    expect(result.map((t) => t.id)).toEqual([THREAD_B]);
+  });
+
+  test("search with no matches returns empty", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    const { threads: result } = await listThreadActivity(
+      asyncDb,
+      { kind: "space", spaceId: SPACE },
+      50,
+      null,
+      "zzz-no-such-thread",
+    );
+    expect(result).toEqual([]);
+  });
+
+  test("empty or whitespace search returns all threads", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    postMessage(db, THREAD_A, ALICE, 1000);
+    postMessage(db, THREAD_B, BOB, 2000);
+    postMessage(db, THREAD_C, CAROL, 3000);
+
+    const { threads: result } = await listThreadActivity(
+      asyncDb,
+      { kind: "space", spaceId: SPACE },
+      50,
+      null,
+      "   ",
+    );
+    expect(result.map((t) => t.id).sort()).toEqual(
+      [THREAD_A, THREAD_B, THREAD_C].sort(),
+    );
   });
 });

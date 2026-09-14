@@ -126,27 +126,6 @@ create table if not exists comp_content (
   updated_at integer not null default (unixepoch() * 1000)
 ) strict;
 
--- Full-text search index over message content (Phase 1 of search-endpoints.md,
--- Option A: own rowid, denormalised copy of the decoded plaintext).
---
--- Populated by the materialiser alongside comp_content (applyChunkSideEffects):
---   - createMessage  → delete-then-insert (FTS5 has no unique constraint)
---   - editMessage    → delete-then-insert with the re-decoded content
---   - deleteMessage  → delete by entity
---
--- `content` is the only indexed column; the rest are unindexed metadata for
--- filtering (room read-access pre-filter) and future use. `entity` is the
--- message ULID (comp_content.entity). `timestamp` is the canonical message
--- timestamp as an ISO string.
-create virtual table if not exists message_fts using fts5(
-  entity unindexed,
-  room unindexed,
-  author_did unindexed,
-  content,
-  timestamp unindexed,
-  tokenize = 'unicode61'
-);
-
 create table if not exists comp_info (
   entity text primary key references entities(id) on delete cascade,
   name text,
@@ -335,8 +314,10 @@ create index if not exists idx_comp_invite_creator on comp_invite(entity, create
 
 -- Materialized activity feed items. One row per room (channel or thread) that
 -- has seen at least one message. Upserted on every createMessage event.
--- recent_message_ids stores a JSON array of up to 5 most recent message ULIDs
--- (newest first) so the read path can batch-query full message data.
+-- recent_message_ids stores a JSON array of up to 5 most recent message
+-- entries as { id, ts } objects (newest first, by canonical message time —
+-- timestampOverride for bridged messages, else ULID time) so the read path
+-- can batch-query full message data.
 create table if not exists activity_item (
   room_id text primary key,
   space_id text not null,
@@ -344,7 +325,7 @@ create table if not exists activity_item (
   parent_channel_id text,
   parent_channel_name text,
   last_activity_at integer not null,
-  recent_message_ids text not null default '[]',  -- JSON array of ULIDs, newest first
+  recent_message_ids text not null default '[]',  -- JSON array of {id, ts}, newest first
   room_name text,
   space_name text,
   space_avatar text,

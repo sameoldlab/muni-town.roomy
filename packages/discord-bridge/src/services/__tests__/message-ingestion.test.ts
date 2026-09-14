@@ -5,10 +5,14 @@
  * thread starters, mentions, attachments, backfill restriction, subset mode.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Did, newUlid } from "@roomy-space/sdk";
 import { BridgeRepository } from "../../db/repository.ts";
 import { MockRoomyGateway } from "../../roomy/mock-gateway.ts";
+import {
+	resetCapacityGate,
+	setCapacityGate,
+} from "../../roomy/capacity.ts";
 import { ingestDiscordMessage } from "../message-ingestion.ts";
 import {
 	CHANNEL,
@@ -648,7 +652,7 @@ describe("ingestDiscordMessage — webhook echo prevention", () => {
 	});
 });
 
-describe("ingestDiscordMessage — forwarded messages (type 26)", () => {
+describe("ingestDiscordMessage — forwarded messages (HAS_SNAPSHOT flag)", () => {
 	let repo: BridgeRepository;
 	let roomy: MockRoomyGateway;
 
@@ -658,8 +662,8 @@ describe("ingestDiscordMessage — forwarded messages (type 26)", () => {
 		mapChannel(repo); // target channel (CHANNEL) → ROOMY_CHANNEL_ULID
 	});
 
-	// FW01: A Discord forward (type 26) forwards the original message into the
-	// target channel's Roomy room.
+	// FW01: A Discord forward (HAS_SNAPSHOT flag) forwards the original
+	// message into the target channel's Roomy room.
 	test("FW01: forwards original message when a Discord message is forwarded", async () => {
 		const originalId = "6666666666";
 		const sourceChannelId = CHANNEL_2;
@@ -721,6 +725,85 @@ describe("ingestDiscordMessage — forwarded messages (type 26)", () => {
 		const originalId = "6666666666";
 		const sourceChannelId = CHANNEL_2;
 		mapMessage(repo, originalId, ROOMY_MESSAGE_ULID);
+
+		const msg = makeForwardMessage(originalId, CHANNEL, sourceChannelId);
+		const result = await ingestDiscordMessage(msg, repo, roomy);
+
+		expect(result).toEqual({ synced: 0, skipped: 1 });
+		expect(forwardMessageEvent(roomy, SPACE_A)).toBeUndefined();
+	});
+
+	// FW05: Type 26 is NOT a forward — it is INTERACTION_PREMIUM_UPSELL, a
+	// system message. Regression guard: the old code keyed forward detection
+	// on `type === 26`, which never matched real forwards (they are type 0 +
+	// HAS_SNAPSHOT flag) and would have misclassified premium-upsell system
+	// messages as forwards.
+	test("FW05: type 26 (INTERACTION_PREMIUM_UPSELL) is not treated as a forward", async () => {
+		const originalId = "6666666666";
+		const sourceChannelId = CHANNEL_2;
+		const sourceRoomUlid = newUlid();
+		mapMessage(repo, originalId, ROOMY_MESSAGE_ULID);
+		repo.registerMapping(SPACE_A, "channel", sourceChannelId, sourceRoomUlid);
+
+		const msg = makeMessage({
+			id: "1111111118",
+			channelId: CHANNEL,
+			guildId: GUILD,
+			type: 26, // INTERACTION_PREMIUM_UPSELL
+			content: "",
+			messageReference: {
+				messageId: originalId,
+				channelId: sourceChannelId,
+				guildId: GUILD,
+			},
+		});
+		const result = await ingestDiscordMessage(msg, repo, roomy);
+
+		// Not a forward: no forwardMessages event. The message falls through
+		// to the normal path (where its messageReference becomes a reply
+		// attachment) — the old code would have emitted a forward event.
+		expect(forwardMessageEvent(roomy, SPACE_A)).toBeUndefined();
+		expect(result).toEqual({ synced: 1, skipped: 0 });
+		expect(createMessageEvent(roomy, SPACE_A)).toBeDefined();
+	});
+});
+
+describe("ingestDiscordMessage — capacity enforcement", () => {
+	// The module-level capacity gate defaults to always-enabled; these tests
+	// install a disabled gate and verify ingestion halts for the space.
+	let repo: BridgeRepository;
+	let roomy: MockRoomyGateway;
+
+	beforeEach(() => {
+		setCapacityGate({ isEnabled: async () => false });
+		repo = setupRepo();
+		roomy = new MockRoomyGateway();
+		mapChannel(repo);
+	});
+
+	afterEach(() => {
+		resetCapacityGate();
+	});
+
+	test("CAP01: skips the message when the guild is over capacity", async () => {
+		const msg = makeMessage({
+			id: "1111111119",
+			channelId: CHANNEL,
+			guildId: GUILD,
+			content: "hello",
+		});
+		const result = await ingestDiscordMessage(msg, repo, roomy);
+
+		expect(result).toEqual({ synced: 0, skipped: 1 });
+		expect(createMessageEvent(roomy, SPACE_A)).toBeUndefined();
+	});
+
+	test("CAP02: skips forwards when the guild is over capacity", async () => {
+		const originalId = "6666666666";
+		const sourceChannelId = CHANNEL_2;
+		const sourceRoomUlid = newUlid();
+		mapMessage(repo, originalId, ROOMY_MESSAGE_ULID);
+		repo.registerMapping(SPACE_A, "channel", sourceChannelId, sourceRoomUlid);
 
 		const msg = makeForwardMessage(originalId, CHANNEL, sourceChannelId);
 		const result = await ingestDiscordMessage(msg, repo, roomy);

@@ -1,9 +1,10 @@
 /**
  * Push evaluation for a live `createMessage`.
  *
- * Phase 3 scope: **Mentions** — Quiet and Engaged recipients who are mentioned
- * in the message get an immediate `message` push instead of being skipped
- * (quiet) or routed to the digest path (engaged).
+ * Phase 3 scope: **Mentions + replies** — Quiet and Engaged recipients who
+ * are mentioned in the message, OR are the author of a message being
+ * directly replied to (depth-1), get an immediate `message` push instead of
+ * being skipped (quiet) or routed to the digest path (engaged).
  *
  * For a live message in `roomId` (space `spaceId`) by `authorDid`:
  *   1. Resolve message facts (room name + author name for the payload).
@@ -44,7 +45,6 @@ import { RICHTEXT_MIME, blocksToPlaintext } from "@roomy-space/sdk";
 import { roomAccess } from "../auth/access.ts";
 import { resolveLevel } from "../queries/pushPreferences.ts";
 import { selectSubscriptions } from "../queries/pushSubscriptions.ts";
-import { getEnabledFlagsForUser } from "../queries/featureFlags.ts";
 import { upsertNotificationState } from "../queries/notificationState.ts";
 import { hasUserParticipatedInSpace } from "../queries/userRoomParticipation.ts";
 import { resolveMessageIcon } from "./avatars.ts";
@@ -120,8 +120,9 @@ export async function enumerateRecipients(
 }
 
 /**
- * Build a `message`-type push payload for an immediate push (busy, quiet+mentioned,
- * engaged+mentioned). Shared across all three paths to avoid duplication.
+ * Build a `message`-type push payload for an immediate push (busy, quiet+flagged,
+ * engaged+flagged where flagged = mentioned OR replied-to author). Shared across
+ * all paths to avoid duplication.
  */
 function buildMessagePayload(
   job: PushJob,
@@ -153,8 +154,9 @@ function buildMessagePayload(
  * digest state for the sweep to catch the 1-hour threshold otherwise).
  *
  * Phase 3 (mentions): Quiet and Engaged recipients who are mentioned in the
- * message get an immediate `message` push instead of being skipped (quiet) or
- * routed to the digest path (engaged).
+ * message — or who authored a message the new message directly replies to —
+ * get an immediate `message` push instead of being skipped (quiet) or routed
+ * to the digest path (engaged).
  *
  * Per-space reads (message facts, recipient enumeration, room access, avatars)
  * go through `spaceDb`; read-state reads (preferences, subscriptions, feature
@@ -165,7 +167,7 @@ export async function evaluatePush(
   spaceDb: DbLike,
   job: PushJob,
 ): Promise<PushDelivery[]> {
-  const { spaceId, roomId, authorDid, messageId, timestamp, mentions } = job;
+  const { spaceId, roomId, authorDid, messageId, timestamp, mentions, repliedToDids } = job;
   const facts = await resolveMessageFacts(spaceDb, roomId, authorDid, messageId);
   log.info(`[push-evaluate] messageContent for ${messageId}: ${facts.messageContent ? facts.messageContent.slice(0, 60) + "…" : "null"}`);
 
@@ -185,17 +187,6 @@ export async function evaluatePush(
   const deliveries: PushDelivery[] = [];
   for (const did of candidateDids) {
     if (did === authorDid) continue; // never notify the author
-
-    // Per-recipient feature gate: the `push-notifications` flag must be
-    // enabled for this user (global or per-DID assignment) to receive any
-    // push. This is the flag's intended role — it gates recipients, not the
-    // dispatcher process — so a user without the flag is skipped even if
-    // they somehow have a stale subscription row.
-    const enabledFlags = await getEnabledFlagsForUser(readStateDb, did);
-    if (!enabledFlags.includes("push-notifications")) {
-      log.debug(`[push-evaluate] skip ${did.slice(0, 20)}…: push-notifications flag not enabled`);
-      continue;
-    }
 
     const level = await resolveLevel(readStateDb, did, spaceId);
     if (level === "silent") {
@@ -218,19 +209,24 @@ export async function evaluatePush(
       continue;
     }
 
-    // Phase 3: mention detection. Check if this recipient was mentioned.
+    // Phase 3: mention detection. Check if this recipient was mentioned or
+    // is the replied-to author (depth-1 reply — treats replied-to like
+    // mentioned for the immediate-push decision).
     const mentioned = mentions?.includes(did) ?? false;
+    const repliedTo = repliedToDids?.includes(did) ?? false;
+    const flagged = mentioned || repliedTo;
 
-    // Immediate push paths: busy always, quiet+mentioned, engaged+mentioned.
-    if (level === "busy" || (level === "quiet" && mentioned) || (level === "engaged" && mentioned)) {
-      log.info(`[push-evaluate] deliver ${level}${mentioned ? "+mentioned" : ""} → ${did.slice(0, 20)}… (${subs.length} subscription(s))`);
+    // Immediate push paths: busy always, quiet+mentioned/repliedTo,
+    // engaged+mentioned/repliedTo.
+    if (level === "busy" || (level === "quiet" && flagged) || (level === "engaged" && flagged)) {
+      log.info(`[push-evaluate] deliver ${level}${mentioned ? "+mentioned" : ""}${repliedTo ? "+repliedTo" : ""} → ${did.slice(0, 20)}… (${subs.length} subscription(s))`);
       deliveries.push({ userDid: did, payload: buildMessagePayload(job, facts, icon) });
       continue;
     }
 
     // Quiet (not mentioned) → skip (behaves like silent).
     if (level === "quiet") {
-      log.debug(`[push-evaluate] skip ${did.slice(0, 20)}…: level=quiet, not mentioned`);
+      log.debug(`[push-evaluate] skip ${did.slice(0, 20)}…: level=quiet, not mentioned/repliedTo`);
       continue;
     }
 

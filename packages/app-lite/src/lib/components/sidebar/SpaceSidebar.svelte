@@ -32,8 +32,6 @@
   import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { createRoomMetadataQuery } from "$lib/queries/room-metadata";
-  import { isAuthenticated, isInitializing } from "$lib/auth.svelte";
-  import { isPushFeatureEnabled } from "$lib/push.svelte";
   import { createRoom, updateSidebar } from "$lib/mutations/room";
   import { newUlid, Ulid } from "@roomy-space/sdk";
   import { serverBar, toggleServerBar } from "$lib/components/layout/server-bar.svelte";
@@ -66,14 +64,6 @@
     { enabled: !!spaceId },
   );
 
-  let pushFeatureEnabled = $state(false);
-  $effect(() => {
-    if (!isInitializing() && isAuthenticated()) {
-      isPushFeatureEnabled().then((enabled) => {
-        pushFeatureEnabled = enabled;
-      });
-    }
-  });
   const roomMetaQuery = createRoomMetadataQuery(
     () => page.params.room ?? "",
     { enabled: !!page.params.room },
@@ -163,7 +153,12 @@
   const showFederationTab = $derived(
     federationEnabled && (meta?.isAdmin ?? false),
   );
-  const showIntegrationsTab = $derived(meta?.isAdmin ?? false);
+  const spaceAccountMgmtEnabled = $derived(
+    flagsQuery.data?.flags.includes("space-account-management") ?? false,
+  );
+  const showIntegrationsTab = $derived(
+    spaceAccountMgmtEnabled && (meta?.isAdmin ?? false),
+  );
   const settingsTabs = $derived(
     [
       { slug: "", label: "General" },
@@ -171,7 +166,7 @@
       { slug: "members", label: "Members" },
       ...(showIntegrationsTab ? [{ slug: "integrations", label: "Integrations" }] : []),
       ...(showFederationTab ? [{ slug: "federations", label: "Federation" }] : []),
-      ...(pushFeatureEnabled ? [{ slug: "notifications", label: "Notifications" }] : []),
+      { slug: "notifications", label: "Notifications" },
       ...(showInvitesTab ? [{ slug: "invites", label: "Invites" }] : []),
       ...(showDiscordBridgeTab
         ? [{ slug: "discord-bridge", label: "Discord Bridge" }]
@@ -224,6 +219,20 @@
     editingId = id;
   }
 
+  // When the edited sidebar item is a federated channel, carry its origin
+  // info + origin-grant ceiling into the edit modal so it renders the
+  // receiver-grant editor instead of the native members/roles editor.
+  const editingFederated = $derived.by(() => {
+    if (!editingId || !("room" in editingId)) return undefined;
+    const ch = channelMap.get(editingId.room);
+    if (!ch?.federated) return undefined;
+    return {
+      originSpaceId: ch.federated.originSpaceId,
+      originSpaceName: ch.federated.originSpaceName,
+      permission: ch.federated.permission,
+    };
+  });
+
   // --- Draft order for drag-and-drop reordering ---
 
   type DraftOrder = {
@@ -275,7 +284,6 @@
         id: string;
         name: string;
         unreadCount: number;
-        lastRead: number;
       }>
     >();
 
@@ -289,7 +297,6 @@
               id: t.id,
               name: t.name ?? t.id,
               unreadCount: t.unreadCount,
-              lastRead: t.lastRead ? new Date(t.lastRead).getTime() : -1,
             })),
           );
         }
@@ -303,7 +310,6 @@
             id: t.id,
             name: t.name ?? t.id,
             unreadCount: t.unreadCount,
-            lastRead: t.lastRead ? new Date(t.lastRead).getTime() : -1,
           })),
         );
       }
@@ -322,9 +328,6 @@
             id: currentRoom,
             name: roomMeta.name ?? currentRoom,
             unreadCount: roomMeta.unreadCount ?? 0,
-            lastRead: roomMeta.lastRead
-              ? new Date(roomMeta.lastRead).getTime()
-              : -1,
           },
         ]);
       }
@@ -793,6 +796,7 @@
     bind:open={openEditRoomModal}
     {spaceId}
     id={editingId}
+    federated={editingFederated}
     {renameCategory}
     {deleteCategory}
   />

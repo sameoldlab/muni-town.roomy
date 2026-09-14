@@ -6,8 +6,6 @@
   import { IconBell, IconSettings, IconUserPlus, IconX } from "@roomy/design/icons";
   import { settingsBar } from "$lib/components/layout/settings-bar.svelte";
   import { spaceNavigation } from "$lib/components/layout/last-room.svelte";
-  import { isPushFeatureEnabled } from "$lib/push.svelte";
-  import { isAuthenticated, isInitializing } from "$lib/auth.svelte";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { createFederationRequestsQuery } from "$lib/queries/federation";
 
@@ -24,15 +22,6 @@
   } = $props();
 
   const currentSpaceId = $derived(spaceId ?? page.params.space);
-
-  let pushFeatureEnabled = $state(false);
-  $effect(() => {
-    if (!isInitializing() && isAuthenticated()) {
-      isPushFeatureEnabled().then((enabled) => {
-        pushFeatureEnabled = enabled;
-      });
-    }
-  });
 
   // Channel-federation flag gate + pending-request badge (admins only).
   const flagsQuery = createFeatureFlagsQuery();
@@ -62,7 +51,7 @@
     settingsBar.expanded = false;
     const sid = currentSpaceId;
     if (!sid) return;
-    const destination = spaceNavigation.get(sid)?.destination;
+    const destination = spaceNavigation.get(sid);
     const target =
       destination?.kind === "room"
         ? `/${sid}/${destination.id}`
@@ -96,7 +85,6 @@
     aria-label="Notifications"
     title="Notifications"
     onclick={() => goto(`/${currentSpaceId}/settings/notifications`)}
-    disabled={!pushFeatureEnabled}
   >
     <IconBell />
   </Button>

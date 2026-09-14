@@ -24,9 +24,11 @@ create table if not exists global_schema_version (
 ) strict;
 
 -- Tracks asynchronous/data post-migrations separately from structural DDL.
--- A schema bump inserts its version with completed_at null; startup runs the
--- registered idempotent task and stamps completion only after the whole task
--- succeeds, so interrupted deployments retry safely.
+-- Only versions declared `kind: "data"` in GLOBAL_MIGRATIONS
+-- (globalVersions.ts) get a row here (the worker inserts it at upgrade time);
+-- startup runs the registered task and stamps completion only after the whole
+-- task succeeds, so interrupted deployments retry safely. Structural versions
+-- never appear here.
 create table if not exists global_schema_migrations (
   version text primary key,
   completed_at integer
@@ -101,10 +103,24 @@ create table if not exists mentions (
   message_id text not null,  -- the message that mentioned them
   space_did text not null,
   room_id text not null,
+  kind text not null default 'mention' check(kind in ('mention','reply')),
   created_at integer not null default (unixepoch() * 1000),
   primary key (did, message_id)
 ) strict;
 create index if not exists idx_mentions_did_created on mentions(did, created_at desc);
+
+-- Search backfill cursor (Phase 2 of search-endpoints.md). One row per
+-- space, tracking how far the Qdrant backfill sweeper has walked that
+-- space's messages (the cursor is the last message id, ULID-ordered, from
+-- the space's per-space DB). Lives in the global DB because it is
+-- cross-space state; a fresh/wipe-recreated Qdrant collection clears every
+-- cursor so the full corpus is re-indexed. Additive DDL only — created
+-- idempotently on any schema version.
+create table if not exists search_backfill_cursor (
+  space_did text primary key,
+  cursor text not null,
+  updated_at integer not null default (unixepoch() * 1000)
+) strict;
 
 -- Channel-federation registry. Cross-space by nature, so it lives in the
 -- global DB. `space_id` is the origin space (A) whose channels are exposed;
@@ -147,15 +163,18 @@ create table if not exists federation_room_permissions (
 create index if not exists idx_frp_recv on federation_room_permissions(federating_space_did, permission);
 create index if not exists idx_frp_room on federation_room_permissions(room_id);
 
--- Receiver grant: B-admin-set access for a B member or role on a federated
--- channel of A. Ceiling is the origin grant (federation_room_permissions).
--- kind = 'user' (grantee is a B user DID) | 'role' (grantee is a B role id).
+-- Receiver grant: B-admin-set access for a B member, role, or ALL B members
+-- on a federated channel of A. Ceiling is the origin grant
+-- (federation_room_permissions).
+-- kind = 'members' (grantee = B space DID, applies to every B member)
+--      | 'user'    (grantee is a B user DID)
+--      | 'role'    (grantee is a B role id).
 create table if not exists federation_receiver_permissions (
   space_id             text not null,   -- origin space A
   federating_space_did text not null,   -- receiving space B
   room_id              text not null,   -- channel id in A
-  grantee              text not null,   -- B user DID or B role id
-  kind                 text not null check(kind in ('user','role')),
+  grantee              text not null,   -- B space DID / B user DID / B role id
+  kind                 text not null check(kind in ('members','user','role')),
   permission           text not null check(permission in ('read','readwrite')),
   primary key (space_id, federating_space_did, room_id, grantee, kind)
 ) strict;

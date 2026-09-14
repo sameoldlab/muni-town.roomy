@@ -89,6 +89,10 @@ export const QUERY_SCHEMAS = {
     params: queries.getProfile.Params,
     response: queries.getProfile.Response,
   },
+  "space.roomy.user.getMembershipStatus": {
+    params: queries.getMembershipStatus.Params,
+    response: queries.getMembershipStatus.Response,
+  },
   "space.roomy.user.getProfiles": {
     params: queries.getProfiles.Params,
     response: queries.getProfiles.Response,
@@ -100,6 +104,10 @@ export const QUERY_SCHEMAS = {
   "space.roomy.search.messages": {
     params: queries.searchMessages.Params,
     response: queries.searchMessages.Response,
+  },
+  "space.roomy.search.rooms": {
+    params: queries.searchRooms.Params,
+    response: queries.searchRooms.Response,
   },
   "space.roomy.embed.getLinkMetadata": {
     params: queries.getLinkMetadata.Params,
@@ -148,6 +156,10 @@ export const PROCEDURE_SCHEMAS = {
     input: procedures.leaveSpace.Input,
     output: procedures.leaveSpace.Output,
   },
+  "space.roomy.space.reorderSpaces": {
+    input: procedures.reorderSpaces.Input,
+    output: procedures.reorderSpaces.Output,
+  },
   "space.roomy.space.setHandle": {
     input: procedures.setHandle.Input,
     output: procedures.setHandle.Output,
@@ -167,6 +179,10 @@ export const PROCEDURE_SCHEMAS = {
   "space.roomy.push.setPreferences": {
     input: procedures.setPreferences.Input,
     output: procedures.setPreferences.Output,
+  },
+  "space.roomy.pro.createCheckout": {
+    input: procedures.createProCheckout.Input,
+    output: procedures.createProCheckout.Output,
   },
 } as const;
 

@@ -22,10 +22,10 @@
 import type { StreamDid, Ulid, UserDid } from "@roomy-space/sdk";
 import type { AppliedEvent, InvalidationEvent, MessageDiffOp, QueryNsid } from "./types.ts";
 import type { DbLike } from "../db/types.ts";
-import { openReadStateDb, openSpaceDb } from "../db/db.ts";
+import { openReadStateDb, openSpaceDb, tryOpenGlobalDb } from "../db/db.ts";
 import { selectMessages, type MessageDto } from "../queries/selectMessages.ts";
 import { getRoomReadPositionUsers } from "../queries/readPositions.ts";
-import { getMentionedDidsForMessage } from "../queries/mentions.ts";
+import { getMentionedDidsForMessage, resolveReplyToAuthors } from "../queries/mentions.ts";
 
 // ─── Public API ─────────────────────────────────────────────────────────
 
@@ -50,6 +50,7 @@ export async function inferSignals(
   event: AppliedEvent,
   db?: DbLike,
   messageSnapshots?: ReadonlyMap<Ulid, MessageDto>,
+  replyToAuthors?: ReadonlyMap<Ulid, UserDid>,
 ): Promise<InvalidationEvent[]> {
   // Suppress signals for synthetic query events — they're bulk hydration,
   // not incremental changes.
@@ -57,7 +58,7 @@ export async function inferSignals(
 
   const handler = HANDLERS[event.type as keyof typeof HANDLERS];
   if (!handler) return [];
-  return await handler(event, db, messageSnapshots);
+  return await handler(event, db, messageSnapshots, replyToAuthors);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -82,6 +83,69 @@ function invalidateSpace(spaceId: StreamDid): InvalidationEvent[] {
   ];
 }
 
+/**
+ * Invalidations a message in `spaceId` triggers on every space that has one
+ * of `spaceId`'s rooms federated INTO it (receiving spaces). The receiving
+ * spaces' sidebars render those rooms as federated rows, so a new message
+ * there must refresh their unread markers even though it never lands on the
+ * receiving space's event stream.
+ *
+ * Only channel messages call this (thread messages don't render on the
+ * receiving side; the fed row is the channel). Returns one `roomMetadataDiff`
+ * per receiving space (the receiving-side patch for the fed room row and the
+ * space's room-count badge) plus the `space.getMetadata`/`getSpaces`
+ * invalidations — the frames patch receiving-space connections directly; the
+ * invalidations catch other tabs/connections and keep the server-side query
+ * cache coherent.
+ */
+async function federatedReceiversInvalidation(
+  globalDb: DbLike | null,
+  spaceId: StreamDid,
+  roomId: Ulid,
+  signal: {
+    seq: number;
+    delta: number;
+    users: ReadonlyArray<UserDid>;
+    roomUnreadDeltas: ReadonlyMap<UserDid, number>;
+  },
+): Promise<InvalidationEvent[]> {
+  if (!globalDb) return [];
+
+  const fedRows = await globalDb
+    .query(
+      `select frp.federating_space_did as home
+         from federation_room_permissions frp
+         join space_federations sf
+           on sf.space_id = frp.space_id
+          and sf.federating_space_did = frp.federating_space_did
+        where frp.space_id = ?
+          and frp.room_id = ?
+          and sf.status = 'active'`,
+    )
+    .all<{ home: string }>([spaceId, roomId]);
+  if (fedRows.length === 0) return [];
+
+  const signals: InvalidationEvent[] = [];
+  for (const r of fedRows) {
+    signals.push({
+      kind: "roomMetadataDiff",
+      signal: {
+        spaceId: r.home as StreamDid,
+        roomId,
+        seq: signal.seq,
+        delta: signal.delta,
+        users: [...signal.users],
+        roomUnreadDeltas: signal.roomUnreadDeltas,
+      },
+    });
+    // Receiving-space sidebar + space list refetch for clients the live
+    // frame missed (other tabs/connections, cache coherence).
+    signals.push(invalidate("space.roomy.space.getMetadata", { spaceId: r.home as StreamDid }));
+    signals.push(invalidate("space.roomy.space.getSpaces", {}));
+  }
+  return signals;
+}
+
 function invalidateRoom(roomId: Ulid, spaceId: StreamDid): InvalidationEvent[] {
   return [
     invalidate("space.roomy.room.getMetadata", { roomId }),
@@ -96,23 +160,31 @@ function invalidateRoom(roomId: Ulid, spaceId: StreamDid): InvalidationEvent[] {
 
 
 /**
+ * A `#mention` op variant — only add/update ops carry `kind` (remove ops
+ * have no message to classify).
+ */
+type MentionableOp = Extract<MessageDiffOp, { op: "add" | "update" }>;
+
+/**
  * Build `mentionDiff` signals for a message that mentions users.
  *
- * Emits one `MentionDiff` per mentioned DID (excluding the author's own DID —
- * self-mentions don't notify the author). The DID is the stable ID carried by
- * `#didMention` facets / the mentions extension; it never changes, unlike
- * handles or display names.
+ * Emits one `MentionDiff` per mentioned DID, self-mentions included — the
+ * bridge/client-side filter is the customization point (self-mentions flow
+ * through the normal mentions index, #mention frames, and getMentions; the
+ * Roomy UI mention list showing its own self-mentions is accepted). The DID
+ * is the stable ID carried by `#didMention` facets / the mentions extension;
+ * it never changes, unlike handles or display names.
  */
 function mentionDiffs(
   event: AppliedEvent,
   roomId: Ulid,
   mentionedDids: readonly string[] | undefined,
-  op: MessageDiffOp,
+  op: MentionableOp,
+  kind: "mention" | "reply",
 ): InvalidationEvent[] {
   if (!mentionedDids || mentionedDids.length === 0) return [];
   const signals: InvalidationEvent[] = [];
   for (const did of mentionedDids) {
-    if (did === event.user) continue; // self-mention
     signals.push({
       kind: "mentionDiff",
       signal: {
@@ -120,17 +192,68 @@ function mentionDiffs(
         spaceId: event.streamDid,
         roomId,
         seq: 0,
-        ops: [op],
+        ops: [{ ...op, kind }],
       },
     });
   }
   return signals;
 }
 
+/**
+ * Build a `mentionDiff` signal for a depth-1 reply: the author of the
+ * replied-to message receives a `kind: 'reply'` op. Only direct replies
+ * notify — the replied-to author must differ from the reply's author, and
+ * no reply-chain walk happens (replies further downstream never notify the
+ * chain root). When the replied-to author is ALSO mentioned, the caller
+ * drops the duplicate `kind: 'mention'` op so each did receives exactly one
+ * op, the reply (mirroring the mentions-index overlap row upgrade).
+ */
+function replyDiff(
+  event: AppliedEvent,
+  roomId: Ulid,
+  replyAuthor: UserDid | undefined,
+  op: MentionableOp,
+): InvalidationEvent[] {
+  if (!replyAuthor || replyAuthor === event.user) return [];
+  return [
+    {
+      kind: "mentionDiff",
+      signal: {
+        did: replyAuthor,
+        spaceId: event.streamDid,
+        roomId,
+        seq: 0,
+        ops: [{ ...op, kind: "reply" }],
+      },
+    },
+  ];
+}
+
+/**
+ * Resolve the replied-to message's author for the event's message entity.
+ * Prefers the router's pre-resolved batch map (one query per stream);
+ * falls back to a per-space DB read for direct callers/tests.
+ */
+async function replyAuthorFor(
+  event: AppliedEvent,
+  db: DbLike | undefined,
+  replyToAuthors: ReadonlyMap<Ulid, UserDid> | undefined,
+): Promise<UserDid | undefined> {
+  const messageId =
+    event.type === "space.roomy.message.editMessage.v0"
+      ? ((event.details?.messageId as Ulid | undefined) ?? event.id)
+      : event.id;
+  if (replyToAuthors) return replyToAuthors.get(messageId);
+  const spaceDb = db ?? openSpaceDb(event.streamDid);
+  const map = await resolveReplyToAuthors(spaceDb, [messageId]);
+  return map.get(messageId);
+}
+
 async function handleCreateMessage(
   event: AppliedEvent,
   db?: DbLike,
   messageSnapshots?: ReadonlyMap<Ulid, MessageDto>,
+  replyToAuthors?: ReadonlyMap<Ulid, UserDid>,
 ): Promise<InvalidationEvent[]> {
   const roomId = event.roomId;
   if (!roomId) return [];
@@ -162,14 +285,26 @@ async function handleCreateMessage(
         ops: [{ op: "add", key: event.id, message }],
       },
     });
+    const mentions = details.mentions as string[] | undefined;
+    // Depth-1 reply — notify the replied-to message's author (unless they
+    // wrote the reply). Overlap (replied-to author also mentioned) yields a
+    // single `kind: 'reply'` op for that did, mirroring the mentions-index
+    // row upgrade — so drop them from the plain-mention list first.
+    const replyAuthor = await replyAuthorFor(event, db, replyToAuthors);
+    const mentionDids = mentions?.filter((d) => d !== replyAuthor);
     // Mentions — route to connections subscribed to `mentions:<did>`.
     signals.push(
-      ...mentionDiffs(event, roomId, details.mentions as string[] | undefined, {
+      ...mentionDiffs(event, roomId, mentionDids, {
         op: "add",
         key: event.id,
         message,
-      }),
+      }, "mention"),
     );
+    signals.push(...replyDiff(event, roomId, replyAuthor, {
+      op: "add",
+      key: event.id,
+      message,
+    }));
   }
 
   // Per-user unread-count diff. The materializer already bumped
@@ -239,6 +374,35 @@ async function handleCreateMessage(
             }),
       },
     });
+
+    // Federation: if this room is federated into other (receiving) spaces,
+    // those spaces' sidebars show it as an unread row. Send the same live
+    // roomMetadataDiff (room id, +1 delta) scoped to each receiving space's
+    // connections, plus broadcast metadata invalidations for the spaces
+    // themselves — the message never lands on their event streams, so
+    // without this their sidebar unread markers only update on refetch.
+    // Thread messages are skipped: B's sidebar renders the federated
+    // CHANNEL row (bumped by channel messages), not individual threads.
+    if (!isThread) {
+      signals.push(
+        ...(await federatedReceiversInvalidation(
+          // Production passes the routed pool handle (Router.onEventsApplied);
+          // direct callers/tests fall back to the process-wide registry.
+          (db as { global?: () => DbLike } | undefined)?.global?.()
+            ?? tryOpenGlobalDb(),
+          spaceId,
+          roomId,
+          {
+            seq: 0, // stamped by the Router
+            delta: 1,
+            users,
+            roomUnreadDeltas: new Map(
+              newlyUnread.map((u) => [u, 1] as const),
+            ),
+          },
+        )),
+      );
+    }
   }
 
   // recentThreads / room.getThreads may have changed (the new message is
@@ -246,6 +410,16 @@ async function handleCreateMessage(
   // above, so this invalidation is only for the thread-activity fields.
   signals.push(invalidate("space.roomy.room.getMetadata", { roomId }));
   signals.push(invalidate("space.roomy.room.getThreads", { roomId }));
+
+  // The space index board (space.getThreads) re-orders on new activity
+  // (latest timestamp per room) and gains/clears unread dots for every
+  // subscriber — broadcast, not caller-scoped.
+  signals.push(invalidate("space.roomy.space.getThreads", { spaceId }));
+
+  // A new message is a new activity-feed item (and bumps the feed's unread
+  // counts for every subscriber). The activity feed is a global per-user
+  // query, so invalidate with no params — broadcast to all users.
+  signals.push(invalidate("space.roomy.space.getActivityFeed", {}));
 
   // A message in a thread may update the author's `activeThreads` in the
   // space sidebar. The `roomMetadataDiff` only patches `unreadCount`, not
@@ -261,6 +435,7 @@ async function handleEditMessage(
   event: AppliedEvent,
   db?: DbLike,
   messageSnapshots?: ReadonlyMap<Ulid, MessageDto>,
+  replyToAuthors?: ReadonlyMap<Ulid, UserDid>,
 ): Promise<InvalidationEvent[]> {
   const roomId = event.roomId;
   if (!roomId) return [];
@@ -292,17 +467,33 @@ async function handleEditMessage(
       },
     });
     // Mentions may have changed on edit — re-route to `mentions:<did>`.
+    // The replied-to author gets one `kind: 'reply'` op (or the mention op
+    // when the overlap filter drops them), mirroring the index upgrade.
+    const mentions = details.mentions as string[] | undefined;
+    const replyAuthor = await replyAuthorFor(event, db, replyToAuthors);
+    const mentionDids = mentions?.filter((d) => d !== replyAuthor);
     signals.push(
-      ...mentionDiffs(event, roomId, details.mentions as string[] | undefined, {
+      ...mentionDiffs(event, roomId, mentionDids, {
         op: "update",
         key: messageId,
         message,
-      }),
+      }, "mention"),
     );
+    signals.push(...replyDiff(event, roomId, replyAuthor, {
+      op: "update",
+      key: messageId,
+      message,
+    }));
   }
   // Edit doesn't change unread count, but room metadata's recentThreads
-  // might reference this message's activity.
+  // might reference this message's activity, and the space index board
+  // shows the edited message as its latest activity.
   signals.push(invalidate("space.roomy.room.getMetadata", { roomId }));
+  signals.push(
+    invalidate("space.roomy.space.getThreads", { spaceId: event.streamDid }),
+  );
+  // An edited message may change the activity feed's rendered item.
+  signals.push(invalidate("space.roomy.space.getActivityFeed", {}));
 
   return signals;
 }
@@ -330,6 +521,11 @@ async function handleDeleteMessage(
       },
     },
     ...invalidateRoom(roomId, event.streamDid),
+    // The space index board (space.getThreads) may drop this room or reorder
+    // it when its latest message is deleted — broadcast invalidation.
+    invalidate("space.roomy.space.getThreads", { spaceId: event.streamDid }),
+    // A deleted message may remove an activity-feed item.
+    invalidate("space.roomy.space.getActivityFeed", {}),
   ];
 
   // Emit `remove` mention ops for every DID the deleted message mentioned,
@@ -340,7 +536,6 @@ async function handleDeleteMessage(
   if (globalDb) {
     const dids = await getMentionedDidsForMessage(globalDb, messageId);
     for (const did of dids) {
-      if (did === event.user) continue;
       signals.push({
         kind: "mentionDiff",
         signal: {
@@ -375,6 +570,9 @@ function handleReactionChange(event: AppliedEvent): InvalidationEvent[] {
     // Per the "over-invalidate" principle this broadcasts to all users;
     // a reaction on a non-latest message triggers a harmless no-op refetch.
     invalidate("space.roomy.space.getActivityFeed", {}),
+    // A reaction on a room's latest message changes the space index board's
+    // `latestMembers` (recent participants) for that room — broadcast.
+    invalidate("space.roomy.space.getThreads", { spaceId }),
     ...(details.messageId
       ? [
           invalidate("space.roomy.message.getMessage", {
@@ -440,7 +638,11 @@ function handleDeleteRoom(event: AppliedEvent): InvalidationEvent[] {
   const details = event.details ?? {};
   const roomId = (details.roomId as Ulid | undefined) ?? event.roomId;
 
-  const signals: InvalidationEvent[] = [...invalidateSpace(spaceId)];
+  const signals: InvalidationEvent[] = [
+    ...invalidateSpace(spaceId),
+    // Deleting a room removes its activity items from every feed.
+    invalidate("space.roomy.space.getActivityFeed", {}),
+  ];
   if (roomId) {
     signals.push(invalidate("space.roomy.room.getMetadata", { roomId }));
   }
@@ -471,6 +673,8 @@ function handleJoinSpace(event: AppliedEvent): InvalidationEvent[] {
   return [
     ...invalidateSpace(spaceId),
     invalidate("space.roomy.space.getSpaces", {}, event.user),
+    // Joining a space adds its recent activity to the caller's feed.
+    invalidate("space.roomy.space.getActivityFeed", {}, event.user),
   ];
 }
 
@@ -479,6 +683,8 @@ function handleLeaveSpace(event: AppliedEvent): InvalidationEvent[] {
   return [
     ...invalidateSpace(spaceId),
     invalidate("space.roomy.space.getSpaces", {}, event.user),
+    // Leaving a space removes its activity from the caller's feed.
+    invalidate("space.roomy.space.getActivityFeed", {}, event.user),
   ];
 }
 
@@ -732,7 +938,7 @@ function handleSetReceiverPermission(event: AppliedEvent): InvalidationEvent[] {
 
 // ─── Dispatch table ─────────────────────────────────────────────────────
 
-const HANDLERS: Record<string, (event: AppliedEvent, db?: DbLike, messageSnapshots?: ReadonlyMap<Ulid, MessageDto>) => InvalidationEvent[] | Promise<InvalidationEvent[]>> = {
+const HANDLERS: Record<string, (event: AppliedEvent, db?: DbLike, messageSnapshots?: ReadonlyMap<Ulid, MessageDto>, replyToAuthors?: ReadonlyMap<Ulid, UserDid>) => InvalidationEvent[] | Promise<InvalidationEvent[]>> = {
   // Messages
   "space.roomy.message.createMessage.v0": handleCreateMessage,
   "space.roomy.message.editMessage.v0": handleEditMessage,
