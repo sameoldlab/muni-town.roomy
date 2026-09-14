@@ -83,6 +83,9 @@ importers:
       '@tanstack/svelte-query':
         specifier: ^6.1.29
         version: 6.1.29(svelte@5.53.0)
+      '@tauri-apps/plugin-updater':
+        specifier: ^2.11.0
+        version: 2.11.0
       '@tiptap/core':
         specifier: 3.27.1
         version: 3.27.1(@tiptap/pm@3.27.1)
@@ -2097,6 +2100,11 @@ packages:
     peerDependencies:
       svelte: ^5.25.0
 
+  '@tauri-apps/api@2.11.1':
+    resolution: {integrity: sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==}
+
+  '@tauri-apps/plugin-updater@2.11.0':
+    resolution: {integrity: sha512-AE36XkOoSna24G40jZMY15nzAnkXEPL/73tGoseGrtGOHuI/cZwWzHpZFLjKXDPgzYZ435z1gHu28LgrsBwIxQ==}
   '@tauri-apps/cli-darwin-arm64@2.11.4':
     resolution: {integrity: sha512-1ryOF3ZhpZ/nemHV5zVwBQBz9jDGKmKPvWPADOhc83ig0P4bMc2iER4NbC6r9sjeIZ6RVQ4g3RZIYvezhcl4TQ==}
     engines: {node: '>= 10'}
@@ -6335,6 +6343,11 @@ snapshots:
       '@tanstack/query-core': 5.100.10
       svelte: 5.53.0
 
+  '@tauri-apps/api@2.11.1': {}
+
+  '@tauri-apps/plugin-updater@2.11.0':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
   '@tauri-apps/cli-darwin-arm64@2.11.4':
     optional: true
 
