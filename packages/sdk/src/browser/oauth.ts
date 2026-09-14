@@ -32,7 +32,13 @@ declare global {
       };
       http: {
         fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
-      }
+      };
+      app: {
+        getVersion(): Promise<string>;
+      };
+      process: {
+        relaunch(): Promise<void>;
+      };
     };
   }
 }

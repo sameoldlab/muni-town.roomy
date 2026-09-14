@@ -8,6 +8,9 @@
   import { cache } from "@roomy-space/sdk";
   import { resolveBlobUrl } from "$lib/utils";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
+  import Switch from "@roomy/design/components/ui/toggle/Toggle.svelte";
+  import { desktopUpdatesEnabled, getUpdater } from "$lib/nativeUpdate.svelte";
+  import { slide } from "svelte/transition";
 
   const spacesQuery = createSpacesQuery({ includeLeft: true });
 
@@ -26,6 +29,7 @@
       rejoining = null;
     }
   }
+  const updater = getUpdater();
 </script>
 
 <div class="flex flex-col gap-10">
@@ -48,7 +52,9 @@
     {:else if spacesQuery.isError}
       <ErrorMessage message="Error: {spacesQuery.error.message}" class="py-8" />
     {:else if spacesQuery.data}
-      {@const left = spacesQuery.data.spaces.filter((s: { isMember: boolean }) => !s.isMember)}
+      {@const left = spacesQuery.data.spaces.filter(
+        (s: { isMember: boolean }) => !s.isMember,
+      )}
 
       {#if left.length === 0}
         <p class="text-sm text-base-400">No left spaces.</p>
@@ -83,4 +89,72 @@
       {/if}
     {/if}
   </section>
+  <!-- Updates section -->
+  {#if desktopUpdatesEnabled}
+    <section>
+      <h2 class="text-base font-semibold mb-4 text-base-900 dark:text-base-100">
+        App Updates
+      </h2>
+
+      <div class="flex flex-col w-full text-base-700 dark:text-base-300">
+        <div class="flex items-center justify-between py-2 pr-0.5">
+          <div class="flex flex-col">
+            <p class="text-sm font-medium">
+              Currently on Roomy v{#await window.__TAURI__?.app.getVersion() then version}
+                {version}
+              {/await}
+            </p>
+            <p class="text-sm font-medium text-base-400">
+              {#if updater.update}
+                v{updater.update.version} available
+              {/if}
+            </p>
+          </div>
+          <Button
+            disabled={updater.status === "downloading" }
+            onclick={() => {
+              if (
+                updater.status === "initialized" ||
+                updater.status === "unavailable"
+              )
+                updater.checkUpdate()
+              else if (updater.status === "ready") updater.downloadAndInstall();
+              else if (updater.status === "complete") window.__TAURI__?.process.relaunch();
+            }}
+          >
+            {#if updater.status === "ready"}
+              Install
+            {:else if updater.status === "downloading"}
+              Downloading...
+            {:else if updater.status === "complete"}
+              Restart Roomy
+            {:else}
+              Check for Updates
+            {/if}
+          </Button>
+        </div>
+
+        {#if updater.size > 0}
+          <div
+            in:slide={{ duration: 200 }}
+            class="w-full h-2 rounded-full bg-base-200 dark:bg-base-800 overflow-hidden"
+          >
+            <div
+              class="h-full rounded-full bg-accent-500 transition-[width] duration-300 ease-out"
+              style:width="{updater.progress}%"
+            ></div>
+          </div>
+        {/if}
+        <div class="flex items-center justify-between py-2 pr-0 5">
+          <div>
+            <p>Enable Autoupdate</p>
+            <p class="text-base-400">
+              Download and install new versions in the background
+            </p>
+          </div>
+          <Switch bind:checked={updater.enableAutoupdate} />
+        </div>
+      </div>
+    </section>
+  {/if}
 </div>
