@@ -134,7 +134,7 @@
         [{ text: "Priority support", bold: true }, { text: " with migration, uptime" }],
         [{ text: "Bespoke features and integrations" }],
       ],
-      cta: { label: "Talk to us", href: "mailto:hello@roomy.space" },
+      cta: { label: "Talk to us", href: "mailto:team@roomy.space" },
     },
   ]);
 
@@ -149,7 +149,7 @@
     },
     {
       q: "What if my community is bigger than 1000 members?",
-      a: "We can negotiate a price that works for you and be responsive to your needs — talk to us at hello@roomy.space.",
+      a: "We can negotiate a price that works for you and be responsive to your needs — talk to us at team@roomy.space.",
     },
     {
       q: "How is Roomy Pro billed?",

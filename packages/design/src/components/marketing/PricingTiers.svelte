@@ -45,7 +45,7 @@
           [{ text: "Priority support", bold: true }, { text: " with migration, uptime" }],
           [{ text: "Bespoke features and integrations" }],
         ],
-        cta: { label: "Talk to us", href: "mailto:hello@roomy.space" },
+        cta: { label: "Talk to us", href: "mailto:team@roomy.space" },
       },
     ] satisfies Tier[],
   }: {
