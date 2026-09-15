@@ -112,7 +112,10 @@
             <span class="price-badge">{tier.price.badge}</span>
           {/if}
         {/if}
-        {#if tier.cta && tier.name !== activeTier}
+        <!-- A caller may put a useful CTA on the active tier (e.g. the Pro
+             members-area link on the subscription page), so a tier's CTA is
+             not suppressed just because it is the user's own plan. -->
+        {#if tier.cta}
           {#if tier.cta.action}
             <Button
               variant="primary"
