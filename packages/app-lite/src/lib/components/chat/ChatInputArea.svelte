@@ -20,6 +20,8 @@
   import LinkCard from "./embeds/LinkCard.svelte";
   import { extractUrls, fetchEmbedData } from "$lib/embed/embed-service";
   import Button from "@roomy/design/components/ui/button/Button.svelte";
+  import { scheduleAutoReload } from "$lib/error-recovery";
+  import { toast } from "@foxui/core";
   import { IconX } from "@roomy/design/icons";
 
   type LinkEmbedData = typeof schemas.queries.getMessage.LinkEmbedData.infer;
@@ -335,6 +337,7 @@
 
     const filesToUpload = [...state.files];
 
+    let sent = false;
     try {
       const attachments: Record<string, unknown>[] = [];
 
@@ -358,11 +361,29 @@
         ...(attachments.length > 0 ? { attachments } : {}),
         replyTo: state.kind === "replying" ? state.replyTo.id : undefined,
       });
+      sent = true;
     } catch (e: unknown) {
       console.error("Failed to send message:", e);
+      // Route through the shared recovery: a dead ATProto session (e.g. the
+      // OAuth client's `TokenRefreshError`) is exactly the class of failure
+      // this reloads for, and sends are not Tanstack mutations, so the
+      // QueryClient's onError hook never sees them. Without this the composer
+      // silently swallowed the error and the user was left "unable to send
+      // messages" with no recovery and no explanation.
+      scheduleAutoReload(e);
+      toast.error(
+        e instanceof Error
+          ? `Message not sent: ${e.message}`
+          : "Message not sent. Check your connection and try again.",
+      );
     } finally {
-      messagingState.set({ kind: "normal", input: "", files: [], blocks: [], previewImages: [] });
-      clearInput();
+      // Only discard the draft once the send actually landed — a failure must
+      // leave the user's text and attachments intact so they can retry rather
+      // than lose the message they were writing.
+      if (sent) {
+        messagingState.set({ kind: "normal", input: "", files: [], blocks: [], previewImages: [] });
+        clearInput();
+      }
       isSendingMessage = false;
       setInputFocus();
     }

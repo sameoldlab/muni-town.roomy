@@ -300,8 +300,16 @@ export class SyncConnection {
     this.#maxReconnectAttempts = opts.maxReconnectAttempts ?? Infinity;
     this.#reconnectDelay = opts.reconnectDelay ?? ((attempt: number) => {
       const cap = Math.min(this.#backoffBaseMs * 2 ** attempt, this.#backoffMaxMs);
-      // Full jitter: random value in [0, cap]
-      return Math.floor(Math.random() * cap);
+      // Full jitter, but never 0: `Math.random()` can return exactly 0, and a
+      // non-positive delay is the documented "stop reconnecting" signal that
+      // #handleAbnormalClose honours by transitioning to `closed` and
+      // scheduling NOTHING. A plain `floor(random() * cap)` therefore wedges
+      // the connection permanently with probability ~1/cap on any given drop
+      // (~1/1000 on the first attempt). Clamp the low end to 1ms so the
+      // default can never accidentally disable reconnect. An explicit
+      // non-positive `backoffMaxMs` still disables, as documented.
+      if (cap <= 0) return cap;
+      return Math.max(1, Math.floor(Math.random() * cap));
     });
     this.#configureHeartbeat(opts);
   }
