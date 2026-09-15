@@ -69,10 +69,11 @@
     compact?: boolean;
     /**
      * Delivery state of a message the viewer just sent, until the server
-     * acknowledges it. `pending` dims the message body and shows a sending
-     * indicator; `failed` shows the indicator as an error with the
-     * `deliveryActions` slot (retry / discard). Messages delivered by the
-     * server leave this unset.
+     * acknowledges it. `pending` dims the body and puts a spinner in the
+     * avatar slot — it gets no status line of its own, so the row never
+     * shifts when it resolves; `failed` shows a "Not sent" marker above the
+     * message with the `deliveryActions` slot (retry / discard). Messages
+     * delivered by the server leave this unset.
      */
     deliveryState?: "pending" | "failed";
     /** Pre-resolved avatar URL (e.g. after CDN rewriting). Falls back to authorAvatarUrl. */
@@ -125,28 +126,21 @@
     mergeWithPrevious ? "mt-1" : compact ? "mt-1.5 pt-0.5" : "mt-5 pt-1",
   ]}
 >
-  {#if deliveryState}
-    <!-- Delivery state of the viewer's own unacknowledged send. Sits above the
-         message so it is visible without hover (unlike the message toolbar)
-         and does not shift the row when it resolves. -->
+  {#if deliveryState === "failed"}
+    <!-- A rejected send: the marker sits above the message so it is visible
+         without hover (unlike the message toolbar), carrying the retry /
+         discard controls the app wires into `deliveryActions`. A pending send
+         has no marker of its own — its spinner lives in the avatar slot below
+         (see `deliveryState`). -->
     <div
-      class="flex items-center gap-1.5 pl-12 text-[11px] font-medium"
-      class:text-base-500={deliveryState === "pending"}
-      class:dark:text-base-400={deliveryState === "pending"}
-      class:text-red-600={deliveryState === "failed"}
-      class:dark:text-red-400={deliveryState === "failed"}
+      class="flex items-center gap-1.5 pl-12 text-[11px] font-medium text-red-600 dark:text-red-400"
     >
-      {#if deliveryState === "pending"}
-        <IconLoading class="size-3 shrink-0 animate-spin" />
-        Sending…
-      {:else}
-        <IconAlertCircle class="size-3 shrink-0" />
-        Not sent
-        {#if deliveryActions}
-          <span class="flex items-center gap-1">
-            {@render deliveryActions()}
-          </span>
-        {/if}
+      <IconAlertCircle class="size-3 shrink-0" />
+      Not sent
+      {#if deliveryActions}
+        <span class="flex items-center gap-1">
+          {@render deliveryActions()}
+        </span>
       {/if}
     </div>
   {/if}
@@ -157,36 +151,53 @@
     {/if}
   </div>
 
-  <!-- An unacknowledged send reads as provisional: the message itself is
-       dimmed, while the status line above stays at full strength. -->
+  <!-- An unacknowledged send reads as provisional. A rejected one dims the
+       whole row, avatar included, matching its "Not sent" marker above. A
+       queued one dims only the body: its spinner replaces the avatar and is
+       the one thing that should stay legible. -->
   <div
     class="group relative flex w-full justify-start gap-3"
-    class:opacity-60={!!deliveryState}
+    class:opacity-60={deliveryState === "failed"}
   >
-    <!-- Avatar, or left margin (skipped for centred system notices) -->
-    {#if !isSystem && !mergeWithPrevious}
-      <div class="size-8 sm:size-10">
-        <button
-          onclick={(e) => {
-            e.stopPropagation();
-            onAvatarClick?.(e);
-          }}
-          class="rounded-full hover:ring-2 hover:ring-accent-500 transition-all cursor-pointer"
-        >
-          <UserAvatar
-            src={avatarSrc ?? authorAvatarUrl}
-            name={authorDid || "system"}
-            class="size-8 sm:size-10"
+    <!-- The avatar slot — the message's left margin (skipped for centred
+         system notices). A queued send puts its spinner here in place of the
+         avatar: delivery state is transient, so it takes no line of its own
+         above the message, and the row never shifts when the avatar comes
+         back. -->
+    {#if !isSystem}
+      {#if deliveryState === "pending"}
+        <!-- Sized and top-aligned like the avatar it replaces, so the swap
+             when the server row lands moves nothing. -->
+        <div class="flex size-8 shrink-0 items-center justify-center sm:size-10">
+          <IconLoading
+            class="size-4 shrink-0 animate-spin text-base-500 dark:text-base-400"
           />
-        </button>
-      </div>
-    {:else if !isSystem}
-      <div class="w-8 shrink-0 sm:w-10"></div>
+        </div>
+      {:else if mergeWithPrevious}
+        <div class="w-8 shrink-0 sm:w-10"></div>
+      {:else}
+        <div class="size-8 sm:size-10">
+          <button
+            onclick={(e) => {
+              e.stopPropagation();
+              onAvatarClick?.(e);
+            }}
+            class="rounded-full hover:ring-2 hover:ring-accent-500 transition-all cursor-pointer"
+          >
+            <UserAvatar
+              src={avatarSrc ?? authorAvatarUrl}
+              name={authorDid || "system"}
+              class="size-8 sm:size-10"
+            />
+          </button>
+        </div>
+      {/if}
     {/if}
 
     <div
       class:justify-center={isSystem}
       class:items-center={isSystem}
+      class:opacity-60={deliveryState === "pending"}
       class="flex flex-col flex-1 min-w-0"
     >
       <!-- Username, timestamp (system notices render a small centred timestamp instead) -->

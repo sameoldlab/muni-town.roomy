@@ -8,11 +8,17 @@
  * `#messageDiff` `add` op by that same ULID, the server row *replaces* the
  * placeholder when it arrives — reconciliation is by construction, not a merge
  * step (see `applyMessageDiff`: `map.set(op.key, op.message)`).
- *
+
  * Delivery state lives here rather than on the cached `Message` so the cache
  * keeps holding server-shaped rows: the diff `add` swaps the entry wholesale
  * (dropping any flag we had attached to it) and an `update` op spreads over it
  * (which would strand a stale flag). Renderers read this registry by id.
+ *
+ * Queuing is the handoff point from composing to delivery: `sendMessage` fires
+ * its `onQueued` callback the moment the placeholder lands, and the composer
+ * clears its draft there rather than on the round-trip (see
+ * `ChatInputArea.handleSend`). A queued message is therefore already the
+ * room's, and the user is free to compose the next one.
  *
  * On failure the placeholder stays in the timeline marked `failed` and the
  * event is retained, so a retry resends the identical payload — same ULID,

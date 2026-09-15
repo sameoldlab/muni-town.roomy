@@ -100,8 +100,8 @@
   {template}
 />
 
-<!-- An unacknowledged send: dimmed with a "Sending…" line while the appserver
-     round-trip is in flight. -->
+<!-- An unacknowledged send: dimmed, with a spinner in the avatar's place —
+     no status line of its own, so the row does not shift when it resolves. -->
 <Story
   name="Pending delivery"
   args={{

@@ -31,9 +31,12 @@ function toBase64(bytes: Uint8Array): string {
  *
  * The message is inserted into the room's `getMessages` cache before the
  * request goes out (see {@link startPendingSend}), so it renders immediately
- * as pending instead of waiting for the server round-trip. A failure leaves
- * that row in place marked failed — the caller keeps the draft and offers a
- * retry (see `ChatInputArea.handleSend`).
+ * as pending instead of waiting for the server round-trip. `onQueued` fires
+ * at exactly that moment — the message has left the composer and is now the
+ * room's to deliver, so the caller can hand the composer back to the user
+ * rather than blocking it on the round-trip. A failure after that point
+ * leaves the row marked failed — the caller offers a retry
+ * (see `ChatInputArea.handleSend`).
  */
 export async function sendMessage(
   spaceId: string,
@@ -45,6 +48,12 @@ export async function sendMessage(
     attachments?: Record<string, unknown>[];
     /** Reply-to message id, encoded as a reply attachment. */
     replyTo?: string;
+    /**
+     * Called once the optimistic placeholder is in the room's cache, before
+     * the event is sent. The message is queued at this point; what happens to
+     * it from here is delivery, not composition.
+     */
+    onQueued?: () => void;
   },
 ): Promise<string> {
   const attachments = [
@@ -117,6 +126,10 @@ export async function sendMessage(
       } satisfies Message;
     },
   });
+
+  // The placeholder is in the cache: the message is queued. Everything past
+  // this is delivery, so the caller's composer is free again.
+  opts.onQueued?.();
 
   try {
     await sendEvents(spaceId, [event]);

@@ -337,7 +337,25 @@
 
     const filesToUpload = [...state.files];
 
-    let sent = false;
+    /**
+     * Hand the composer back to the user the moment the message is queued.
+     *
+     * A send is optimistic (see `pending-sends.svelte.ts`): the message is in
+     * the room's timeline before the request goes out. From that point the
+     * composer holds nothing the user still needs — the message is the room's
+     * to deliver, and a failure leaves it marked "Not sent" with its own
+     * Retry. Clearing here rather than after the round-trip is what lets the
+     * user start composing the next message immediately.
+     */
+    let queued = false;
+    function releaseComposer() {
+      queued = true;
+      messagingState.set({ kind: "normal", input: "", files: [], blocks: [], previewImages: [] });
+      clearInput();
+      isSendingMessage = false;
+      setInputFocus();
+    }
+
     try {
       const attachments: Record<string, unknown>[] = [];
 
@@ -360,8 +378,8 @@
         blocks: submittedBlocks,
         ...(attachments.length > 0 ? { attachments } : {}),
         replyTo: state.kind === "replying" ? state.replyTo.id : undefined,
+        onQueued: releaseComposer,
       });
-      sent = true;
     } catch (e: unknown) {
       console.error("Failed to send message:", e);
       // Route through the shared recovery: a dead ATProto session (e.g. the
@@ -377,15 +395,13 @@
           : "Message not sent. Check your connection and try again.",
       );
     } finally {
-      // Only discard the draft once the send actually landed — a failure must
-      // leave the user's text and attachments intact so they can retry rather
-      // than lose the message they were writing.
-      if (sent) {
-        messagingState.set({ kind: "normal", input: "", files: [], blocks: [], previewImages: [] });
-        clearInput();
+      // A message that never reached the queue (an upload failed) leaves the
+      // draft intact so the user can retry without rewriting it. Once queued,
+      // the composer is already cleared and the row carries the retry.
+      if (!queued) {
+        isSendingMessage = false;
+        setInputFocus();
       }
-      isSendingMessage = false;
-      setInputFocus();
     }
   }
 
