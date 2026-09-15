@@ -1,15 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "enables the default permissions",
+  "identifier": "shared-capabilities",
+  "description": "enables the shared permissions",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "core:event:default",
-    "deep-link:default",
-    "updater:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
@@ -35,7 +33,6 @@
           "url": "https://roomy.space/*"
         }
       ]
-    },
-    "process:default"
+    }
   ]
 }

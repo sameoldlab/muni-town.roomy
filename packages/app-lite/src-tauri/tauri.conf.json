@@ -19,7 +19,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        "desktop-capabilities",
+        "shared-capabilities"
+      ]
     }
   },
   "bundle": {
@@ -41,18 +45,28 @@
     "deep-link": {
       "mobile": [
         {
-          "scheme": ["space.roomy", "roomy"],
+          "scheme": [
+            "space.roomy",
+            "roomy"
+          ],
           "appLink": false
         },
         {
-          "scheme": ["https"],
+          "scheme": [
+            "https"
+          ],
           "host": "roomy.space",
-          "pathPrefix": ["/"],
+          "pathPrefix": [
+            "/"
+          ],
           "appLink": true
         }
       ],
       "desktop": {
-        "schemes": ["space.roomy", "roomy"]
+        "schemes": [
+          "space.roomy",
+          "roomy"
+        ]
       }
     },
     "updater": {
