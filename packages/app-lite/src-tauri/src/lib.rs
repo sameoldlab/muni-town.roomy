@@ -8,6 +8,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_http::init());
+    #[cfg(mobile)]
+    {
+        builder = builder.plugin(
+            tauri_plugin_mobile_push::Builder::new()
+                .ios_foreground_presentation(
+                    tauri_plugin_mobile_push::ForegroundPresentationOptions::silent(),
+                )
+                .build(),
+        );
+    }
     #[cfg(desktop)]
     {
         builder = builder
@@ -40,7 +50,7 @@ pub fn run() {
                         &MenuItem::with_id(app, "restart", "Restart", true, None::<&str>)?,
                     ],
                 )?;
-                let tray = TrayIconBuilder::new()
+                let _ = TrayIconBuilder::new()
                     .menu(&menu)
                     .show_menu_on_left_click(false)
                     .on_tray_icon_event(|tray, event| match event {
