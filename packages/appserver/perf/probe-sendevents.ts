@@ -18,12 +18,20 @@
  *     bun run packages/appserver/perf/probe-sendevents.ts [options]
  *
  * Options:
+ *   --mode <create|delete>  event kind measured (default create)
  *   --batch <n>        events per call (default 1)
  *   --iterations <n>   calls measured (default 20)
  *   --warmup <n>       calls discarded (default 3)
  *   --concurrency <n>  parallel in-flight calls (default 1)
  *   --seed-profile     pre-populate the author's profile row
+ *   --read-state-rooms <n>    filler rooms seeded in read_positions (default 0)
+ *   --read-state-readers <n>  readers per filler room (default 50)
  *   --keep             keep the temp data dir
+ *
+ * `--read-state-rooms` is not optional in spirit: `read_positions` is global
+ * and its write-path lookups are room-scoped, so with an empty table (the
+ * default) their plans are trivially fast and a missing index is invisible.
+ * See docs/sendevents-write-path-review.md.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -32,7 +40,7 @@ import { join } from "node:path";
 import { newUlid } from "@roomy-space/sdk";
 import { createAppserver } from "../src/appserver.ts";
 import { testAuthVerifier } from "../src/xrpc/auth.ts";
-import { closeDb, openDb, openSpaceDb, openGlobalDb } from "../src/db/db.ts";
+import { closeDb, openDb, openSpaceDb, openGlobalDb, openReadStateDb } from "../src/db/db.ts";
 import { WorkerLink } from "../src/db/asyncDatabase.ts";
 import { StreamManager } from "../src/streams/StreamManager.ts";
 import { Router } from "../src/invalidation/router.ts";
@@ -54,6 +62,24 @@ const ITERATIONS = numArg("iterations", 20);
 const WARMUP = numArg("warmup", 3);
 const CONCURRENCY = numArg("concurrency", 1);
 const SEED_PROFILE = argv.includes("--seed-profile");
+// Production-shaped read_positions. The default (0) leaves the table empty,
+// which hides a whole class of write-path cost: both `read_positions` queries
+// `sendEvents` issues — the createMessage unread bump and the delete/move
+// unwind — filter by `room_id`, a column the primary key cannot serve. With
+// an empty table every plan is trivially fast; with a realistic one an
+// unindexed scan is O(rows) and was invisible to this probe. See
+// docs/sendevents-write-path-review.md.
+const READ_STATE_ROOMS = numArg("read-state-rooms", 0);
+const READ_STATE_READERS = numArg("read-state-readers", 50);
+// `--mode delete` exercises the TASK-134 delete side-effects instead of
+// createMessage. Those run one read-state unwind per distinct room in the
+// batch, so they are the sharpest amplifier of an unindexed `room_id` scan
+// (and were what regressed 193x at #211).
+const strArg = (name: string, fallback: string): string => {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 ? String(argv[i + 1]) : fallback;
+};
+const MODE = strArg("mode", "create");
 const KEEP = argv.includes("--keep");
 
 const USER = "did:plc:probe-user";
@@ -246,6 +272,101 @@ const roomEvent = {
 await post([roomEvent]);
 const ROOM = roomEvent.id;
 
+// Production-shaped read-state. Both write-path read_positions queries filter
+// by `room_id`, a column no index serves, so their cost scales with the
+// table's TOTAL size (readership across every space) rather than with the
+// room being written to. An empty table makes both look free — which is how
+// the missing index stayed invisible. Seed filler rooms plus a realistic
+// reader set on the probe room itself.
+if (READ_STATE_ROOMS > 0) {
+  const readStateDb = openReadStateDb();
+  const started = performance.now();
+  let tuples: string[] = [];
+  let params: unknown[] = [];
+  const flush = async () => {
+    if (tuples.length === 0) return;
+    await readStateDb.run(
+      `insert or replace into read_positions
+         (user_did, room_id, space_did, seen_up_to, unread_count, updated_at)
+       values ${tuples.join(",")}`,
+      ...params,
+    );
+    tuples = [];
+    params = [];
+  };
+  for (let r = 0; r < READ_STATE_ROOMS; r++) {
+    for (let u = 0; u < READ_STATE_READERS; u++) {
+      tuples.push("(?, ?, ?, ?, ?, 0)");
+      // A third unread, so the delete/move unwind's `unread_count > 0`
+      // filter has work to do.
+      params.push(`did:plc:reader-${r}-${u}`, `filler-room-${r}`, SPACE, "0".repeat(26), u % 3 === 0 ? 4 : 0);
+      if (tuples.length >= 400) await flush();
+    }
+  }
+  // Readers on the probe room: the createMessage bump updates every one.
+  for (let u = 0; u < READ_STATE_READERS; u++) {
+    tuples.push("(?, ?, ?, ?, ?, 0)");
+    params.push(`did:plc:probe-reader-${u}`, ROOM, SPACE, "0".repeat(26), 0);
+    if (tuples.length >= 400) await flush();
+  }
+  await flush();
+  console.log(
+    `seeded read_positions: ${(READ_STATE_ROOMS * READ_STATE_READERS).toLocaleString()} filler rows + ${READ_STATE_READERS} on the probe room in ${(performance.now() - started).toFixed(0)}ms`,
+  );
+}
+
+// Delete mode needs materialised messages to remove. Seed them through the
+// real write path so every derived column is populated exactly as production
+// populates it, and spread them over distinct rooms when the delete batch is
+// larger than one: the unwind runs per distinct room, which is the shape that
+// multiplied the unindexed scan.
+const deleteTargets: Array<{ room: string; messageId: string }> = [];
+if (MODE === "delete") {
+  const roomIds: string[] = [ROOM];
+  for (let r = 1; r < BATCH; r++) {
+    const ev = {
+      $type: "space.roomy.room.createRoom.v0",
+      id: newUlid(),
+      kind: "space.roomy.channel",
+      name: `probe-channel-${r}`,
+    };
+    await post([ev]);
+    roomIds.push(ev.id);
+  }
+  const need = (ITERATIONS + WARMUP) * BATCH + 1;
+  for (let i = 0; i < need; i++) {
+    const room = roomIds[i % roomIds.length]!;
+    const ev = {
+      $type: "space.roomy.message.createMessage.v0",
+      id: newUlid(),
+      room,
+      body: {
+        mimeType: "text/markdown",
+        data: { $bytes: Buffer.from(`probe seed ${i}`).toString("base64") },
+      },
+      extensions: {},
+    };
+    await post([ev]);
+    deleteTargets.push({ room, messageId: ev.id });
+  }
+  console.log(`seeded ${deleteTargets.length} messages across ${roomIds.length} rooms for delete mode`);
+}
+
+let deleteCursor = 0;
+/** One measured batch, shaped by `--mode`. */
+const nextBatch = (): Record<string, unknown>[] => {
+  if (MODE !== "delete") return messageEvents(ROOM, BATCH);
+  return Array.from({ length: BATCH }, () => {
+    const t = deleteTargets[deleteCursor++]!;
+    return {
+      $type: "space.roomy.message.deleteMessage.v0",
+      id: newUlid(),
+      room: t.room,
+      messageId: t.messageId,
+    };
+  });
+};
+
 // ─── Measure ──────────────────────────────────────────────────────────────
 
 // A pinger measures the blast radius: a stall local to one request must not
@@ -265,15 +386,14 @@ const ping = async () => {
   }
 };
 
-for (let i = 0; i < WARMUP; i++) await post(messageEvents(ROOM, BATCH));
-
+for (let i = 0; i < WARMUP; i++) await post(nextBatch());
 recording = true;
 const pinging = ping();
 const latencies: number[] = [];
 const wallStart = performance.now();
 for (let off = 0; off < ITERATIONS; off += CONCURRENCY) {
   const n = Math.min(CONCURRENCY, ITERATIONS - off);
-  const batch = await Promise.all(Array.from({ length: n }, () => post(messageEvents(ROOM, BATCH))));
+  const batch = await Promise.all(Array.from({ length: n }, () => post(nextBatch())));
   latencies.push(...batch);
 }
 const wall = performance.now() - wallStart;
@@ -288,7 +408,7 @@ const pct = (arr: number[], p: number) => {
   return s[Math.max(0, Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1))]!;
 };
 
-console.log(`\nsendEvents write-path profile — batch=${BATCH} concurrency=${CONCURRENCY} n=${latencies.length}`);
+console.log(`\nsendEvents write-path profile — mode=${MODE} batch=${BATCH} concurrency=${CONCURRENCY} n=${latencies.length}`);
 console.log(`  p50 ${pct(latencies, 50).toFixed(1)}ms   p95 ${pct(latencies, 95).toFixed(1)}ms   p99 ${pct(latencies, 99).toFixed(1)}ms`);
 console.log(`  throughput ${((latencies.length / wall) * 1000).toFixed(1)} req/s (${((latencies.length * BATCH) / wall * 1000).toFixed(0)} evt/s)`);
 console.log(`  concurrent getMetadata pinger: p50 ${pct(pingLatencies, 50).toFixed(1)}ms  p95 ${pct(pingLatencies, 95).toFixed(1)}ms  max ${pct(pingLatencies, 100).toFixed(1)}ms`);

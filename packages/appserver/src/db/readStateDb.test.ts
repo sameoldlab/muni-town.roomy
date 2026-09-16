@@ -287,4 +287,96 @@ describe("read-state schema", () => {
       .get();
     expect(version?.version).toBe(READSTATE_SCHEMA_VERSION);
   });
+
+  /**
+   * Regression (TASK-134 follow-up): the read-state write path filters
+   * `read_positions` by `room_id` alone — the createMessage unread bump and
+   * its `getRoomReadPositionUsers` read, plus the delete/move unwind's
+   * `where room_id = ? and unread_count > 0`. The primary key is
+   * `(user_did, room_id)`, which cannot serve a `room_id`-only filter, so
+   * without an explicit index every one of those queries scans the whole
+   * table — global across all spaces. On a production-sized table that is
+   * seconds per scan inside `sendEvents`.
+   *
+   * Asserts the plan, not just index presence: an index that SQLite declines
+   * to use would leave the scan in place.
+   */
+  test("read_positions has an index that serves room_id-only lookups", () => {
+    const db = new Database(":memory:");
+    db.exec("pragma foreign_keys = on");
+    db.exec(readFileSync(SCHEMA_PATH, "utf8"));
+
+    // Every read-state query the write path issues, filtered by room_id alone.
+    const roomScopedQueries = [
+      "select user_did from read_positions where room_id = ?",
+      "select user_did, seen_up_to, unread_count from read_positions where room_id = ? and unread_count > 0",
+      "update read_positions set unread_count = unread_count + 1 where room_id = ?",
+    ];
+    for (const sql of roomScopedQueries) {
+      const plan = db
+        .query<{ detail: string }, []>(`explain query plan ${sql}`)
+        .all()
+        .map((r) => r.detail)
+        .join(" | ");
+      // A bare SCAN of read_positions is the regression: it reads every row
+      // in a table that is global across all spaces.
+      expect(plan).not.toMatch(/\bSCAN read_positions\b/);
+      expect(plan).toMatch(/idx_read_positions_room|SEARCH read_positions/);
+    }
+  });
+
+  /**
+   * The index must reach EXISTING databases: `initializeReadStateSchema`
+   * execs the schema file on every open regardless of version, so a
+   * production DB written before this change gains the index at next boot.
+   * Asserts that path explicitly, since a migration-only index (or one gated
+   * behind a version bump) would leave deployed databases scanning.
+   */
+  test("room_id index is added to an already-current database on open", () => {
+    const db = new Database(":memory:");
+    db.exec("pragma foreign_keys = on");
+    db.exec(`
+      create table readstate_schema_version (
+        id integer primary key check (id = 1),
+        version text not null
+      ) strict;
+      insert into readstate_schema_version (id, version) values (1, '${READSTATE_SCHEMA_VERSION}');
+      create table read_positions (
+        user_did    text not null,
+        room_id     text not null,
+        space_did   text not null default '',
+        seen_up_to  text not null,
+        unread_count integer not null default 0,
+        updated_at  integer not null default (unixepoch() * 1000),
+        primary key (user_did, room_id)
+      ) strict;
+    `);
+
+    const indexesBefore = db
+      .query<{ name: string }, []>(
+        "select name from sqlite_master where type = 'index' and tbl_name = 'read_positions'",
+      )
+      .all()
+      .map((r) => r.name);
+    expect(indexesBefore).not.toContain("idx_read_positions_room");
+
+    // What the worker does on every open, at any version.
+    db.exec(readFileSync(SCHEMA_PATH, "utf8"));
+
+    const indexesAfter = db
+      .query<{ name: string }, []>(
+        "select name from sqlite_master where type = 'index' and tbl_name = 'read_positions'",
+      )
+      .all()
+      .map((r) => r.name);
+    expect(indexesAfter).toContain("idx_read_positions_room");
+    // No version bump was needed, so the stamp is untouched.
+    expect(
+      db
+        .query<{ version: string }, []>(
+          "select version from readstate_schema_version where id = 1",
+        )
+        .get()?.version,
+    ).toBe(READSTATE_SCHEMA_VERSION);
+  });
 });

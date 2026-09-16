@@ -187,6 +187,54 @@ in the same `sendEvents` call, so it has already attempted its fetch and written
 whatever it could resolve; the snapshot read was a re-read by construction. The
 backoff only stops the *retry* of a lookup that just failed.
 
+## Unindexed read-state lookups (fixed 2026-09-16)
+
+Both `read_positions` queries `sendEvents` issues filter by `room_id` alone:
+
+- the createMessage unread bump (`update read_positions ... where room_id = ?`)
+  and the `getRoomReadPositionUsers` read `inferSignals` does to build the
+  `roomMetadataDiff`;
+- the delete/move unwind
+  (`select ... from read_positions where room_id = ? and unread_count > 0`).
+
+The primary key is `(user_did, room_id)`. A `room_id`-only filter cannot use it
+(the leading column is `user_did`), so SQLite planned a full
+`SCAN read_positions` for each. `read_positions` is **global across every
+space** — one row per (reader, room) — so the scan cost is proportional to
+total readership on the deployment, not to the room being written to. A
+single-room write therefore paid for every reader everywhere.
+
+This grew with the table and was invisible in testing: `probe-sendevents.ts`
+seeded no read-state rows, so the plan looked free. Measured on a synthetic
+table at production shape (10M rows, 50k rooms x 200 readers): **~1.1s per
+scan**, which a 50-delete `sendEvents` batch (one unwind per distinct room)
+multiplies into **~55s** of single-worker time — a whole request stalled for
+over a minute.
+
+| workload | before index | after index |
+|---|---|---|
+| 50-delete batch, 5M rows, 50 rooms | **19.2 s** | **0.115 s** |
+| 25-createMessage batch, 1M rows | **3.3 s** | **0.096 s** |
+
+The delete path regressed sharply in TASK-134 (#211): the delete side-effects
+added a per-room unwind, so a delete batch went from one scan to
+`distinct rooms` scans. On the parent commit (`e64c2a2e`) the same 50-delete
+batch measured 99ms; at #211 it measured 19.2s — 193x.
+
+The fix is one index (`idx_read_positions_room on read_positions(room_id)`),
+declared in `readStateSchema.sql`. The schema file is exec'd on every open
+regardless of version, so existing databases gain it at next boot without a
+version bump or migration task. Chosen over a composite
+`(room_id, unread_count)`: the wider index does not help here and roughly
+doubles the write cost of the createMessage unread bump, which updates every
+reader row for the room.
+
+Regression coverage: `src/db/readStateDb.test.ts` asserts the query PLAN (not
+just index presence — an unused index would leave the scan) for all three
+room-scoped statements, and that an already-current database gains the index on
+open.
+
+
 ## Remaining wins (not done — listed for triage)
 
 Ordered by value/effort. None of these are the current bottleneck; #1 and #2
@@ -244,3 +292,11 @@ path is supposed to be local-only, so any non-zero value is a defect.
 
 Note the probe is sensitive to machine load — run it alone, not beside the test
 suite.
+
+Add `--read-state-rooms N [--read-state-readers M]` to seed a
+production-shaped `read_positions` table before measuring. This matters because
+`read_positions` is global and its write-path lookups are room-scoped: with an
+empty table (the default) both plans are trivially fast, which is what hid the
+missing `room_id` index. Seeding 20000 rooms x 50 readers turns the default
+createMessage probe from p50 ~21ms into p50 ~2980ms on pre-fix code, and ~85ms
+after the index — the difference IS the regression signal.
