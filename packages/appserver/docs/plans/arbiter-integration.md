@@ -56,7 +56,7 @@ the concrete phases, and the migration strategy for existing DIDs.
     imports an **existing** account by proving control via app password.
   - `town.muni.arbiter.resetPolicy{arbiterDid, policy}` — recovery-admin-only
     install of the root Rego policy.
-  - `town.muni.arbiter.proxy{arbiterDid, target, method, nsid, parameters, body}`
+  - `space.roomy.authComplete.arbiter.proxy{arbiterDid, target, method, nsid, parameters, body}`
     — the catch-all: evaluate the Rego policy over the inner request; on allow,
     proxy to `target` (`did#service`) authenticated as the steward.
 - **Authn:** caller authenticates with a **serviceAuth JWT** (`aud` =
@@ -156,7 +156,7 @@ shim until Phase 4).
      the space itself and the appserver (the owner) to act on the space DID.
   4. The appserver proxies a `com.atproto.repo.putRecord` of
      `space.roomy.service/self` (did = appserver) under the new account via
-     `town.muni.arbiter.proxy`, marking it as a Roomy space hosted by the
+     `space.roomy.authComplete.arbiter.proxy`, marking it as a Roomy space hosted by the
      appserver.
 - **Retain** `createStreamDid` and the `did_keys` storage only as a migration
   shim until Phase 4 completes, then remove.
@@ -237,7 +237,7 @@ cheap check (it is not secret — `getMetadata` already exposes `isAdmin`):
 
 Per the user's note, the appserver doesn't act *under* its ATProto accounts
 today, so proxying is not yet needed. When it is, the appserver calls
-`town.muni.arbiter.proxy{arbiterDid: <space DID>, target: "<spaceDID>#atproto_pds", ...}`
+`space.roomy.authComplete.arbiter.proxy{arbiterDid: <space DID>, target: "<spaceDID>#atproto_pds", ...}`
 with a Phase 0 serviceAuth token, and the arbiter's policy gates it. No new
 appserver work beyond a `proxy` helper + Phase 0 auth.
 

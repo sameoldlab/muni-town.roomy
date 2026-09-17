@@ -220,7 +220,7 @@ describe("createStream", () => {
         if (url.pathname.endsWith("/town.muni.arbiter.resetConfig")) {
           return Response.json({ ok: true });
         }
-        if (url.pathname.endsWith("/town.muni.arbiter.proxy")) {
+        if (url.pathname.endsWith("/space.roomy.authComplete.arbiter.proxy")) {
           return Response.json({});
         }
         return new Response("not found", { status: 404 });
@@ -245,7 +245,7 @@ describe("createStream", () => {
       // The arbiter was called for createArbiter, resetConfig, and proxy.
       expect(calls).toContain("/xrpc/town.muni.arbiter.createArbiter");
       expect(calls).toContain("/xrpc/town.muni.arbiter.resetConfig");
-      expect(calls).toContain("/xrpc/town.muni.arbiter.proxy");
+      expect(calls).toContain("/xrpc/space.roomy.authComplete.arbiter.proxy");
     } finally {
       server.stop();
     }

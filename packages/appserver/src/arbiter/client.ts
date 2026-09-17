@@ -12,7 +12,7 @@
  *   `town.muni.arbiter.config/self` record (recovery-admin-only hatch; the
  *   appserver is the recovery admin, so it may do this). Performs no policy
  *   evaluation, so it works while the arbiter is offline.
- * - `town.muni.arbiter.proxy` — drive the policy pipeline over an inner XRPC
+ * - `space.roomy.authComplete.arbiter.proxy` — drive the policy pipeline over an inner XRPC
  *   request, proxying it to the steward's PDS as the stewarded account.
  */
 
@@ -130,7 +130,7 @@ export async function resetConfig(
 
 /**
  * Proxy an inner XRPC request through the arbiter's policy via
- * `town.muni.arbiter.proxy`. The policy decides whether the request is
+ * `space.roomy.authComplete.arbiter.proxy`. The policy decides whether the request is
  * proxied to the steward's PDS as the stewarded account.
  */
 export async function proxy(
@@ -143,7 +143,7 @@ export async function proxy(
   parameters?: unknown,
   body?: unknown,
 ): Promise<unknown> {
-  const { json } = await arbiterFetch(config, ownDid, "town.muni.arbiter.proxy", {
+  const { json } = await arbiterFetch(config, ownDid, "space.roomy.authComplete.arbiter.proxy", {
     arbiterDid,
     target,
     method,

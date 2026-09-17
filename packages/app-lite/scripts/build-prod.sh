@@ -37,7 +37,8 @@ SCOPE+=" rpc:com.atproto.server.getServiceAuth?aud=${VITE_APPSERVER_DID:-did:web
 SCOPE+=" rpc:com.atproto.server.getServiceAuth?aud=*"
 # The proxied method the arbiter token is minted for; aud=* because the arbiter
 # DID is discovered per space.
-SCOPE+=" rpc:town.muni.arbiter.proxy?aud=*"
+SCOPE+=" rpc:space.roomy.authComplete.arbiter.proxy?aud=*"
+SCOPE+=" include:space.roomy.authComplete"
 
 # ── Appserver RPCs (must match APPSERVER_RPCS in config.ts) ──────────────
 SCOPE+=" rpc:space.roomy.space.getSpaces?aud=*"
