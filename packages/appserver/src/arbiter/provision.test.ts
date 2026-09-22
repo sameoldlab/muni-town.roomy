@@ -11,25 +11,37 @@
  *      request core alone (no caller DID — scope policies are pure functions
  *      of `{method, nsid, parameters, body, encoding}`).
  *
- * The published permission set for `space.roomy.authComplete` allows only
- * NSIDs starting with `space.roomy` / `network.cosmic`, plus
- * `com.atproto.repo.uploadBlob`, `com.atproto.identity.updateHandle`, and a
- * `putRecord` of an `app.bsky.actor.profile`. `provisionSpace` step 3 proxies
- * a `putRecord` of `space.roomy.service/self` — an inner NSID of
- * `com.atproto.repo.putRecord` with a `space.roomy.service` collection — which
- * the scope policy denies outright with
+ * At the time of the outage, the published permission set for
+ * `space.roomy.authComplete` admitted only NSIDs starting with
+ * `space.roomy` / `network.cosmic`, plus `com.atproto.repo.uploadBlob`,
+ * `com.atproto.identity.updateHandle`, and a `putRecord` of an
+ * `app.bsky.actor.profile`. `provisionSpace` step 3 proxies a `putRecord` of
+ * `space.roomy.service/self` — an inner NSID of `com.atproto.repo.putRecord`
+ * with a `space.roomy.service` collection — which the scope policy denied
+ * outright with
  * `403 {"error":"Forbidden","message":"request denied by scope policy"}`.
  *
- * The denial fires before any policy layer, so no admin/recovery-admin
- * authorization can rescue it: every `createSpace` proxied through the scoped
- * route 500s. The built-in `town.muni.arbiter.proxy` route has no scope gate
- * and reaches the pipeline, where the installed default policy admits the
- * account's recovery admin (the appserver) — which is the appserver's
- * authority model for provisioning.
+ * The denial fired before any policy layer, so no admin/recovery-admin
+ * authorization could rescue it: every `createSpace` proxied through the
+ * scoped route 500s. The built-in `town.muni.arbiter.proxy` route has no
+ * scope gate and reaches the pipeline, where the installed default policy
+ * admits the account's recovery admin (the appserver) — which is the
+ * appserver's authority model for provisioning.
+ *
+ * The published permission set has since grown — it now also admits record
+ * creation (`putRecord`/`createRecord`) for Semble collections (the
+ * space-card path) and an explicit `putRecord` of `space.roomy.service`. The
+ * Semble branch was first published under a `network.cosmic` namespace
+ * spelling — the lexicon is actually `network.cosmik` — and has since been
+ * republished under `network.cosmik.*`. Provisioning keeps the built-in
+ * route anyway: the appserver's own writes must not depend on what the
+ * permission set happens to admit. `scopedScopePolicyAllows` below
+ * transcribes the current policy, and the scoped-route tests at the bottom
+ * pin what it admits and denies today.
  *
  * The mock arbiter below reproduces the real server's routing: it applies the
  * scope policy on the scoped route (transcribed from the published lexicon,
- * see `SCOPED_SCOPE_POLICY` below) and the ownership check on the built-in
+ * see `scopedScopePolicyAllows` below) and the ownership check on the built-in
  * route. Pre-fix this test fails at step 3 with the real denial message.
  *
  * Run: bun test --cwd packages/appserver src/arbiter/provision.test.ts
@@ -52,22 +64,35 @@ const BUILTIN_ROUTE = "town.muni.arbiter.proxy";
 
 /**
  * The scope policy embedded in the published permission-set lexicon
- * `space.roomy.authComplete` (writer `did:plc:cyqufxsezk33hqulcilckna6`, read
- * from its PDS). Transcribed verbatim — the real server compiles this Rego and
- * requires `data.arbiter.allow == true`; the transcription is a direct
- * predicate translation of its `allow` rules.
+ * `space.roomy.authComplete` (writer `did:plc:cyqufxsezk33hqulcilckna6`, cid
+ * `bafyreic4jrkeswhluqav4whjlvssx23oftjdsom72zmkpy7lyhzwdsemim`, fetched
+ * 2026-09-22 from its PDS). Transcribed verbatim — the real server compiles
+ * this Rego and requires `data.arbiter.allow == true`; the transcription is a
+ * direct predicate translation of its `allow` rules (the published policy's
+ * `cosmik_prefix` constant is inlined as `"network.cosmik."`).
  */
 function scopedScopePolicyAllows(inner: {
   nsid: string;
   body: { collection?: unknown } | null;
 }): boolean {
-  if (inner.nsid.startsWith("space.roomy")) return true;
-  if (inner.nsid.startsWith("network.cosmic")) return true;
+  if (inner.nsid.startsWith("space.roomy.")) return true;
+  if (inner.nsid.startsWith("network.cosmik.")) return true;
   if (inner.nsid === "com.atproto.repo.uploadBlob") return true;
   if (inner.nsid === "com.atproto.identity.updateHandle") return true;
+  // Record creation (putRecord/createRecord) is admitted for
+  // `network.cosmik.*` collections — e.g. Semble space cards.
+  if (
+    (inner.nsid === "com.atproto.repo.putRecord" ||
+      inner.nsid === "com.atproto.repo.createRecord") &&
+    typeof inner.body?.collection === "string" &&
+    inner.body.collection.startsWith("network.cosmik.")
+  ) {
+    return true;
+  }
   return (
     inner.nsid === "com.atproto.repo.putRecord" &&
-    inner.body?.collection === "app.bsky.actor.profile"
+    (inner.body?.collection === "app.bsky.actor.profile" ||
+      inner.body?.collection === "space.roomy.service")
   );
 }
 
@@ -162,8 +187,10 @@ test("provisionSpace succeeds — step 3 proxies via the built-in owner route", 
     expect(spaceDid).toBe(StreamDid.assert(NEW_SPACE_DID));
     // The provisioning write landed as an inner XRPC through the arbiter.
     expect(mock.proxiedNsids).toContain("com.atproto.repo.putRecord");
-    // It must go through the owner route: the scoped route's permission-set
-    // scope policy denies this putRecord, which is the production outage.
+    // It must go through the owner route: the appserver's own provisioning
+    // writes must not depend on what the scoped route's permission-set scope
+    // policy happens to admit (the production outage was exactly such a
+    // denial).
     expect(mock.calls).toContain(BUILTIN_ROUTE);
     expect(mock.calls).not.toContain(SCOPED_ROUTE);
   } finally {
@@ -171,13 +198,12 @@ test("provisionSpace succeeds — step 3 proxies via the built-in owner route", 
   }
 });
 
-test("the provisioning write is denied by the scoped route's scope policy", async () => {
+test("the scoped route's scope policy denies requests outside the permission set", async () => {
   const mock = startMockArbiter();
   try {
-    // Send provisionSpace's exact step-3 inner request over the scoped route
-    // and show the deny is structural, not a config/auth failure: the same
-    // envelope is refused by the scope policy no matter who calls it, because
-    // scope policies cannot see the caller.
+    // A repo write outside the permission set. The scope policy is a pure
+    // function of the inner request — no caller identity — so the denial is
+    // structural, not a config/auth failure.
     const res = await fetch(`${mock.config.url}/xrpc/${SCOPED_ROUTE}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -188,9 +214,9 @@ test("the provisioning write is denied by the scoped route's scope policy", asyn
         nsid: "com.atproto.repo.putRecord",
         body: {
           repo: NEW_SPACE_DID,
-          collection: "space.roomy.service",
-          rkey: "self",
-          record: { $type: "space.roomy.service", did: OWN_DID },
+          collection: "app.bsky.feed.post",
+          rkey: "3k",
+          record: { $type: "app.bsky.feed.post", text: "hi" },
         },
       }),
     });
@@ -200,6 +226,51 @@ test("the provisioning write is denied by the scoped route's scope policy", asyn
       error: "Forbidden",
       message: "request denied by scope policy",
     });
+  } finally {
+    mock.stop();
+  }
+});
+
+test("the scoped route's scope policy admits permission-set record writes", async () => {
+  const mock = startMockArbiter();
+  try {
+    const post = (nsid: string, body: unknown) =>
+      fetch(`${mock.config.url}/xrpc/${SCOPED_ROUTE}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arbiterDid: NEW_SPACE_DID,
+          target: `${NEW_SPACE_DID}#atproto_pds`,
+          method: "POST",
+          nsid,
+          body,
+        }),
+      });
+
+    // The provisioning write: explicitly admitted by the permission set.
+    const service = await post("com.atproto.repo.putRecord", {
+      repo: NEW_SPACE_DID,
+      collection: "space.roomy.service",
+      rkey: "self",
+      record: { $type: "space.roomy.service", did: OWN_DID },
+    });
+    expect(service.status).toBe(200);
+
+    // The Semble space-card write: `createRecord` of a `network.cosmik.*`
+    // collection — the permission set's record-creation branch.
+    const card = await post("com.atproto.repo.createRecord", {
+      repo: NEW_SPACE_DID,
+      collection: "network.cosmik.card",
+      record: {
+        $type: "network.cosmik.card",
+        type: "URL",
+        content: {
+          $type: "network.cosmik.card#urlContent",
+          url: "https://example.com/article",
+        },
+      },
+    });
+    expect(card.status).toBe(200);
   } finally {
     mock.stop();
   }

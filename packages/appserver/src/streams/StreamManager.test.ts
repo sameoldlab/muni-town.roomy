@@ -207,8 +207,9 @@ describe("createStream", () => {
     // A minimal mock arbiter that answers createArbiter / resetConfig / proxy.
     // The proxy route is the *built-in* `town.muni.arbiter.proxy`: provisioning
     // goes through the owner/manager route, which carries no scope gate. The
-    // scoped `*.arbiter.proxy` routes run the permission-set scope policy first
-    // and deny a `space.roomy.service/self` putRecord (the createSpace outage).
+    // scoped `*.arbiter.proxy` routes run the permission-set scope policy
+    // first; the createSpace outage was exactly such a denial of
+    // provisioning's `space.roomy.service/self` putRecord.
     const calls: string[] = [];
     const arbiterDid = "did:plc:arbiter-provisioned";
     const server = Bun.serve({

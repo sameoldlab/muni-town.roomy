@@ -39,6 +39,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagDef[] = [
     description:
       "Per-room and per-space link aggregation links view (third channel tab)",
   },
+  {
+    key: "semble-integration",
+    description:
+      "Semble integration: create network.cosmik.card space cards from chat message links",
+  },
 ];
 export const FEATURE_FLAG_KEYS: ReadonlySet<string> = new Set(
   FEATURE_FLAGS.map((f) => f.key),

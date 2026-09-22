@@ -15,6 +15,7 @@
     IconEllipsisHorizontal,
     IconCheckSquare,
     IconMove,
+    IconLink,
   } from "../../../../icons/index";
 
   let {
@@ -31,6 +32,8 @@
     onReply,
     onForward,
     onMove,
+    /** Space admin + single-link message only — shows the Create Space Card action. */
+    onCreateCard,
   }: {
     /** Author-only — shows the Edit button. */
     canEdit: boolean;
@@ -51,6 +54,7 @@
     onReply: () => void;
     onForward: () => void;
     onMove: () => void;
+    onCreateCard?: () => void;
   } = $props();
 
   let isEmojiToolbarPickerOpen = $state(false);
@@ -183,6 +187,12 @@
         <ContextMenuItem onclick={onMove}>
           <IconMove class="size-4" />
           Move
+        </ContextMenuItem>
+      {/if}
+      {#if onCreateCard}
+        <ContextMenuItem onclick={onCreateCard}>
+          <IconLink class="size-4" />
+          Create Space Card
         </ContextMenuItem>
       {/if}
       <ContextMenuItem onclick={onStartThreading}>

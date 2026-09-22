@@ -16,6 +16,8 @@
   import ChatInput from "./ChatInput.svelte";
   import { createMentionSearch } from "$lib/tiptap/mentions";
   import { editMessage, removeLinkEmbed } from "$lib/mutations/message";
+  import { createSpaceCard } from "$lib/mutations/space-card";
+  import { toast } from "@foxui/core";
   import {
     discardPendingSend,
     getDeliveryState,
@@ -39,6 +41,9 @@
     currentUserDid: string | undefined;
     /** Whether the current user is an admin of the space (moderation). */
     isAdmin: boolean;
+    /** Space admin + "semble-integration" feature flag — enables the
+     *  space-card toolbar action. */
+    canCreateSpaceCard?: boolean;
     editingMessageId: string | undefined;
     onStartEdit: (messageId: string) => void;
     onCancelEdit: () => void;
@@ -60,6 +65,7 @@
     message,
     currentUserDid,
     isAdmin,
+    canCreateSpaceCard = false,
     editingMessageId,
     onStartEdit,
     onCancelEdit,
@@ -251,6 +257,26 @@
   // Forwards aren't editable (the visible content belongs to the original).
   let canEdit = $derived(isAuthor && !isForward);
   let canDelete = $derived(isAuthor || isAdmin);
+
+  /**
+   * Space-card eligibility: the message contains exactly one link — the
+   * appserver's extracted `linkEmbeds`, the same source that renders link
+   * previews. Shown to space admins via the toolbar's "..." menu.
+   */
+  let singleLink = $derived(
+    message.linkEmbeds.length === 1 ? (message.linkEmbeds[0] ?? null) : null,
+  );
+
+  async function handleCreateCard() {
+    if (!singleLink) return;
+    try {
+      await createSpaceCard(spaceId, singleLink);
+      toast.success("Space card created.");
+    } catch (e) {
+      console.error("createSpaceCard failed:", e);
+      toast.error(e instanceof Error ? e.message : "Failed to create space card.");
+    }
+  }
 
   function handleContextAction(e: MouseEvent) {
     // On mobile (coarse pointer), long-press enters select mode — the mobile
@@ -541,6 +567,9 @@
           onRequestDelete={() => onRequestDelete(message)}
           {onForward}
           onMove={() => onMove([message])}
+          onCreateCard={
+            canCreateSpaceCard && singleLink ? () => handleCreateCard() : undefined
+          }
         />
       {/snippet}
 

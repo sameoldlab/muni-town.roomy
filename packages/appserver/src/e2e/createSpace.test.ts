@@ -11,10 +11,12 @@
  *
  * The mock arbiter enforces what the deployed one does: the scoped
  * `space.roomy.authComplete.arbiter.proxy` route applies the permission-set
- * scope policy (which denies `provisionSpace`'s step-3 putRecord), while the
- * built-in `town.muni.arbiter.proxy` route reaches the pipeline. A build that
- * provisions through the scoped route therefore 500s here exactly as it did in
- * production — see `src/arbiter/provision.test.ts` for the unit-level pin.
+ * scope policy, while the built-in `town.muni.arbiter.proxy` route reaches
+ * the pipeline. Provisioning must keep using the built-in route so the
+ * appserver's own writes never depend on what the permission set happens to
+ * admit (the production outage was a provisioning putRecord the then-current
+ * scope policy denied — see `src/arbiter/provision.test.ts` for the
+ * unit-level pin and the transcribed current policy).
  *
  * Run: bun test --cwd packages/appserver src/e2e/createSpace.test.ts
  */
@@ -38,19 +40,32 @@ const NEW_SPACE_DID = "did:plc:create-space-e2e";
 const SCOPED_ROUTE = "space.roomy.authComplete.arbiter.proxy";
 const BUILTIN_ROUTE = "town.muni.arbiter.proxy";
 
-/** The scope policy embedded in the published `space.roomy.authComplete`
- *  permission-set lexicon (see `src/arbiter/provision.test.ts`). */
+/** The scope policy of the published `space.roomy.authComplete` permission-set
+ *  lexicon, transcribed verbatim from its PDS (source cid + provenance in
+ *  `src/arbiter/provision.test.ts`; the published policy's `cosmik_prefix`
+ *  constant is inlined as `"network.cosmik."`). */
 function scopedScopePolicyAllows(inner: {
   nsid: string;
   body: { collection?: unknown } | null;
 }): boolean {
-  if (inner.nsid.startsWith("space.roomy")) return true;
-  if (inner.nsid.startsWith("network.cosmic")) return true;
+  if (inner.nsid.startsWith("space.roomy.")) return true;
+  if (inner.nsid.startsWith("network.cosmik.")) return true;
   if (inner.nsid === "com.atproto.repo.uploadBlob") return true;
   if (inner.nsid === "com.atproto.identity.updateHandle") return true;
+  // Record creation (putRecord/createRecord) is admitted for
+  // `network.cosmik.*` collections — e.g. Semble space cards.
+  if (
+    (inner.nsid === "com.atproto.repo.putRecord" ||
+      inner.nsid === "com.atproto.repo.createRecord") &&
+    typeof inner.body?.collection === "string" &&
+    inner.body.collection.startsWith("network.cosmik.")
+  ) {
+    return true;
+  }
   return (
     inner.nsid === "com.atproto.repo.putRecord" &&
-    inner.body?.collection === "app.bsky.actor.profile"
+    (inner.body?.collection === "app.bsky.actor.profile" ||
+      inner.body?.collection === "space.roomy.service")
   );
 }
 
@@ -147,8 +162,9 @@ describe("space.roomy.space.createSpace (via arbiter)", () => {
             body: JSON.stringify({ name: "E2E Arbiter Space" }),
           },
         );
-        // Pre-fix this is a 500: the scoped route's scope policy denies the
-        // step-3 putRecord with "request denied by scope policy".
+        // With the current permission set the scoped route would also admit
+        // the step-3 write, so the routing assertions below are what catch a
+        // regression to the scoped route.
         expect(created.status).toBe(200);
         const createdBody = (await created.json()) as { spaceId?: string };
         expect(createdBody.spaceId).toBe(NEW_SPACE_DID);

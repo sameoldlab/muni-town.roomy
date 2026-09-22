@@ -9,6 +9,7 @@
   import ChatMessageSkeleton from "@roomy/design/components/content/thread/message/ChatMessageSkeleton.svelte";
   import { createMessagesQuery, type Message } from "$lib/queries/messages";
   import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
+  import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { auth } from "$lib/auth.svelte";
   import { cache } from "@roomy-space/sdk";
   import { queryClient } from "$lib/client";
@@ -51,6 +52,14 @@
   // `getSpaceMetadata` is shared with the sidebar via the Tanstack cache.
   const spaceMetaQuery = createSpaceMetadataQuery(() => spaceId);
   const isAdmin = $derived(spaceMetaQuery.data?.isAdmin ?? false);
+  // The Semble space-card action is rollout-gated: hidden unless the
+  // "semble-integration" flag is enabled (via the admin flag endpoints).
+  // All flags default false.
+  const flagsQuery = createFeatureFlagsQuery();
+  const sembleIntegrationEnabled = $derived(
+    flagsQuery.data?.flags.includes("semble-integration") ?? false,
+  );
+  const canCreateSpaceCard = $derived(isAdmin && sembleIntegrationEnabled);
   const currentUserDid = $derived(auth.userDid);
 
   let virtualizer: VirtualizerHandle = $state(null!);
@@ -503,7 +512,7 @@
                 getKey={(x) => x.id}
                 onscroll={handleVirtualizerScroll}
               >
-                {#snippet children(message?: Message & { mergeWithPrevious?: boolean })}
+              {#snippet children(message?: Message & { mergeWithPrevious?: boolean })}
                   {#if message}
                     <ChatMessage
                       {spaceId}
@@ -511,6 +520,7 @@
                       message={message}
                       currentUserDid={currentUserDid}
                       {isAdmin}
+                      canCreateSpaceCard={canCreateSpaceCard}
                       editingMessageId={editingMessageId}
                       onStartEdit={(id) => (editingMessageId = id)}
                       onCancelEdit={() => (editingMessageId = undefined)}
