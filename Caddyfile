@@ -1,8 +1,34 @@
 
 :80 {
-  handle {
-    root * /usr/share/caddy
-    file_server
-    try_files {path} /
-  }
+	root * /usr/share/caddy
+
+	# Content-hashed build output. The filename changes whenever the content
+	# does, so a hit is safe to cache forever — and a miss MUST 404, never fall
+	# back to the SPA shell. Serving index.html (200 text/html) under a .js/.css
+	# URL is a module-load failure in every browser ("Failed to fetch
+	# dynamically imported module", "doesn't provide an export named"), and
+	# because that fallback is cacheable a CDN stores the bad body and keeps
+	# serving it after the deploy that caused it. Nothing under /_app/ is a
+	# client route, so serving it straight from disk costs nothing.
+	handle /_app/immutable/* {
+		@exists file
+		header @exists Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# The rest of /_app/ (env.js, version.json). version.json is how the
+	# client detects a new deploy, so it must always revalidate.
+	handle /_app/* {
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	# Every other path is a client-side route: serve the app shell, which must
+	# revalidate too. A shell cached past a deploy is exactly the stale document
+	# that then asks for assets which no longer exist.
+	handle {
+		try_files {path} /index.html
+		header Cache-Control "no-cache"
+		file_server
+	}
 }
