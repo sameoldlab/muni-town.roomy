@@ -19,11 +19,11 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { RICHTEXT_MIME, blocksToPlaintext } from "@roomy-space/sdk";
 import { parseRichTextContent } from "$lib/components/chat/enrich-internal-links";
 import { renderMarkdownPlaintext } from "@roomy/design/utils";
-/** True when the native notification plugin is available. */
+
 export function nativePushSupported(): boolean {
   return (
     typeof window !== "undefined" &&
-    "__TAURI_INTERNALS__" in window &&
+    "__TAURI__" in window &&
     typeof window.Notification !== "undefined"
   );
 }
@@ -66,8 +66,9 @@ export async function showNativeMessageNotification(opts: {
     if (!granted) return;
     const body = messageBody(opts.content, opts.mimeType).slice(0, 200);
     sendNotification({
-      title: opts.roomName ? `${opts.roomName} — ${opts.authorName}` : opts.authorName,
+      title: opts.roomName ? `${opts.authorName} (#${opts.roomName}) ` : opts.authorName,
       body: body || "New message",
+      // icon: icon,
       // Click-through: the room route is /[space]/[room].
       extra: { spaceId: opts.spaceId, roomId: opts.roomId },
     });
