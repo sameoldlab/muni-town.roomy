@@ -293,6 +293,18 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           cd ./packages/app-lite
+          # xcodebuild needs all THREE of key ID, issuer ID and key path for
+          # automatic provisioning: with APPLE_API_KEY set but
+          # APPLE_API_KEY_PATH unset the CLI aborts with
+          # "APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_PATH must be
+          # provided for code signing". The CLI forwards them as
+          # -authenticationKeyPath/-authenticationKeyID/-authenticationKeyIssuerID.
+          # The file was written by the "Write App Store Connect API key" step.
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          if [ ! -f "$APPLE_API_KEY_PATH" ]; then
+            echo "::error::API key file missing at $APPLE_API_KEY_PATH"
+            exit 1
+          fi
           # `release-testing` is the CLI's TestFlight export method
           # (`app-store-connect` targets App Store submission). Both produce a
           # distribution-signed IPA that `altool --upload-app` accepts; this one
