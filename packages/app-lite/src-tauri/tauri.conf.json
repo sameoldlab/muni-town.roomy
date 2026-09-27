@@ -39,6 +39,10 @@
     ],
     "android": {
       "minSdkVersion": 26
+    },
+    "iOS": {
+      "bundleVersion": "1",
+      "infoPlist": "Info.ios.plist"
     }
   },
   "plugins": {
