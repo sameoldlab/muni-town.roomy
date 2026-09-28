@@ -226,6 +226,7 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
@@ -240,6 +241,38 @@ jobs:
           # Let codesign use the key without an interactive prompt.
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          # ── Assert the secret really holds an Apple-issued identity ──────
+          # A wrong APPLE_CERTIFICATE is otherwise only discovered ~20 minutes
+          # later, inside Xcode's exportArchive, as "Cloud signing permission
+          # error" + "No profiles for '<bundle id>' were found" — which reads
+          # like a provisioning problem rather than a bad input.
+          #
+          # Two properties separate an Apple-issued cert from a locally
+          # generated one. Both are required:
+          #   1. an organizationalUnit — Apple always sets OU to the Team ID.
+          #      cargo-mobile2 prints a cert lacking one as "(unset)", and
+          #      xcodebuild refuses to Cloud-sign with it.
+          #   2. Apple's WWDR intermediate issues it.
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep -oE '"Apple (Distribution|Development)[^"]*"' | head -n 1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::APPLE_CERTIFICATE does not contain a usable 'Apple Distribution' identity."
+            echo "--- identities found in the imported keychain:"
+            security find-identity -p codesigning "$KEYCHAIN" || true
+            echo "--- certs in the imported p12 (subject lines):"
+            openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" \
+              | openssl x509 -noout -subject,issuer 2>/dev/null || true
+            echo "Export from Keychain Access > My Certificates (not 'Certificates'),"
+            echo "which is what pairs the private key. A locally generated cert has"
+            echo "no organizationalUnit and cannot be used for Cloud signing."
+            exit 1
+          fi
+          echo "Imported identity: $IDENTITY"
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && ! grep -qF "$APPLE_SIGNING_IDENTITY" <<<"$IDENTITY"; then
+            echo "::error::APPLE_SIGNING_IDENTITY ($APPLE_SIGNING_IDENTITY) does not match the certificate ($IDENTITY)."
+            exit 1
+          fi
           rm -f "$CERT"
 
       - name: Write App Store Connect API key
