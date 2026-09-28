@@ -336,16 +336,27 @@ jobs:
             || { echo "::error::DEVELOPMENT_TEAM was not set to ${APPLE_DEVELOPMENT_TEAM}"; exit 1; }
 
           # ── Build number ─────────────────────────────────────────────────
-          # xcodebuild's -exportArchive defaults to
-          # manageAppVersionAndBuildNumber=YES, i.e. Xcode rewrites the build
-          # number itself at export time (observed: "Setting version of
-          # project app to: 1. / Updated CFBundleVersion ... to 1"), which
-          # would clobber ours and make every upload collide on build 1.
-          # Setting it to NO in the generated ExportOptions.plist makes Xcode
-          # keep the CFBundleVersion we set. `ios init` writes that file and
-          # `ios build` merges it with its own generated options, so a key it
-          # does not itself emit (it emits only method/signingStyle/
-          # signingCertificate/provisioningProfiles/teamID) survives.
+          # Two independent mechanisms rewrite CFBundleVersion, so the value
+          # has to come from the one the toolchain drives rather than from a
+          # value set here:
+          #
+          #   1. cargo-mobile2 stamps the archive itself with
+          #      `agvtool new-version -all <bundle_version[.build_number]>`,
+          #      which is the "Setting version of project app to: ..." block
+          #      in the build log. Anything written here is overwritten there.
+          #   2. xcodebuild's -exportArchive then defaults to
+          #      manageAppVersionAndBuildNumber=YES and rewrites it again
+          #      ("Updated CFBundleVersion ... to 1").
+          #
+          # (2) is disabled below. (1) is driven by `--build-number` on the
+          # build step, which the CLI appends to the configured bundle version
+          # (bundle.iOS.bundleVersion = "1"), yielding "1.<run_number>" — unique
+          # per run, which is what App Store Connect requires.
+          #
+          # `ios init` writes this file and `ios build` merges it with its own
+          # generated options, so a key the CLI does not itself emit (it emits
+          # only method/signingStyle/signingCertificate/provisioningProfiles/
+          # teamID) survives the merge.
           plutil -replace manageAppVersionAndBuildNumber -bool NO \
             src-tauri/gen/apple/ExportOptions.plist \
             || plutil -insert manageAppVersionAndBuildNumber -bool NO \
@@ -353,21 +364,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :manageAppVersionAndBuildNumber" \
             src-tauri/gen/apple/ExportOptions.plist | grep -qx false \
             || { echo "::error::manageAppVersionAndBuildNumber is not false"; exit 1; }
-
-          # Stamp the version the way cargo-mobile2 does. `agvtool
-          # new-version` writes CFBundleVersion into Info.plist (the file
-          # INFOPLIST_FILE points at, so it is what ships) but its read-back
-          # of CURRENT_PROJECT_VERSION fails on this XcodeGen project —
-          # "There does not seem to be a CURRENT_PROJECT_VERSION key set for
-          # this project" — because the template configures no versioning
-          # system. The write still lands, so the exit status is ignored and
-          # the result is asserted from Info.plist instead of trusting the
-          # tool's own report.
-          ( cd src-tauri/gen/apple && xcrun agvtool new-version -all "$BUILD_NUMBER" >/dev/null 2>&1 || true )
-          got="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' src-tauri/gen/apple/app_iOS/Info.plist)"
-          [ "$got" = "$BUILD_NUMBER" ] \
-            || { echo "::error::CFBundleVersion is '$got', expected '$BUILD_NUMBER'"; exit 1; }
-          echo "Build number ${BUILD_NUMBER} stamped."
+          echo "Export will not rewrite the build number."
 
           # The generated Xcode build phase is emitted with an UNPINNED
           # `pnpm dlx @tauri-apps/cli ios xcode-script`. Pin it to the same CLI
@@ -390,6 +387,9 @@ jobs:
       - name: Build iOS archive and IPA
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          # Drives `--build-number`, and therefore the CFBundleVersion stamped
+          # into the archive (see the note on the build command below).
+          BUILD_NUMBER: ${{ github.run_number }}
           # The toolchain reads IOS_* for signing; APPLE_CERTIFICATE is a
           # macOS-bundler name and is ignored on the iOS path. The secrets keep
           # their APPLE_* names and are mapped here.
@@ -425,11 +425,31 @@ jobs:
           # based) and fails with
           #     Provisioning profile "..." is not an "iOS Ad Hoc" profile.
           # An App Store distribution profile belongs with app-store-connect.
+          #
+          # `--build-number` drives cargo-mobile2's `agvtool new-version -all`
+          # call, which is what actually stamps CFBundleVersion: the CLI
+          # appends it to bundle.iOS.bundleVersion ("1"), giving "1.<run_number>".
+          # `ios init` cannot set this, because that stamp overwrites it.
           pnpm dlx @tauri-apps/cli@2.12.0 ios build \
             --target aarch64 \
-            --export-method app-store-connect
+            --export-method app-store-connect \
+            --build-number "$BUILD_NUMBER"
+
           # Surface what was produced so a failure downstream is unambiguous.
           find src-tauri/gen/apple/build -name '*.ipa' -o -name '*.xcarchive' | sort
+
+          # The IPA is what gets uploaded, so assert the version on it rather
+          # than on the project. CFBundleVersion must differ per upload or App
+          # Store Connect rejects it as a duplicate.
+          IPA="$(find src-tauri/gen/apple/build -name '*.ipa' | head -n 1)"
+          [ -n "$IPA" ] || { echo "::error::No .ipa produced"; exit 1; }
+          got="$(unzip -p "$IPA" 'Payload/*.app/Info.plist' > "$RUNNER_TEMP/ipa.plist" \
+                 && /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RUNNER_TEMP/ipa.plist")"
+          echo "IPA $IPA"
+          echo "  CFBundleVersion          = $got"
+          echo "  CFBundleShortVersionString = $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RUNNER_TEMP/ipa.plist")"
+          [ "$got" = "1.$BUILD_NUMBER" ] \
+            || { echo "::error::IPA CFBundleVersion is '$got', expected '1.$BUILD_NUMBER'"; exit 1; }
 
       - name: Upload to TestFlight
         env:
@@ -443,8 +463,37 @@ jobs:
             exit 1
           fi
           echo "Uploading $IPA"
+
+          # Capture the output so a known, confusing failure can be translated
+          # into an actionable one. Both `altool --upload-app` and the exit code
+          # are needed, hence the file rather than a pipe.
+          set +e
           xcrun altool --upload-app -f "$IPA" -t ios \
             --api-key "$APPLE_API_KEY" \
             --api-issuer "$APPLE_API_ISSUER" \
-            --verbose
+            --verbose >"$RUNNER_TEMP/altool.log" 2>&1
+          status=$?
+          set -e
+          tail -n 40 "$RUNNER_TEMP/altool.log"
+
+          if [ "$status" -ne 0 ]; then
+            # An authenticated request that returns zero apps means the App
+            # Store Connect *app record* is missing — a different object from
+            # the Developer Portal App ID, and not something the IPA can supply.
+            if grep -q "Cannot determine the Apple ID from Bundle ID" "$RUNNER_TEMP/altool.log"; then
+              echo "::error::No App Store Connect app record for bundle id 'space.roomy'."
+              echo "The Developer Portal App ID and the App Store Connect app are"
+              echo "separate objects. Create the app record once, then re-run:"
+              echo "  https://appstoreconnect.apple.com -> My Apps -> + -> New App"
+              echo "  Platform: iOS"
+              echo "  Name: Roomy"
+              echo "  Primary Language: English (or your choice)"
+              echo "  Bundle ID: space.roomy"
+              echo "  SKU: any unique string, e.g. roomy-ios"
+              echo "It must use the same bundle id the IPA carries, and the API key"
+              echo "needs at least the App Manager role."
+            fi
+            exit "$status"
+          fi
+          echo "Uploaded to App Store Connect; TestFlight processing runs after this."
 
