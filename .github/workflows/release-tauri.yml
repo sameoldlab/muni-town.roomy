@@ -316,23 +316,66 @@ jobs:
           IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
-          # `ios build --build-number` is inert (verified on 2.12.0: it leaves
-          # CFBundleVersion at the config default). The bundle version must be
-          # set through the config at `ios init`, which regenerates the Xcode
-          # project's CFBundleVersion. App Store Connect rejects an upload that
-          # reuses a build number, so this must be unique per run.
+          # `ios build` runs cargo-mobile2, which calls
+          # `agvtool new-version -all <version>` to stamp the build. agvtool
+          # writes CURRENT_PROJECT_VERSION and CFBundleVersion, and refuses to
+          # work unless the target has a versioning system configured — it
+          # reports "There does not seem to be a CURRENT_PROJECT_VERSION key
+          # set for this project" otherwise. The XcodeGen template sets
+          # neither, so the version must be applied here, after `ios init`.
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          # The IOS_* names, because that is what the iOS toolchain reads.
+          IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
+          # App Store Connect rejects an upload that reuses a build number, so
+          # it must change every run. `github.run_number` is monotonic per
+          # workflow, which is what makes it safe here.
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
           cd ./packages/app-lite
-          pnpm dlx @tauri-apps/cli@2.12.0 ios init --ci \
-            -c "{\"bundle\":{\"iOS\":{\"bundleVersion\":\"$BUILD_NUMBER\"}}}"
-          grep -q "CFBundleVersion: \"$BUILD_NUMBER\"" src-tauri/gen/apple/project.yml \
-            || { echo "::error::CFBundleVersion was not set to $BUILD_NUMBER"; exit 1; }
+          pnpm dlx @tauri-apps/cli@2.12.0 ios init --ci
+          PROJ=src-tauri/gen/apple/app.xcodeproj/project.pbxproj
+
           # Assert the team actually landed in the project; without it the
           # build cannot sign and the failure surfaces much later.
-          grep -q "DEVELOPMENT_TEAM: ${APPLE_DEVELOPMENT_TEAM}" src-tauri/gen/apple/project.yml \
+          grep -q "DEVELOPMENT_TEAM = ${APPLE_DEVELOPMENT_TEAM}" "$PROJ" \
             || { echo "::error::DEVELOPMENT_TEAM was not set to ${APPLE_DEVELOPMENT_TEAM}"; exit 1; }
-          echo "DEVELOPMENT_TEAM=${APPLE_DEVELOPMENT_TEAM} in the generated project."
+
+          # ── Build number ─────────────────────────────────────────────────
+          # xcodebuild's -exportArchive defaults to
+          # manageAppVersionAndBuildNumber=YES, i.e. Xcode rewrites the build
+          # number itself at export time (observed: "Setting version of
+          # project app to: 1. / Updated CFBundleVersion ... to 1"), which
+          # would clobber ours and make every upload collide on build 1.
+          # Setting it to NO in the generated ExportOptions.plist makes Xcode
+          # keep the CFBundleVersion we set. `ios init` writes that file and
+          # `ios build` merges it with its own generated options, so a key it
+          # does not itself emit (it emits only method/signingStyle/
+          # signingCertificate/provisioningProfiles/teamID) survives.
+          plutil -replace manageAppVersionAndBuildNumber -bool NO \
+            src-tauri/gen/apple/ExportOptions.plist \
+            || plutil -insert manageAppVersionAndBuildNumber -bool NO \
+                 src-tauri/gen/apple/ExportOptions.plist
+          /usr/libexec/PlistBuddy -c "Print :manageAppVersionAndBuildNumber" \
+            src-tauri/gen/apple/ExportOptions.plist | grep -qx false \
+            || { echo "::error::manageAppVersionAndBuildNumber is not false"; exit 1; }
+
+          # Stamp the version the way cargo-mobile2 does. `agvtool
+          # new-version` writes CFBundleVersion into Info.plist (the file
+          # INFOPLIST_FILE points at, so it is what ships) but its read-back
+          # of CURRENT_PROJECT_VERSION fails on this XcodeGen project —
+          # "There does not seem to be a CURRENT_PROJECT_VERSION key set for
+          # this project" — because the template configures no versioning
+          # system. The write still lands, so the exit status is ignored and
+          # the result is asserted from Info.plist instead of trusting the
+          # tool's own report.
+          ( cd src-tauri/gen/apple && xcrun agvtool new-version -all "$BUILD_NUMBER" >/dev/null 2>&1 || true )
+          got="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' src-tauri/gen/apple/app_iOS/Info.plist)"
+          [ "$got" = "$BUILD_NUMBER" ] \
+            || { echo "::error::CFBundleVersion is '$got', expected '$BUILD_NUMBER'"; exit 1; }
+          echo "Build number ${BUILD_NUMBER} stamped."
+
           # The generated Xcode build phase is emitted with an UNPINNED
           # `pnpm dlx @tauri-apps/cli ios xcode-script`. Pin it to the same CLI
           # this job drives: the options-server handshake between the two
