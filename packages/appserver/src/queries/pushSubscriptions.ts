@@ -8,29 +8,47 @@
 
 import type { DbLike } from "../db/types.ts";
 
-export interface PushSubscriptionRow {
+export type PushSubscriptionRow = {
   userDid: string;
+  /** WebPush: push service URL | FCM: token | APNs: device token */
   endpoint: string;
-  p256dh: string;
-  auth: string;
-  expirationTime: number | null;
+  createdAt: number;
+  lastUsedAt: number | null;
+  transport: "webPush" | "sse" | "fcm" | "apn";
+} & (
+    | { transport: 'fcm'; data: null; }
+    | { transport: 'sse'; data: null; }
+    | {
+      transport: 'webPush';
+      data: { p256dh: string; auth: string; expirationTime: number; }
+    }
+    | {
+      transport: 'apn';
+      data: { bundleId: string, environment: "sandbox" | "production" | null; }
+    }
+  )
+
+export type PushSubscriptionRowRaw = {
+  userDid: string;
+  /** WebPush: push service URL | FCM: token | APNs: device token */
+  endpoint: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  transport: string
+  keys: string | null
+  meta: string | null
 }
+
 
 /** Upsert a subscription for `(userDid, endpoint)`. Idempotent on endpoint. */
 export async function upsertSubscription(
   db: DbLike,
-  sub: {
-    userDid: string;
-    endpoint: string;
-    p256dh: string;
-    auth: string;
-    expirationTime: number | null;
-  },
+  sub: PushSubscriptionRow,
 ): Promise<void> {
   await db.run(
     `insert into push_subscriptions
-       (user_did, endpoint, p256dh, auth, expiration_time, updated_at)
-     values (?, ?, ?, ?, ?, (unixepoch() * 1000))
+       (user_did, endpoint, platform, p256dh, auth, token, expiration_time, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, (unixepoch() * 1000))
      on conflict(user_did, endpoint) do update set
        p256dh = excluded.p256dh,
        auth = excluded.auth,
@@ -38,8 +56,10 @@ export async function upsertSubscription(
        updated_at = excluded.updated_at`,
     sub.userDid,
     sub.endpoint,
+    sub.platform,
     sub.p256dh,
     sub.auth,
+    sub.token,
     sub.expirationTime,
   );
 }
@@ -63,13 +83,15 @@ export async function selectSubscriptions(
   userDid: string,
 ): Promise<PushSubscriptionRow[]> {
   const rows = await db.query(
-    "select user_did, endpoint, p256dh, auth, expiration_time from push_subscriptions where user_did = ?",
+    "select user_did, endpoint, p256dh, token, platform, auth, expiration_time from push_subscriptions where user_did = ?",
   ).all<{
     user_did: string;
     endpoint: string;
-    p256dh: string;
-    auth: string;
+    p256dh: string | null;
+    auth: string | null;
     expiration_time: number | null;
+    platform: string;
+    token: string;
   }>(userDid);
   return rows.map((r) => ({
     userDid: r.user_did,
@@ -77,6 +99,8 @@ export async function selectSubscriptions(
     p256dh: r.p256dh,
     auth: r.auth,
     expirationTime: r.expiration_time,
+    platform: r.platform,
+    token: r.token
   }));
 }
 
