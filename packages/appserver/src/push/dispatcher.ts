@@ -26,9 +26,14 @@ import { openGlobalDb, openSpaceDb } from "../db/db.ts";
 import { createHash } from "node:crypto";
 import { log } from "../log.ts";
 import { evaluatePush, resolveAuthorName } from "./evaluate.ts";
-import { sendPush } from "./transports/webPush.ts";
+import { webPushTransport } from "./transports/webPush.ts";
+import { fcmTransport } from "./transports/fcm.ts";
+import { sseTransport } from "./transports/sse.ts";
+import { apnTransport } from "./transports/apn.ts";
+
 import {
   pruneSubscriptionByEndpoint,
+  PushSubscriptionRow,
   selectSubscriptions,
 } from "../queries/pushSubscriptions.ts";
 import {
@@ -39,6 +44,7 @@ import {
 import { PUSH_MAX_DIGEST_AGE_MS } from "./freshness.ts";
 import { resolveEntityAvatar, resolveLatestRoomAuthor } from "./avatars.ts";
 import type { PushDelivery, PushJob, PushPayload } from "./types.ts";
+import type { PushTransport, SendOptions, Transport } from "./transports/types.ts";
 
 /**
  * Build a Web Push `Topic` header value for a room. The spec requires ≤32
@@ -298,6 +304,12 @@ export async function _runDigestSweep(db: DbLike): Promise<void> {
   });
 }
 
+const transports: Record<Transport, PushTransport<any>> = {
+  webPush: webPushTransport,
+  sse: sseTransport,
+  fcm: fcmTransport,
+  apn: apnTransport
+}
 /**
  * Deliver one payload to all of a user's subscription endpoints, with
  * per-room `topic` coalescing. Shared by the on-event path (`processBatch`)
@@ -310,56 +322,46 @@ async function deliverPayload(
 ): Promise<void> {
   const subs = await selectSubscriptions(db, userDid);
   if (subs.length === 0) return;
-  const body = JSON.stringify(payload);
-  const topic = roomTopic(payload.roomId);
+
+  const opts: SendOptions = {
+    topic: roomTopic(payload.roomId),
+    urgency: 'normal'
+  }
+
   await Promise.all(
     subs.map(async (sub) => {
+      const t = transports[sub.transport]
       try {
-        const res = await sendPush(
-          {
-            endpoint: sub.endpoint,
-            keys: { p256dh: sub.p256dh, auth: sub.auth },
-            expirationTime: sub.expirationTime,
-          },
-          body,
-          { topic, urgency: "normal" },
-        );
-        if (res.gone) {
-          // Browser unsubscribed / expired — prune so we never retry it.
-          await pruneSubscriptionByEndpoint(db, sub.endpoint);
-          statsGone++;
-          let service = "unknown";
-          try { service = new URL(sub.endpoint).hostname; } catch { /* leave */ }
-          log.info(`[push-deliver] GONE (pruned) service=${service} endpoint=${sub.endpoint.slice(0, 60)}…`);
-        } else if (res.status !== null) {
-          statsDeliveredOk++;
-          let service = "unknown";
-          try { service = new URL(sub.endpoint).hostname; } catch { /* leave */ }
-          log.debug(`[push-deliver] OK status=${res.status} service=${service} endpoint=${sub.endpoint.slice(0, 60)}…`);
+        const res = await t.send(sub, payload, opts)
+
+        // Browser unsubscribed / expired — prune so we never retry it.
+        switch (res.kind) {
+          case "ok":
+            statsDeliveredOk++
+            break;
+          case "gone":
+            await pruneSubscriptionByEndpoint(db, sub.endpoint);
+            // statsGone[sub.transport]++;
+            statsGone++
+            break;
+          case "skipped":
+            break;
+          case "retry":
+            setTimeout(() => t.send(sub, payload, opts), res.backoffMs)
+            break;
         }
       } catch (err) {
-        statsFailed++;
-        // web-push throws WebPushError (has .statusCode) on 429/5xx; narrow
-        // rather than assume the shape.
-        let status = "?";
-        if (
-          typeof err === "object" &&
-          err !== null &&
-          "statusCode" in err &&
-          typeof (err as { statusCode?: unknown }).statusCode === "number"
-        ) {
-          status = String((err as { statusCode: number }).statusCode);
-        }
-        let service = "unknown";
-        try { service = new URL(sub.endpoint).hostname; } catch { /* leave */ }
+        // statsFailed[sub.transport]++
+        statsFailed++
         log.warn(
-          `[push-deliver] FAILED status=${status} service=${service} endpoint=${sub.endpoint.slice(0, 60)}…:`,
+          `[push-deliver] FAILED transport=${sub.transport} ${describeErr(err)} `,
           err instanceof Error ? err.message : err,
         );
       }
     }),
   );
 }
+
 
 /** Run `fn` over `items` with at most `limit` concurrent invocations. */
 async function mapWithConcurrency<T>(

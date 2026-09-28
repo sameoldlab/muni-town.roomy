@@ -15,6 +15,7 @@
 
 import webPush, { type PushSubscription, type WebPushError } from "web-push";
 import { log } from "../../log.ts";
+import { PushTransport } from "./types.ts";
 
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? "";
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY ?? "";
@@ -102,4 +103,58 @@ export async function sendPush(
 export function isPushGone(err: unknown): boolean {
   const status = (err as WebPushError)?.statusCode;
   return status === 404 || status === 410;
+}
+//TODO! Needs review. not fully ported to deliverPayload
+export const webPushTransport: PushTransport = {
+  name: "webPush",
+  isConfigured: () => configured,
+  send: async (sub, payload, opts) => {
+    if (sub.transport != 'webPush') throw Error("Never run")
+    try {
+      const res = await sendPush(
+        {
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.p256dh, auth: sub.auth },
+          expirationTime: sub.expirationTime,
+        },
+        JSON.stringify(payload),
+        opts,
+      );
+
+      if (res.gone) {
+        let service = "unknown";
+        try { service = new URL(sub.endpoint).hostname; } catch { /* leave */ }
+        log.info(`[push-deliver] GONE (pruned) service=${service} endpoint=${sub.endpoint.slice(0, 60)}…`);
+        return { kind: "gone" }
+      } else if (res.status !== null) {
+        let service = "unknown";
+        try { service = new URL(sub.endpoint).hostname; } catch { /* leave */ }
+        log.debug(`[push-deliver] OK status=${res.status} service=${service} endpoint=${sub.endpoint.slice(0, 60)}…`);
+        return { kind: "ok", status: res.status }
+      }
+      return { kind: 'skipped', status: res.status, reason: 'unknown' }
+    } catch (err) {
+      //TODO! throw and handle in deliverPayload maybe?? 
+
+      // web-push throws WebPushError (has .statusCode) on 429/5xx; narrow
+      // rather than assume the shape.
+      let status = "?";
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "statusCode" in err &&
+        typeof (err as { statusCode?: unknown }).statusCode === "number"
+      ) {
+        status = String((err as { statusCode: number }).statusCode);
+      }
+      let service = "unknown";
+      try { service = new URL(sub.endpoint).hostname; } catch { /* leave */ }
+      log.warn(
+        `[push-deliver] FAILED status=${status} service=${service} endpoint=${sub.endpoint.slice(0, 60)}…:`,
+        err instanceof Error ? err.message : err,
+      );
+
+      return { kind: "skipped", status, reason: { status, service, endpoint: sub.endpoint.slice(0, 60) } }
+    }
+  }
 }
