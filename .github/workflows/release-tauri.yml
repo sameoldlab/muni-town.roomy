@@ -258,14 +258,27 @@ jobs:
             | grep -oE '"Apple (Distribution|Development)[^"]*"' | head -n 1)"
           if [ -z "$IDENTITY" ]; then
             echo "::error::APPLE_CERTIFICATE does not contain a usable 'Apple Distribution' identity."
-            echo "--- identities found in the imported keychain:"
+            echo "--- identities in the imported keychain:"
             security find-identity -p codesigning "$KEYCHAIN" || true
-            echo "--- certs in the imported p12 (subject lines):"
-            openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" \
-              | openssl x509 -noout -subject,issuer 2>/dev/null || true
-            echo "Export from Keychain Access > My Certificates (not 'Certificates'),"
-            echo "which is what pairs the private key. A locally generated cert has"
-            echo "no organizationalUnit and cannot be used for Cloud signing."
+            # Inspect via the keychain rather than re-opening the p12: the PEM
+            # is readable without the password once imported, whereas
+            # `openssl pkcs12` needs the right one and would print a second,
+            # misleading "Mac verify error: invalid password?" here.
+            echo "--- certificates in the imported keychain (subject / issuer):"
+            security find-certificate -a -p "$KEYCHAIN" 2>/dev/null \
+              | openssl crl2pkcs7 -nocrl -certfile /dev/stdin 2>/dev/null \
+              | openssl pkcs7 -print_certs -noout 2>/dev/null \
+              | grep -E "^subject|^issuer" || true
+            echo "--- password check:"
+            if openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -legacy >/dev/null 2>&1; then
+              echo "APPLE_CERTIFICATE_PASSWORD is correct for this p12."
+            else
+              echo "APPLE_CERTIFICATE_PASSWORD does NOT match this p12"
+              echo "(openssl reports 'Mac verify error: invalid password?')."
+            fi
+            echo "Expected: subject O=<your name> and OU=<your Team ID>, issued by"
+            echo "'Apple Worldwide Developer Relations Certification Authority'."
+            echo "A cert with O=Tauri, or with no OU at all, is not from your account."
             exit 1
           fi
           echo "Imported identity: $IDENTITY"
