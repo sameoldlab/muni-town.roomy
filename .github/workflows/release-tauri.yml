@@ -335,26 +335,25 @@ jobs:
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           cd ./packages/app-lite
-          # xcodebuild needs all THREE of key ID, issuer ID and key path for
-          # automatic provisioning: with APPLE_API_KEY set but
-          # APPLE_API_KEY_PATH unset the CLI aborts with
-          # "APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_PATH must be
-          # provided for code signing". The CLI forwards them as
-          # -authenticationKeyPath/-authenticationKeyID/-authenticationKeyIssuerID.
-          # The file was written by the "Write App Store Connect API key" step.
-          export APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
-          if [ ! -f "$APPLE_API_KEY_PATH" ]; then
-            echo "::error::API key file missing at $APPLE_API_KEY_PATH"
-            exit 1
-          fi
-          # `release-testing` is the CLI's TestFlight export method
-          # (`app-store-connect` targets App Store submission). Both produce a
-          # distribution-signed IPA that `altool --upload-app` accepts; this one
-          # matches the job's purpose.
+          # Deliberately NO APPLE_API_KEY / APPLE_API_ISSUER /
+          # APPLE_API_KEY_PATH here. Supplying all three makes the CLI treat
+          # the build as "credentials present" and set `skip_codesign`
+          # (tauri-cli src/mobile/ios/build.rs:
+          #     let skip_signing = options.no_sign || credentials.is_some();
+          #     if skip_signing { build_config = build_config.skip_codesign(); }
+          # ), after which it force-signs the app with a throwaway
+          # self-signed certificate generated with
+          #     team_id: "unset", person_name: "Tauri"
+          # — i.e. exactly the
+          #     found cert "Apple Distribution: Tauri (unset)" with organization "Tauri"
+          # line and the subsequent "Cloud signing permission error". That
+          # cert is a Tauri artefact, not anything from APPLE_CERTIFICATE.
+          #
+          # With no API key in the environment the CLI does a real build and
+          # signs with the imported distribution identity. The API key is used
+          # only by the `altool` upload below, which is all it is for.
           pnpm dlx @tauri-apps/cli@2.12.0 ios build \
             --target aarch64 \
             --export-method release-testing
