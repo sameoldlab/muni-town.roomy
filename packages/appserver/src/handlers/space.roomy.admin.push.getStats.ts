@@ -13,7 +13,7 @@
 
 import { openReadStateDb } from "../db/db.ts";
 import { requireAdmin } from "../admin.ts";
-import { isPushConfigured, getVapidPublicKey } from "../push/webpush.ts";
+import { isPushConfigured, getVapidPublicKey } from "../push/transports/webPush.ts";
 import { pushDispatcherStats } from "../push/dispatcher.ts";
 import type { AuthCtx, QueryHandler, QueryParams } from "../xrpc/types.ts";
 

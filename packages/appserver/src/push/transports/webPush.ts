@@ -14,7 +14,7 @@
  */
 
 import webPush, { type PushSubscription, type WebPushError } from "web-push";
-import { log } from "../log.ts";
+import { log } from "../../log.ts";
 
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? "";
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY ?? "";

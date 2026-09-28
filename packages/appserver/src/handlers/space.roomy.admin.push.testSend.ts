@@ -17,7 +17,7 @@
 
 import { openReadStateDb } from "../db/db.ts";
 import { requireAdmin } from "../admin.ts";
-import { sendPush } from "../push/webpush.ts";
+import { sendPush } from "../push/transports/webPush.ts";
 import { selectSubscriptions } from "../queries/pushSubscriptions.ts";
 import { pruneSubscriptionByEndpoint } from "../queries/pushSubscriptions.ts";
 import { XrpcError } from "../xrpc/errors.ts";

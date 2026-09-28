@@ -26,7 +26,7 @@ import { openGlobalDb, openSpaceDb } from "../db/db.ts";
 import { createHash } from "node:crypto";
 import { log } from "../log.ts";
 import { evaluatePush, resolveAuthorName } from "./evaluate.ts";
-import { sendPush } from "./webpush.ts";
+import { sendPush } from "./transports/webPush.ts";
 import {
   pruneSubscriptionByEndpoint,
   selectSubscriptions,
