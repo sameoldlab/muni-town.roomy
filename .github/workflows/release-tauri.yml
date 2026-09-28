@@ -222,71 +222,75 @@ jobs:
       - name: Build frontend
         run: pnpm --filter app-lite build
 
-      - name: Import signing certificate
+      # ── Verify the certificate the iOS path will actually use ─────────────
+      #
+      # `tauri ios build` reads IOS_CERTIFICATE / IOS_CERTIFICATE_PASSWORD /
+      # IOS_MOBILE_PROVISION -- NOT the APPLE_* names, which belong to the
+      # macOS bundler. APPLE_CERTIFICATE appears nowhere in the iOS source
+      # (crates/tauri-cli/src/mobile/ios/{build,mod}.rs), so a secret named
+      # APPLE_CERTIFICATE is silently ignored and the build signs with the
+      # CLI's throwaway self-signed cert
+      # ("Apple Distribution: Tauri (unset)"), then fails at export with
+      # "Cloud signing permission error" + "No profiles for '<id>'".
+      #
+      # The secrets keep their APPLE_* names; this step maps them onto the
+      # IOS_* variables the toolchain reads.
+      #
+      # `ios build` collects every identity in the p12 into a BTreeSet and
+      # takes `.first()` (tauri-macos-sign/src/keychain/identity.rs), ordering
+      # on (organization, common name, ...). A p12 holding BOTH an Apple
+      # Development and an Apple Distribution cert therefore resolves to
+      # Development, which cannot sign a TestFlight build. So this asserts a
+      # Distribution identity exists and that no Development one is present
+      # alongside it.
+      - name: Verify signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           CERT="$RUNNER_TEMP/certificate.p12"
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
-          security import "$CERT" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          # Let codesign use the key without an interactive prompt.
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          if [ ! -s "$CERT" ]; then
+            echo "::error::APPLE_CERTIFICATE decoded to an empty file."
+            exit 1
+          fi
 
-          # ── Assert the secret really holds an Apple-issued identity ──────
-          # A wrong APPLE_CERTIFICATE is otherwise only discovered ~20 minutes
-          # later, inside Xcode's exportArchive, as "Cloud signing permission
-          # error" + "No profiles for '<bundle id>' were found" — which reads
-          # like a provisioning problem rather than a bad input.
-          #
-          # Two properties separate an Apple-issued cert from a locally
-          # generated one. Both are required:
-          #   1. an organizationalUnit — Apple always sets OU to the Team ID.
-          #      cargo-mobile2 prints a cert lacking one as "(unset)", and
-          #      xcodebuild refuses to Cloud-sign with it.
-          #   2. Apple's WWDR intermediate issues it.
-          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
-            | grep -oE '"Apple (Distribution|Development)[^"]*"' | head -n 1)"
-          if [ -z "$IDENTITY" ]; then
-            echo "::error::APPLE_CERTIFICATE does not contain a usable 'Apple Distribution' identity."
-            echo "--- identities in the imported keychain:"
-            security find-identity -p codesigning "$KEYCHAIN" || true
-            # Inspect via the keychain rather than re-opening the p12: the PEM
-            # is readable without the password once imported, whereas
-            # `openssl pkcs12` needs the right one and would print a second,
-            # misleading "Mac verify error: invalid password?" here.
-            echo "--- certificates in the imported keychain (subject / issuer):"
-            security find-certificate -a -p "$KEYCHAIN" 2>/dev/null \
-              | openssl crl2pkcs7 -nocrl -certfile /dev/stdin 2>/dev/null \
-              | openssl pkcs7 -print_certs -noout 2>/dev/null \
-              | grep -E "^subject|^issuer" || true
-            echo "--- password check:"
-            if openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -legacy >/dev/null 2>&1; then
-              echo "APPLE_CERTIFICATE_PASSWORD is correct for this p12."
-            else
-              echo "APPLE_CERTIFICATE_PASSWORD does NOT match this p12"
-              echo "(openssl reports 'Mac verify error: invalid password?')."
-            fi
-            echo "Expected: subject O=<your name> and OU=<your Team ID>, issued by"
-            echo "'Apple Worldwide Developer Relations Certification Authority'."
-            echo "A cert with O=Tauri, or with no OU at all, is not from your account."
+          # `-info` prints every cert's subject; piping to a single `openssl
+          # x509 -noout` would report only the FIRST cert, hiding the others.
+          # `-nomacver` is used only to list subjects after a password failure,
+          # so a wrong password still shows what is actually in the file.
+          if openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -legacy >/dev/null 2>&1; then
+            SUBJECTS="$(openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -legacy -info 2>&1 | grep -E '^subject=' || true)"
+          elif openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" >/dev/null 2>&1; then
+            SUBJECTS="$(openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -info 2>&1 | grep -E '^subject=' || true)"
+          else
+            echo "::error::APPLE_CERTIFICATE_PASSWORD does not match APPLE_CERTIFICATE."
+            echo "openssl reports 'Mac verify error: invalid password?' for this pairing."
+            echo "--- certs present anyway (subjects):"
+            openssl pkcs12 -in "$CERT" -nokeys -nomacver -legacy -info 2>&1 | grep -E '^subject=' || echo "(unreadable)"
             exit 1
           fi
-          echo "Imported identity: $IDENTITY"
-          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && ! grep -qF "$APPLE_SIGNING_IDENTITY" <<<"$IDENTITY"; then
-            echo "::error::APPLE_SIGNING_IDENTITY ($APPLE_SIGNING_IDENTITY) does not match the certificate ($IDENTITY)."
+
+          echo "--- certificates in the p12:"
+          echo "$SUBJECTS"
+
+          if ! grep -q "Apple Distribution" <<<"$SUBJECTS"; then
+            echo "::error::APPLE_CERTIFICATE contains no 'Apple Distribution' certificate."
+            echo "Export it from Keychain Access > My Certificates >"
+            echo "'Apple Distribution: ...' (that view is what includes the key)."
             exit 1
           fi
-          rm -f "$CERT"
+          if grep -q "Apple Development\|Apple Developer\|CN=localhost" <<<"$SUBJECTS"; then
+            echo "::error::APPLE_CERTIFICATE also contains a non-distribution certificate."
+            echo "The iOS toolchain sorts every identity in the p12 and takes the FIRST"
+            echo "(tauri-macos-sign keychain/identity.rs: BTreeSet over"
+            echo " (organization, common name, ...)), so a Development cert makes it"
+            echo "sign with the wrong identity and export fails."
+            echo "Export the Apple Distribution identity ALONE."
+            exit 1
+          fi
+          echo "Certificate OK: exactly one Apple Distribution identity."
 
       - name: Write App Store Connect API key
         env:
@@ -307,9 +311,11 @@ jobs:
           # xcodebuild solely through the generated Xcode project's
           # DEVELOPMENT_TEAM, so it must be set at `ios init`, which is what
           # renders it from `bundle > iOS > developmentTeam` / this env var.
-          # Without it, archive/export has no team to sign for and fails with
-          # "Cloud signing permission error" + "No profiles for '<id>'".
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          # The IOS_* names, because that is what the iOS toolchain reads.
+          IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
           # `ios build --build-number` is inert (verified on 2.12.0: it leaves
           # CFBundleVersion at the config default). The bundle version must be
           # set through the config at `ios init`, which regenerates the Xcode
@@ -348,35 +354,33 @@ jobs:
       - name: Build iOS archive and IPA
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # The toolchain reads IOS_* for signing; APPLE_CERTIFICATE is a
+          # macOS-bundler name and is ignored on the iOS path. The secrets keep
+          # their APPLE_* names and are mapped here.
+          IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           cd ./packages/app-lite
-          # The ASC API key is REQUIRED here, and all three parts of it:
-          # `credentials.is_some()` also makes the CLI take its skip_codesign
-          # path for `build`/`archive`, which force-signs with a throwaway
-          # self-signed cert generated with
-          #     team_id: "unset", person_name: "Tauri"
-          # (tauri-cli src/mobile/ios/build.rs). That is the
-          #     found cert "Apple Distribution: Tauri (unset)"
-          # line — a CLI artefact, not anything from APPLE_CERTIFICATE. It is
-          # deliberate: it only preserves the entitlements until the EXPORT
-          # phase, which is the one that authenticates with these credentials
-          # and does the real signing + distribution-profile creation.
+          # With IOS_CERTIFICATE + IOS_MOBILE_PROVISION present the CLI writes
+          # CODE_SIGN_STYLE=Manual, CODE_SIGN_IDENTITY, DEVELOPMENT_TEAM and
+          # PROVISIONING_PROFILE_SPECIFIER into the project, so export signs
+          # against a real profile instead of asking Apple to mint a
+          # cloud-managed certificate (which this account refuses:
+          # "Cloud signing permission error").
           #
-          # So: the key belongs on this step. Omitting it does NOT avoid the
-          # dummy cert — it only strips authentication from archive/export and
-          # then fails at build with "No profiles for 'space.roomy' were found".
+          # The ASC API key is still passed: credentials.is_some() also makes
+          # the CLI skip_codesign for build/archive and force-sign with a
+          # throwaway self-signed cert ("Apple Distribution: Tauri (unset)"),
+          # which is deliberate — it only preserves entitlements until export,
+          # which re-signs with the real certificate.
           export APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
           if [ ! -f "$APPLE_API_KEY_PATH" ]; then
             echo "::error::API key file missing at $APPLE_API_KEY_PATH"
             exit 1
           fi
-          # `release-testing` is the CLI's TestFlight export method
-          # (`app-store-connect` targets App Store submission). Both produce a
-          # distribution-signed IPA that `altool --upload-app` accepts; this one
-          # matches the job's purpose.
           pnpm dlx @tauri-apps/cli@2.12.0 ios build \
             --target aarch64 \
             --export-method release-testing
