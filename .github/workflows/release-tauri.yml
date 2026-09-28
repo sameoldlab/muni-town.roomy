@@ -301,6 +301,15 @@ jobs:
 
       - name: Init iOS project
         env:
+          # `ios build` never reads APPLE_DEVELOPMENT_TEAM (it does not appear
+          # in the CLI's ios build source at all — the only team id it knows is
+          # the throwaway "unset" for its dummy cert). The team reaches
+          # xcodebuild solely through the generated Xcode project's
+          # DEVELOPMENT_TEAM, so it must be set at `ios init`, which is what
+          # renders it from `bundle > iOS > developmentTeam` / this env var.
+          # Without it, archive/export has no team to sign for and fails with
+          # "Cloud signing permission error" + "No profiles for '<id>'".
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           # `ios build --build-number` is inert (verified on 2.12.0: it leaves
           # CFBundleVersion at the config default). The bundle version must be
           # set through the config at `ios init`, which regenerates the Xcode
@@ -313,6 +322,11 @@ jobs:
             -c "{\"bundle\":{\"iOS\":{\"bundleVersion\":\"$BUILD_NUMBER\"}}}"
           grep -q "CFBundleVersion: \"$BUILD_NUMBER\"" src-tauri/gen/apple/project.yml \
             || { echo "::error::CFBundleVersion was not set to $BUILD_NUMBER"; exit 1; }
+          # Assert the team actually landed in the project; without it the
+          # build cannot sign and the failure surfaces much later.
+          grep -q "DEVELOPMENT_TEAM: ${APPLE_DEVELOPMENT_TEAM}" src-tauri/gen/apple/project.yml \
+            || { echo "::error::DEVELOPMENT_TEAM was not set to ${APPLE_DEVELOPMENT_TEAM}"; exit 1; }
+          echo "DEVELOPMENT_TEAM=${APPLE_DEVELOPMENT_TEAM} in the generated project."
           # The generated Xcode build phase is emitted with an UNPINNED
           # `pnpm dlx @tauri-apps/cli ios xcode-script`. Pin it to the same CLI
           # this job drives: the options-server handshake between the two
@@ -335,25 +349,34 @@ jobs:
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           cd ./packages/app-lite
-          # Deliberately NO APPLE_API_KEY / APPLE_API_ISSUER /
-          # APPLE_API_KEY_PATH here. Supplying all three makes the CLI treat
-          # the build as "credentials present" and set `skip_codesign`
-          # (tauri-cli src/mobile/ios/build.rs:
-          #     let skip_signing = options.no_sign || credentials.is_some();
-          #     if skip_signing { build_config = build_config.skip_codesign(); }
-          # ), after which it force-signs the app with a throwaway
-          # self-signed certificate generated with
+          # The ASC API key is REQUIRED here, and all three parts of it:
+          # `credentials.is_some()` also makes the CLI take its skip_codesign
+          # path for `build`/`archive`, which force-signs with a throwaway
+          # self-signed cert generated with
           #     team_id: "unset", person_name: "Tauri"
-          # — i.e. exactly the
-          #     found cert "Apple Distribution: Tauri (unset)" with organization "Tauri"
-          # line and the subsequent "Cloud signing permission error". That
-          # cert is a Tauri artefact, not anything from APPLE_CERTIFICATE.
+          # (tauri-cli src/mobile/ios/build.rs). That is the
+          #     found cert "Apple Distribution: Tauri (unset)"
+          # line — a CLI artefact, not anything from APPLE_CERTIFICATE. It is
+          # deliberate: it only preserves the entitlements until the EXPORT
+          # phase, which is the one that authenticates with these credentials
+          # and does the real signing + distribution-profile creation.
           #
-          # With no API key in the environment the CLI does a real build and
-          # signs with the imported distribution identity. The API key is used
-          # only by the `altool` upload below, which is all it is for.
+          # So: the key belongs on this step. Omitting it does NOT avoid the
+          # dummy cert — it only strips authentication from archive/export and
+          # then fails at build with "No profiles for 'space.roomy' were found".
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          if [ ! -f "$APPLE_API_KEY_PATH" ]; then
+            echo "::error::API key file missing at $APPLE_API_KEY_PATH"
+            exit 1
+          fi
+          # `release-testing` is the CLI's TestFlight export method
+          # (`app-store-connect` targets App Store submission). Both produce a
+          # distribution-signed IPA that `altool --upload-app` accepts; this one
+          # matches the job's purpose.
           pnpm dlx @tauri-apps/cli@2.12.0 ios build \
             --target aarch64 \
             --export-method release-testing
