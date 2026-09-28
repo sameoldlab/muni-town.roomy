@@ -305,29 +305,22 @@ jobs:
 
       - name: Init iOS project
         env:
-          # `ios build` never reads APPLE_DEVELOPMENT_TEAM (it does not appear
-          # in the CLI's ios build source at all — the only team id it knows is
-          # the throwaway "unset" for its dummy cert). The team reaches
-          # xcodebuild solely through the generated Xcode project's
-          # DEVELOPMENT_TEAM, so it must be set at `ios init`, which is what
-          # renders it from `bundle > iOS > developmentTeam` / this env var.
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           # The IOS_* names, because that is what the iOS toolchain reads.
+          # APPLE_DEVELOPMENT_TEAM is the one APPLE_* name that IS used: it
+          # reaches xcodebuild through the generated project's DEVELOPMENT_TEAM
+          # (the CLI's ios build source never reads it directly — the only team
+          # id it knows is the throwaway "unset" for its dummy cert), so it has
+          # to be set here, at `ios init`, which renders it.
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
           # `ios build` runs cargo-mobile2, which calls
           # `agvtool new-version -all <version>` to stamp the build. agvtool
-          # writes CURRENT_PROJECT_VERSION and CFBundleVersion, and refuses to
-          # work unless the target has a versioning system configured — it
-          # reports "There does not seem to be a CURRENT_PROJECT_VERSION key
-          # set for this project" otherwise. The XcodeGen template sets
-          # neither, so the version must be applied here, after `ios init`.
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
-          # The IOS_* names, because that is what the iOS toolchain reads.
-          IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
+          # writes CFBundleVersion, and its read-back needs a
+          # CURRENT_PROJECT_VERSION the XcodeGen template does not set, so the
+          # write is applied here and asserted from Info.plist instead.
+          #
           # App Store Connect rejects an upload that reuses a build number, so
           # it must change every run. `github.run_number` is monotonic per
           # workflow, which is what makes it safe here.
