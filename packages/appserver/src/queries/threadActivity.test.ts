@@ -5,7 +5,38 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toAsyncDb } from "../db/syncAdapter.ts";
 import type { DbLike } from "../db/types.ts";
-import { listThreadActivity } from "./threadActivity.ts";
+import { listThreadActivity, fetchRoomActivity } from "./threadActivity.ts";
+import {
+  readRoomActivityProjection,
+  rebuildRoomActivity,
+} from "./roomActivityProjection.ts";
+
+/**
+ * The bytes a worker response would have to carry for these rows — the payload
+ * that structured-cloning them across the thread boundary costs. Buffers are
+ * counted by their length, which is how a `comp_content.data` body lands.
+ */
+function bytesOf(rows: unknown[]): number {
+  const seen = new WeakSet<object>();
+  const size = (value: unknown): number => {
+    if (value == null) return 4;
+    if (typeof value === "string") return value.length;
+    if (typeof value === "number" || typeof value === "boolean") return 8;
+    if (value instanceof Uint8Array) return value.length;
+    if (typeof value === "object") {
+      const obj = value as object;
+      if (seen.has(obj)) return 0;
+      seen.add(obj);
+      let total = 0;
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        total += k.length + size(v);
+      }
+      return total;
+    }
+    return 0;
+  };
+  return rows.reduce<number>((a, r) => a + size(r), 0);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -567,5 +598,263 @@ describe("threadActivity", () => {
     expect(result.map((t) => t.id).sort()).toEqual(
       [THREAD_A, THREAD_B, THREAD_C].sort(),
     );
+  });
+});
+
+/**
+ * `room_activity` read parity.
+ *
+ * The projection replaces a scan of every message in scope, so the only
+ * assertion that matters is that the two produce the SAME board — otherwise the
+ * optimisation is a behaviour change. Each test reads the fixture through the
+ * scan, then through the projection, and compares.
+ *
+ * Without this the rest of the suite would not exercise the projected path at
+ * all: the projection starts empty, so every read above falls back by design.
+ */
+describe("room_activity projection parity", () => {
+  /** Read every fixture room twice: first by scan, then projected. */
+  async function bothWays(db: Database, asyncDb: DbLike, roomIds: string[]) {
+    const scanned = await fetchRoomActivity(asyncDb, roomIds);
+    await rebuildRoomActivity(asyncDb, roomIds);
+    const projected = await fetchRoomActivity(asyncDb, roomIds);
+    // The projection must actually have been read — a fallback would make this
+    // comparison pass trivially.
+    expect(await readRoomActivityProjection(asyncDb, roomIds)).not.toBeNull();
+    return { scanned, projected };
+  }
+
+  const plain = (m: Map<string, unknown>) =>
+    JSON.parse(
+      JSON.stringify([...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])))),
+    );
+
+  test("matches the scan for threads with messages, empties, and a thread with no messages", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    postMessage(db, THREAD_A, ALICE, 1000, "first");
+    postMessage(db, THREAD_A, BOB, 3000, "latest");
+    postMessage(db, THREAD_A, CAROL, 2000);
+    postMessage(db, THREAD_C, DAVE, 4000, "other channel thread");
+    // THREAD_B stays empty — no message event can ever maintain its row, so it
+    // is the case that forces the warm-on-miss.
+
+    const rooms = [THREAD_A, THREAD_B, THREAD_C];
+    const { scanned, projected } = await bothWays(db, asyncDb, rooms);
+    expect(plain(projected)).toEqual(plain(scanned));
+  });
+
+  test("matches the scan for a legacy forward reference", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    // The original lives in another channel; the forward reference is the only
+    // row in THREAD_B, and carries no content or author of its own.
+    const original = postMessage(db, OTHER_CHANNEL, ALICE, 5000, "original text");
+    forwardMessage(db, THREAD_B, original);
+
+    const rooms = [OTHER_CHANNEL, THREAD_B];
+    const { scanned, projected } = await bothWays(db, asyncDb, rooms);
+    expect(plain(projected)).toEqual(plain(scanned));
+    // And the forwarded original really is what the board shows, not a blank
+    // row that happens to match a blank scan.
+    expect(projected.get(THREAD_B)!.latestMessage!.content).toBe("original text");
+    expect(projected.get(THREAD_B)!.latestMembers.map((m) => m.did)).toEqual([ALICE]);
+  });
+
+  test("matches the scan once the latest message is deleted", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    const newest = postMessage(db, THREAD_A, BOB, 3000, "newest");
+    postMessage(db, THREAD_A, ALICE, 1000, "older");
+    await rebuildRoomActivity(asyncDb, [THREAD_A]);
+
+    // Delete the newest message, as the delete materialiser does (the entity
+    // row disappears; `edges` cascades).
+    db.run("delete from entities where id = ?", [newest]);
+    await rebuildRoomActivity(asyncDb, [THREAD_A]);
+
+    const { scanned, projected } = await bothWays(db, asyncDb, [THREAD_A]);
+    expect(plain(projected)).toEqual(plain(scanned));
+    expect(projected.get(THREAD_A)!.latestMessage!.content).toBe("older");
+    expect(projected.get(THREAD_A)!.latestMembers.map((m) => m.did)).toEqual([ALICE]);
+  });
+
+  test("a partially projected page falls back and warms every room it read", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    postMessage(db, THREAD_A, ALICE, 1000, "a");
+    postMessage(db, THREAD_C, CAROL, 2000, "c");
+    // Only one of the two rooms is projected.
+    await rebuildRoomActivity(asyncDb, [THREAD_A]);
+
+    const result = await fetchRoomActivity(asyncDb, [THREAD_A, THREAD_C]);
+    expect(result.get(THREAD_C)!.latestMessage!.content).toBe("c");
+
+    // The fallback warmed the room it had to read, so the whole page is
+    // projected from the next read on — this is what stops a single quiet room
+    // from pinning a board to the scan forever.
+    expect(await readRoomActivityProjection(asyncDb, [THREAD_A, THREAD_C])).not.toBeNull();
+  });
+});
+
+/**
+ * `scanRoomActivity` has two implementations — one statement for an in-process
+ * handle, the narrowed three for the IPC handle the appserver uses — and the
+ * board must not be able to tell which one answered.
+ *
+ * The unit fixtures above run through `toAsyncDb`, i.e. the in-process path, so
+ * without this the IPC path would be exercised by nothing here. Forcing the
+ * branch covers both: the same fixture, the same rooms, read each way and
+ * compared byte for byte. It is the only test that would fail if the
+ * in-process reducer disagreed with the scan the appserver actually runs.
+ */
+describe("scanRoomActivity parity: in-process vs IPC", () => {
+  /** The real handle, with the in-process marker removed so the IPC branch runs. */
+  const ipcHandle = (asyncDb: DbLike): DbLike =>
+    ({ ...asyncDb, backend: undefined }) as DbLike;
+
+  const plain = (m: Map<string, unknown>) =>
+    JSON.parse(
+      JSON.stringify([...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])))),
+    );
+
+  test("both scans return the same board row for the same rooms", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    // Every shape the two implementations could disagree about, in one page:
+    // a room with several messages from several authors (member order and the
+    // 3-cap), a room with none, a forward reference carrying no content of its
+    // own, an author with no profile row, two messages sharing a millisecond
+    // (the tie-break), and a message with content but no timestamp.
+    postMessage(db, THREAD_A, ALICE, 1000, "first");
+    postMessage(db, THREAD_A, BOB, 3000, "latest");
+    postMessage(db, THREAD_A, CAROL, 2000, "middle");
+    postMessage(db, THREAD_A, DAVE, 2000, "same-millisecond");
+    const original = postMessage(db, OTHER_CHANNEL, ALICE, 5000, "original text");
+    forwardMessage(db, THREAD_B, original);
+    // A fifth author, so the 3-member cap has something to drop.
+    postMessage(db, THREAD_C, BOB, 6000, "sixth author");
+    postMessage(db, THREAD_C, CAROL, 7000, "another");
+
+    const rooms = [THREAD_A, THREAD_B, THREAD_C, CHANNEL];
+    const viaSqlite = await fetchRoomActivity(asyncDb, rooms);
+    const viaIpc = await fetchRoomActivity(ipcHandle(asyncDb), rooms);
+
+    expect(plain(viaIpc)).toEqual(plain(viaSqlite));
+    // Not an all-empty comparison: the page really did carry activity, and it
+    // really did carry a room with none.
+    expect(viaSqlite.get(THREAD_A)!.latestMessage!.content).toBe("latest");
+    expect(viaSqlite.get(THREAD_B)!.latestMessage!.content).toBe("original text");
+    expect(viaSqlite.get(THREAD_A)!.latestMembers.length).toBe(3);
+    expect(viaSqlite.get(CHANNEL)!.latestTimestamp).toBeNull();
+    expect(viaSqlite.get(CHANNEL)!.latestMessage).toBeNull();
+  });
+
+  test("both scans agree on a room whose only message has no timestamp", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    // A content row with a null timestamp: message-shaped, so it counts as an
+    // author, but it can never be the room's latest message.
+    db.run("insert into entities (id, stream_id, room) values (?, ?, ?)", [
+      "01NOTS0000000000000000000A",
+      SPACE,
+      THREAD_A,
+    ]);
+    db.run(
+      "insert into comp_content (entity, mime_type, data, last_edit, timestamp) values (?, 'text/markdown', ?, ?, null)",
+      ["01NOTS0000000000000000000A", Buffer.from("no time"), "01NOTS0000000000000000000A"],
+    );
+    db.run("insert into edges (head, tail, label) values (?, ?, 'author')", [
+      "01NOTS0000000000000000000A",
+      ALICE,
+    ]);
+
+    const rooms = [THREAD_A];
+    const viaSqlite = await fetchRoomActivity(asyncDb, rooms);
+    const viaIpc = await fetchRoomActivity(ipcHandle(asyncDb), rooms);
+
+    expect(plain(viaIpc)).toEqual(plain(viaSqlite));
+    expect(viaSqlite.get(THREAD_A)!.latestTimestamp).toBeNull();
+    expect(viaSqlite.get(THREAD_A)!.latestMembers.map((m) => m.did)).toEqual([ALICE]);
+  });
+
+  test("both scans agree on an unknown room id", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+    postMessage(db, THREAD_A, ALICE, 1000, "hi");
+
+    const rooms = [THREAD_A, "01NOSUCHROOM0000000000000"];
+    const viaSqlite = await fetchRoomActivity(asyncDb, rooms);
+    const viaIpc = await fetchRoomActivity(ipcHandle(asyncDb), rooms);
+
+    expect(plain(viaIpc)).toEqual(plain(viaSqlite));
+    // A requested id with no `comp_room` row gets a blank entry rather than no
+    // entry — pre-existing behaviour of the scan's JS loop, pinned here so the
+    // two implementations cannot drift on it. Callers select their ids from
+    // `comp_room` (`listThreadActivity`'s page query), so it is not reachable
+    // with an id that did not come out of the room table.
+    const blank = viaSqlite.get("01NOSUCHROOM0000000000000")!;
+    expect(blank.latestTimestamp).toBeNull();
+    expect(blank.latestMessage).toBeNull();
+    expect(blank.canonicalParent).toBeNull();
+  });
+
+  /**
+   * The scan's cost over IPC is the payload it structured-clones back, and the
+   * message body is the largest column in it. Returning every message with its
+   * body so the fold can pick one per room would send 20 bodies across 2 rooms
+   * to keep 2.
+   *
+   * This pins the payload, not the answer — the parity tests above already hold
+   * the answer. It counts the bytes rather than timing them, so it fails on a
+   * body-returning shape regardless of how fast the machine is.
+   */
+  test("the IPC scan does not return a body for a message it discards", async () => {
+    const { db, asyncDb } = freshDb();
+    seed(db);
+
+    const BODY = "x".repeat(4096);
+    for (let i = 0; i < 10; i++) postMessage(db, THREAD_A, ALICE, 1000 + i, BODY);
+    for (let i = 0; i < 10; i++) postMessage(db, THREAD_C, CAROL, 2000 + i, BODY);
+
+    const seen: Array<{ sql: string; bytes: number }> = [];
+    const counting: DbLike = {
+      ...ipcHandle(asyncDb),
+      query(sql: string) {
+        const inner = asyncDb.query(sql);
+        return {
+          async all<T>(...params: unknown[]): Promise<T[]> {
+            const rows = await inner.all<T>(...params);
+            seen.push({ sql, bytes: bytesOf(rows) });
+            return rows;
+          },
+          async get<T>(...params: unknown[]): Promise<T | null> {
+            const row = await inner.get<T>(...params);
+            seen.push({ sql, bytes: row == null ? 0 : bytesOf([row]) });
+            return row;
+          },
+        };
+      },
+    };
+
+    const result = await fetchRoomActivity(counting, [THREAD_A, THREAD_C]);
+    // Both rooms really were served, so a scan that returned nothing at all
+    // cannot satisfy this test.
+    expect(result.get(THREAD_A)!.latestMessage!.content).toBe(BODY);
+    expect(result.get(THREAD_C)!.latestMessage!.content).toBe(BODY);
+
+    // The widest single statement must not carry all 20 bodies. The 2 kept
+    // bodies plus the JSON scaffolding are ~9 kB; a statement returning all 20
+    // would be ~82 kB.
+    const widest = Math.max(...seen.map((s) => s.bytes));
+    expect(widest).toBeLessThan(20 * BODY.length);
+    const total = seen.reduce((a, s) => a + s.bytes, 0);
+    expect(total).toBeLessThan(20 * BODY.length);
   });
 });

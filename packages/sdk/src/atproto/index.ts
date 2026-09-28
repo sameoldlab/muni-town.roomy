@@ -27,6 +27,13 @@ export {
 } from "./bluesky-profile";
 
 export {
+  COSMIK_CARD_COLLECTION,
+  createCosmikCard,
+  type CosmikCardMetadata,
+  type CreatedCard,
+} from "./cosmik-card";
+
+export {
   getSpaceHandleDomains,
   getSpaceHandle,
   setSpaceHandle,

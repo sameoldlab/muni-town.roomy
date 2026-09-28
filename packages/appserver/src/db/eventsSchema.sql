@@ -11,15 +11,23 @@ create table if not exists stream_events (
     primary key (stream_id, idx)
 ) strict;
 
+-- Supports "events in the last N hours/day" counts (admin dashboard). Without
+-- it those are full table scans of the whole event log.
+create index if not exists idx_stream_events_created_at on stream_events(created_at);
+
 -- Per-stream metadata (latest event idx, etc.)
+--
+-- `latest_event` is the highest `idx` in the stream and doubles as a rollup:
+-- `idx` is assigned as max(idx)+1 and never deleted, so the stream holds
+-- exactly `latest_event + 1` events and the admin dashboard sums this column
+-- instead of counting the whole log.
 create table if not exists stream_state (
     stream_id text primary key,
     latest_event integer not null default 0
 ) strict;
 
--- Per-stream DID signing keys, mirroring the former Leaf did_keys/did_owners tables (one-time migration source).
--- Each stream gets its own k256 keypair for PLC operations (rotation key +
--- verification method). Migrated from Leaf's leaf.db for existing streams.
+-- Per-stream DID signing keys. Each stream gets its own k256 keypair for PLC
+-- operations (rotation key + verification method).
 create table if not exists dids (
     did text primary key
 ) strict;

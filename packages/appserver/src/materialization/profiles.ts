@@ -1,10 +1,9 @@
 /**
  * Profile prefetch + materialisation.
  *
- * Mirrors the frontend `worker.ts → ensureProfiles` flow: scan a batch of
- * events for user DIDs that need a profile, look up which ones we don't yet
- * have, fetch profiles, and write them to the global `profiles` table (the
- * authoritative per-user Roomy profile store).
+ * Scan a batch of events for user DIDs that need a profile, look up which ones
+ * we don't yet have, fetch profiles, and write them to the global `profiles`
+ * table (the authoritative per-user Roomy profile store).
  *
  * **HappyView-first with Bluesky fallback.** When a HappyView index service
  * is configured, bulk profile fetches query it in batch (one HTTP call per 25
@@ -34,6 +33,7 @@ import {
   type RoomyProfileExtras,
 } from "./roomyProfile.ts";
 import type { HappyViewConfig } from "../happyview.ts";
+import { fetchWithTimeout } from "../fetchTimeout.ts";
 import { log } from "../log.ts";
 
 
@@ -46,17 +46,31 @@ import { log } from "../log.ts";
 const STALE_HANDLE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
 /**
+ * Freshness TTL for *existing* profile rows. A row older than this is
+ * eligible for re-fetch on the next event/reference, so a display-name or
+ * avatar change on the PDS (Roomy record or Bluesky profile) propagates to
+ * message lists without a manual visit to the profile page.
+ *
+ * Distinct from `STALE_HANDLE_COOLDOWN_MS` (handle-expiry recovery): that is a
+ * backoff on an *invalid* handle; this is a periodic refresh of a *valid*
+ * row. The two combine — a row is re-fetched when either threshold applies.
+ *
+ * Exported so the read path (profileStore's on-demand hydration) honours the
+ * same cadence instead of drifting.
+ */
+export const PROFILE_REFRESH_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
  * Negative cache: how long a DID that resolved to no profile at all is kept
  * out of the fetch path.
  *
- * Both fetch paths only ever suppressed a retry *after a success*, because a
- * cache row is written from the fetch result. A DID that neither HappyView nor
- * the Bluesky appview can resolve — a brand-new DID, a `did:web`, an appview
- * hiccup — therefore had no row to find, so `filterMissing` returned it again
- * and the write path re-ran the full pipeline (HappyView + Bluesky, two HTTP
- * round-trips) on *every single event* by that author, forever. N concurrent
- * writes by the same unresolved author each issued their own copy: this is
- * what put 48 requests on one worker in production.
+ * A cache row is only written from a successful fetch result, so a DID that
+ * neither HappyView nor the Bluesky appview can resolve — a brand-new DID, a
+ * `did:web`, an appview hiccup — has no row to find. Without this backoff
+ * `filterMissing` returns it again and the write path re-runs the full
+ * pipeline (HappyView + Bluesky, two HTTP round-trips) on every event by that
+ * author, and N concurrent writes by the same unresolved author each issue
+ * their own copy.
  *
  * Keyed by DID and shared by both callers of this pipeline: materialisation's
  * `ensureProfilesForBatch`/`ensureProfilesRoomyFirst` and the read path's
@@ -152,7 +166,7 @@ export const defaultGetProfiles: GetProfilesFn = async (dids: UserDid[]) => {
       try {
         const params = new URLSearchParams();
         for (const d of chunk) params.append("actors", d);
-        const resp = await fetch(
+        const resp = await fetchWithTimeout(
           `https://api.bsky.app/xrpc/app.bsky.actor.getProfiles?${params.toString()}`,
         );
         if (!resp.ok) {
@@ -271,8 +285,8 @@ export async function getProfilesRoomyFirst(
   // Every source has now been asked (or, under `bun test`, the only source
   // that exists in this environment has been). Anything still absent is
   // unresolvable, so back it off instead of re-running both lookups on the
-  // next event or read — the failure that made production re-fetch the same
-  // author forever.
+  // next event or read — without the backoff the same unresolvable author is
+  // re-fetched forever.
   recordUnresolvedProfiles(requested, new Set(profiles.map((p) => p.did)));
 
   return { profiles, extras };
@@ -406,7 +420,21 @@ async function filterMissing(db: DbLike, candidates: Set<UserDid>): Promise<User
     ).map((r) => r.did),
   );
 
-  return resolvable.filter((d) => !present.has(d) || staleHandleDids.has(d));
+  // DIDs whose row is older than the freshness TTL — re-fetch regardless of
+  // handle state so a display-name/avatar change on the PDS propagates to
+  // message lists instead of the first-fetched values being pinned forever.
+  // Bounded by the TTL: a row is re-fetched at most once per interval.
+  const refreshCutoff = Date.now() - PROFILE_REFRESH_TTL_MS;
+  const staleRows = new Set(
+    (await globalDb
+      .query(`select did from profiles where updated_at < ? and did in (${placeholders})`)
+      .all<{ did: string }>(refreshCutoff, ...resolvable)
+    ).map((r) => r.did),
+  );
+
+  return resolvable.filter(
+    (d) => !present.has(d) || staleHandleDids.has(d) || staleRows.has(d),
+  );
 }
 
 /**
@@ -421,14 +449,17 @@ async function filterMissing(db: DbLike, candidates: Set<UserDid>): Promise<User
  * (`space.roomy.user.profile/self`) don't carry a handle, so the handle is
  * preserved from the existing row (populated by a prior Bluesky fetch /
  * hydration) rather than being clobbered. A Bluesky fallback is
- * first-writer-wins for display fields but always refreshes the handle.
+ * null-preserving for all fields (a `NULL` incoming value never clobbers an
+ * existing one) and always refreshes the handle, so a display-name or avatar
+ * change picked up by a periodic re-fetch (see `PROFILE_REFRESH_TTL_MS`)
+ * propagates rather than pinning the first-fetched value.
  *
  * The handle is normalized on both sides of the merge: `""` from the incoming
  * profile is treated as absent (so it can't overwrite a real handle), and a
- * legacy `''` already in the column is healed to the incoming handle. Both
- * sides go through `nullif(..., '')` for exactly that reason — `''` and "no
- * handle" are the same state as far as every reader is concerned, so rows
- * poisoned by the old conversion recover without a migration.
+ * `''` already in the column is healed to the incoming handle. Both sides go
+ * through `nullif(..., '')` for exactly that reason — `''` and "no handle" are
+ * the same state as far as every reader is concerned, so a row holding `''`
+ * recovers on the next write without a migration.
  */
 async function writeGlobalProfile(
   p: ProfileViewDetailed,
@@ -464,11 +495,23 @@ async function writeGlobalProfile(
       [did, handle, name, avatar, description, banner, pronouns, website],
     );
   } else {
+    // Bluesky-sourced profile. The merge is null-preserving rather than
+    // first-writer-wins for display fields: with a profile-refresh TTL driving
+    // periodic re-fetches (see `PROFILE_REFRESH_TTL_MS`), a user who changes
+    // their display name or avatar on Bluesky must see that change propagate
+    // instead of the row pinning the first-fetched value forever. A `NULL`
+    // incoming value still never clobbers an existing one (handles, and the
+    // case where a fetch just lacks a field), so nothing is lost when the
+    // source omits a field. Roomy records (the `isRoomy` branch) overwrite
+    // unconditionally because they are the authoritative per-user profile.
     await globalDb.run(
       `insert into profiles (did, handle, name, avatar, description, updated_at)
        values (?, ?, ?, ?, ?, unixepoch() * 1000)
        on conflict(did) do update set
          handle = coalesce(nullif(excluded.handle, ''), nullif(profiles.handle, '')),
+         name = coalesce(excluded.name, profiles.name),
+         avatar = coalesce(excluded.avatar, profiles.avatar),
+         description = coalesce(excluded.description, profiles.description),
          updated_at = unixepoch() * 1000`,
       [did, handle, name, avatar, description],
     );
@@ -517,7 +560,7 @@ export async function writeSetUserProfileToGlobal(event: {
  * Insert one batch of profile rows (Bluesky-only path) into the global
  * `profiles` table.
  *
- * Phase 3: profiles are global — the authoritative copy lives in the global
+ * Profiles are global — the authoritative copy lives in the global
  * `profiles` table. The per-space `entities`/`comp_user`/`comp_info` writes
  * are dropped; per-space DBs keep their own denormalised copy via their own
  * materialisation, and cross-stream reads resolve from the global store.

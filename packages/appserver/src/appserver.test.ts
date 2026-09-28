@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createAppserver, type AppserverHandle } from "./appserver.ts";
 import { testAuthVerifier } from "./xrpc/auth.ts";
-import { closeDb } from "./db/db.ts";
-import { _resetHydrationInflight } from "./hydration/userHydration.ts";
+import { closeDb, openGlobalDb } from "./db/db.ts";
 import { _resetEmbedSweeper } from "./embed/sweeper.ts";
 import { recordProcessStart } from "./fatal.ts";
 import { _resetProfileStoreCache } from "./queries/profileStore.ts";
@@ -19,7 +18,6 @@ let handle: AppserverHandle | null = null;
 beforeEach(() => {
   // Reset all process-wide singletons so each test gets a clean appserver.
   closeDb();
-  _resetHydrationInflight();
   _resetEmbedSweeper();
   _resetProfileStoreCache();
   _resetProfileNegativeCache();
@@ -56,6 +54,11 @@ describe("createAppserver factory", () => {
     const healthBody = await health.json();
     expect(healthBody.status).toBe("ok");
     expect(healthBody.did).toBe("did:web:test.example");
+    // build_id is always present and never an empty string — the deploy-revision
+    // audit reads this field, and "" is indistinguishable from a real value on
+    // the wire. The chain itself is unit-tested in log.test.ts.
+    expect(healthBody.build_id).toBeTypeOf("string");
+    expect(healthBody.build_id).not.toBe("");
 
     // /.well-known/did.json returns the DID document
     const didDoc = await fetch(`${base}/.well-known/did.json`);
@@ -91,7 +94,7 @@ describe("createAppserver factory", () => {
     await fetch(`${base}/health`);
 
     // Simulate this process's boot so the restart-rate counter has a series —
-    // the signal that turns 289 silent restarts into an alertable rate.
+    // the signal that turns silent restarts into an alertable rate.
     recordProcessStart();
 
     const res = await fetch(`${base}/metrics`);
@@ -107,10 +110,35 @@ describe("createAppserver factory", () => {
       "roomy_pool_worker_pending",
       "roomy_cache_hits_total",
       "roomy_embed_pending",
+      // The stall-flap counter: a rate on it with a flat
+      // `roomy_embed_enriched_ok_total` is the oscillation, so it can be
+      // alerted on directly rather than through a range query.
+      "roomy_embed_backlog_stuck_transitions_total",
       "roomy_db_timeouts_total",
-      "roomy_process_starts_total",
+      // The sweep-cycle RATE and the success metric. Primed with a 0 series at
+      // module load, so a process that has never succeeded still exposes
+      // `roomy_embed_enriched_ok_total` — a MISSING series would be
+      // indistinguishable from "has never succeeded", which is the state those
+      // counters exist to make visible.
+      "roomy_embed_sweep_cycles_total",
+      "roomy_embed_sweep_throttled_total",
+      "roomy_embed_enriched_ok_total",
+      "roomy_embed_enriched_definitive_total",
+      "roomy_embed_enriched_transient_total",
     ]) {
       expect(body).toContain(`# TYPE ${name}`);
+    }
+    // The TASK-197 families carry no labels, so their primed 0 series renders
+    // with a value — the guarantee that a never-succeeded sweeper is still
+    // observable as `0` rather than a missing series.
+    for (const name of [
+      "roomy_embed_sweep_cycles_total",
+      "roomy_embed_sweep_throttled_total",
+      "roomy_embed_enriched_ok_total",
+      "roomy_embed_enriched_definitive_total",
+      "roomy_embed_enriched_transient_total",
+    ]) {
+      expect(body).toMatch(new RegExp(`^${name} \\d+$`, "m"));
     }
     // The /health hit should have been recorded as a request.
     expect(body).toContain('endpoint="/health"');
@@ -119,6 +147,52 @@ describe("createAppserver factory", () => {
     // expression (`increase(roomy_process_starts_total[10m]) > 3`) has a
     // series to fire on.
     expect(body).toMatch(/^roomy_process_starts_total \d+$/m);
+  });
+
+  test("roomy_embed_pending equals /health/embed's pending (both read the DB backlog)", async () => {
+    // The gauge must be set from the DB backlog, not the in-memory priority
+    // queue: `embedSweeperStats().priorityQueue` reads 0 when the backlog is
+    // parked in transient backoff, so a Grafana alert on `roomy_embed_pending`
+    // could never fire on a 5k-row stalled backlog. It carries the DB backlog,
+    // exactly as /health/embed reports it.
+    handle = await createAppserver({
+      port: ephemeralPort(),
+      authVerifier: testAuthVerifier,
+      dbPath: ":memory:",
+      readStateDbPath: ":memory:",
+      quiet: true,
+      ownDid: "did:web:test.example",
+      serviceEndpoint: "http://test.example",
+      disableBackgroundWorkers: true,
+    });
+    const base = `http://localhost:${handle.port}`;
+
+    // Seed a backlog directly into the global `pending_links` index the
+    // gauge and the health route both count.
+    const global = openGlobalDb();
+    for (let i = 0; i < 3; i++) {
+      await global.run(
+        "insert into pending_links (space_did, message_id, url, created_at) values (?, ?, ?, ?)",
+        ["did:web:test.example", `01KVMMMMMMMMMMMMMMMMMMMMM${i}`, `https://example.com/${i}`, Date.now()],
+      );
+    }
+
+    const health = (await (await fetch(`${base}/health/embed`)).json()) as {
+      pending: number;
+    };
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+
+    // Parse the gauge value out of the Prometheus text exposition.
+    const m = metrics.match(/^roomy_embed_pending (\d+)$/m);
+    expect(m).not.toBeNull();
+    const gauge = Number(m![1]);
+
+    expect(health.pending).toBe(3);
+    expect(gauge).toBe(health.pending);
+
+    // The in-memory priority queue must NOT be what the backlog gauge carries:
+    // it is exposed under its own name and is 0 here (nothing was poked).
+    expect(metrics).toMatch(/^roomy_embed_priority_queue 0$/m);
   });
 
   test("getConnectionTicket works with test auth header", async () => {
@@ -167,10 +241,9 @@ describe("createAppserver factory", () => {
 
     const base = `http://localhost:${handle.port}`;
 
-    // Anonymous (no X-Test-Did) → empty spaces list without a remote event backend.
-    // Authenticated callers trigger hydrateUserMembership which needs a remote event backend,
-    // so we test the anonymous path here; the authenticated path requires a
-    // remote event backend and is covered by integration tests.
+    // Anonymous (no X-Test-Did) → empty spaces list without a remote event
+    // backend. The authenticated path needs a remote event backend and is
+    // covered by integration tests.
     const res = await fetch(
       `${base}/xrpc/space.roomy.space.getSpaces?includeLeft=false`,
     );
@@ -183,7 +256,6 @@ describe("createAppserver factory", () => {
     handle = await createAppserver({
       port: ephemeralPort(),
       authVerifier: testAuthVerifier,
-      dbPath: ":memory:",
       readStateDbPath: ":memory:",
       quiet: true,
       disableBackgroundWorkers: true,
@@ -256,8 +328,8 @@ function seedMinimalSpace(spaceId: string, userDid: string): void {
     `update comp_space set sidebar_config = '{}' where entity = ?`,
     [spaceId],
   );
-  // User entity so hydrateUserMembership has an FK target for joinedSpace
-  // edges without trying to resolve the DID via PLC (no server in tests).
+  // User entity so membership edges have an FK target without trying to
+  // resolve the DID via PLC (no server in tests).
   sp.run("insert or ignore into entities (id, stream_id) values (?, ?)", [userDid, userDid]);
 }
 

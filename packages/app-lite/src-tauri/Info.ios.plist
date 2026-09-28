@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Merged into the generated app_iOS/Info.plist by the Tauri iOS build.
+		Declaring this here (rather than editing the generated plist, which is
+		gitignored and rewritten by `tauri ios init`) keeps it across
+		regenerations.
+
+		App Store Connect asks about encryption on every upload; this answers
+		"no" (only exempt encryption — HTTPS — is used), so no export
+		compliance documentation is required per build.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

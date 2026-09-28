@@ -8,7 +8,7 @@ import type { DbLike } from "../db/types.ts";
 import { toAsyncDb } from "../db/syncAdapter.ts";
 import { closeDb, openDb, openGlobalDb } from "../db/db.ts";
 import { selectMessages } from "./selectMessages.ts";
-import { _resetProfileStoreCache, _setTestGetProfiles } from "./profileStore.ts";
+import { _profileHydrationInFlight, _resetProfileStoreCache, _setTestGetProfiles } from "./profileStore.ts";
 import { _resetProfileNegativeCache } from "../materialization/profiles.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -155,7 +155,8 @@ describe("selectMessages system messages", () => {
 
     await seedGlobalProfile(STREAM, null, "Test Space");
     // The Bluesky appview returns displayName:"" for users without one — the
-    // empty string must NOT win over the handle (regression: raw DID label).
+    // empty string must NOT win over the handle (the raw DID must never be the
+    // visible label).
     await seedGlobalProfile(USER, "alice.bsky.social", "");
 
     const { messages } = await selectMessages(db, {
@@ -230,7 +231,7 @@ describe("selectMessages nested forwards", () => {
 
   /**
    * Seed a forward-as-embed row: a real message with its own content plus a
-   * `forward` edge to an original in another room (mirroring the modern
+   * `forward` edge to an original in another room (mirroring the
    * createMessage + forward attachment materialisation).
    */
   async function seedForward(
@@ -361,15 +362,13 @@ describe("selectMessages nested forwards", () => {
 });
 
 describe("selectMessages room ordering", () => {
-  test("orders by sort_idx, not entity id (so SQLite can use idx_entities_room_sort)", async () => {
+  test("orders by sort_idx, not entity id", async () => {
     const db = freshSpaceDb();
     const roomId = newUlid();
 
     // Insert three messages whose ids are in the OPPOSITE order to their
-    // sort_idx. If the query ordered by id (or coalesce(sort_idx, id) with a
-    // NULL sort_idx), the result would be wrong. The fix orders by sort_idx
-    // directly so the index is used and ordering follows the canonical
-    // timestamp, not the event id.
+    // sort_idx. Ordering by id would return them wrong; ordering by sort_idx
+    // follows the canonical timestamp, not the event id.
     const mk = (id: string, sortIdx: string, body: string) => ({
       id,
       sortIdx,
@@ -466,10 +465,19 @@ describe("selectMessages edit marker", () => {
 
 describe("selectMessages missing-author hydration", () => {
   /**
+   * These two cases hold the stub's gate open for the whole test, so the only
+   * way they can finish is if the read does NOT wait for the fetch. That makes
+   * the timeout the failure mode — hence the explicit short one, instead of
+   * bun's 5s default: a read that parks on the gate fails in 1.5s with the name
+   * that says why.
+   */
+  const GATED_READ_TIMEOUT_MS = 1500;
+
+  /**
    * A cross-stream author with no global `profiles` row makes the read path
-   * self-heal: it hydrates on demand. That lookup must not be repeated for the
-   * same DID on every subsequent read — the backoff the write path uses
-   * applies to readers too.
+   * self-heal: it hydrates in the background. That lookup must not be repeated
+   * for the same DID on every subsequent read — the backoff the write path
+   * uses applies to readers too.
    */
   async function seedMessageByUnknownAuthor(): Promise<{ db: DbLike; roomId: string }> {
     const db = freshSpaceDb();
@@ -497,32 +505,131 @@ describe("selectMessages missing-author hydration", () => {
     return { db, roomId };
   }
 
-  test("hydrates an unknown author once, then stops retrying it", async () => {
-    // The stub stands in for the network leg; the observable is how often the
-    // read path decides to attempt hydration at all.
-    let attempts = 0;
+  test(
+    "serves the page without waiting for the fetch, then hydrates once",
+    async () => {
+      // The whole point of the deferral: the caller must not be parked on the
+      // profile round-trip. The stub is gated so the fetch cannot possibly have
+      // finished before the read returns.
+      const gate = Promise.withResolvers<void>();
+      let attempts = 0;
+      _setTestGetProfiles(async () => {
+        attempts++;
+        await gate.promise;
+        return [];
+      });
+
+      try {
+        const { db, roomId } = await seedMessageByUnknownAuthor();
+
+        // Resolves while the fetch is still blocked in the stub.
+        const { messages } = await selectMessages(db, {
+          kind: "room",
+          roomId,
+          limit: 50,
+          cursor: null,
+        });
+        expect(attempts).toBe(1);
+        expect(messages).toHaveLength(1);
+        // The message renders from the pre-fetch state, with the author's own
+        // fallback fields (the client shows the DID until the row lands).
+        expect(messages[0]!.authorDid).toBe("did:plc:read-path-ghost");
+
+        gate.resolve();
+        await Promise.all(_profileHydrationInFlight());
+
+        // The DID resolved to nothing, so the negative cache suppresses the
+        // retry — same backoff the write path uses.
+        await selectMessages(db, { kind: "room", roomId, limit: 50, cursor: null });
+        await Promise.all(_profileHydrationInFlight());
+        expect(attempts).toBe(1);
+      } finally {
+        gate.resolve();
+        _setTestGetProfiles(null);
+      }
+    },
+    GATED_READ_TIMEOUT_MS,
+  );
+
+  test(
+    "concurrent reads of the same unknown author share one fetch",
+    async () => {
+      // Without in-flight dedup, N simultaneous readers each start their own
+      // batch — measured on the real pipeline as 25 readers → 25 upstream
+      // requests for one cold author.
+      const gate = Promise.withResolvers<void>();
+      let attempts = 0;
+      _setTestGetProfiles(async () => {
+        attempts++;
+        await gate.promise;
+        return [];
+      });
+
+      try {
+        const { db, roomId } = await seedMessageByUnknownAuthor();
+
+        await Promise.all(
+          Array.from({ length: 8 }, () =>
+            selectMessages(db, { kind: "room", roomId, limit: 50, cursor: null }),
+          ),
+        );
+        // Eight simultaneous readers, one fetch: the later ones joined the
+        // batch already in flight for this DID instead of starting their own.
+        expect(attempts).toBe(1);
+
+        gate.resolve();
+        await Promise.all(_profileHydrationInFlight());
+      } finally {
+        gate.resolve();
+        _setTestGetProfiles(null);
+      }
+    },
+    GATED_READ_TIMEOUT_MS,
+  );
+
+  test("a row written by the fetch is visible on the next read", async () => {
+    // The read path caches what it read *before* the fetch started. That
+    // positive entry must not pin the pre-fetch values for the rest of its
+    // 60 s TTL once the fetch has written fresh ones.
+    const AUTHOR = "did:plc:read-path-ghost";
+    const g = await openGlobalDb();
+    await g.run(
+      "insert into profiles (did, handle, name, updated_at) values (?, ?, ?, ?)",
+      // 2 hours old — past the 30-minute refresh TTL, so the read starts a
+      // refresh and serves "Old Name" meanwhile.
+      [AUTHOR, "alice.bsky.social", "Old Name", Date.now() - 2 * 60 * 60 * 1000],
+    );
+    await g.run(
+      "insert into profiles (did, handle, name, updated_at) values (?, ?, ?, ?)",
+      [STREAM, null, "Test Space", Date.now()],
+    );
+
+    const gate = Promise.withResolvers<void>();
     _setTestGetProfiles(async () => {
-      attempts++;
+      await gate.promise;
       return [];
     });
 
     try {
       const { db, roomId } = await seedMessageByUnknownAuthor();
 
-      const { messages } = await selectMessages(db, {
-        kind: "room",
-        roomId,
-        limit: 50,
-        cursor: null,
-      });
-      expect(attempts).toBe(1);
-      // The message still renders, with the author's own fallback fields.
-      expect(messages).toHaveLength(1);
-      expect(messages[0]!.authorDid).toBe("did:plc:read-path-ghost");
+      const first = await selectMessages(db, { kind: "room", roomId, limit: 50, cursor: null });
+      expect(first.messages[0]!.authorName).toBe("Old Name");
 
-      await selectMessages(db, { kind: "room", roomId, limit: 50, cursor: null });
-      expect(attempts).toBe(1);
+      // Stands in for the fetch's write-back (the test stub deliberately does
+      // not reach the pipeline that writes the row).
+      await g.run("update profiles set name = ?, updated_at = ? where did = ?", [
+        "New Name",
+        Date.now(),
+        AUTHOR,
+      ]);
+      gate.resolve();
+      await Promise.all(_profileHydrationInFlight());
+
+      const second = await selectMessages(db, { kind: "room", roomId, limit: 50, cursor: null });
+      expect(second.messages[0]!.authorName).toBe("New Name");
     } finally {
+      gate.resolve();
       _setTestGetProfiles(null);
     }
   });

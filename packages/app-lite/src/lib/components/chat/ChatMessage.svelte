@@ -10,12 +10,14 @@
   import MessageReactions from "./MessageReactions.svelte";
   import MessageToolbar from "./MessageToolbar.svelte";
   import MediaEmbed from "./embeds/MediaEmbed.svelte";
-  import LinkCard from "./embeds/LinkCard.svelte";
+  import LinkCard from "@roomy/design/components/content/thread/message/embeds/LinkCard.svelte";
   import ForwardContext from "./ForwardContext.svelte";
   import MessageContent from "./MessageContent.svelte";
   import ChatInput from "./ChatInput.svelte";
   import { createMentionSearch } from "$lib/tiptap/mentions";
   import { editMessage, removeLinkEmbed } from "$lib/mutations/message";
+  import { createSpaceCard } from "$lib/mutations/space-card";
+  import { toast } from "@foxui/core";
   import {
     discardPendingSend,
     getDeliveryState,
@@ -25,7 +27,7 @@
   import { resolveBlobUrl } from "$lib/utils";
   import { RICHTEXT_MIME, extractFacetUrls } from "@roomy-space/sdk";
   import type { schemas, Block } from "@roomy-space/sdk";
-  import { parseRichTextContent } from "./enrich-internal-links";
+  import { parseRichTextContent, messageHasVisibleContent } from "./message-body";
   import { extractUrls, fetchEmbedData } from "$lib/embed/embed-service";
 
   type LinkEmbedData = typeof schemas.queries.getMessage.LinkEmbedData.infer;
@@ -39,6 +41,9 @@
     currentUserDid: string | undefined;
     /** Whether the current user is an admin of the space (moderation). */
     isAdmin: boolean;
+    /** Space admin + "semble-integration" feature flag — enables the
+     *  space-card toolbar action. */
+    canCreateSpaceCard?: boolean;
     editingMessageId: string | undefined;
     onStartEdit: (messageId: string) => void;
     onCancelEdit: () => void;
@@ -60,6 +65,7 @@
     message,
     currentUserDid,
     isAdmin,
+    canCreateSpaceCard = false,
     editingMessageId,
     onStartEdit,
     onCancelEdit,
@@ -234,6 +240,15 @@
   /** The embedded original message (denormalised server-side). */
   const original = $derived(forwardedFrom?.message);
   /**
+   * Whether the forwarder attached a visible note. `message.content` is
+   * truthy for every rich-text body (the encoded empty document is a
+   * non-empty string), so an untouched forward composer would otherwise
+   * render an empty commentary bubble below every bare forward.
+   */
+  const hasCommentary = $derived(
+    messageHasVisibleContent(message.content, message.mimeType),
+  );
+  /**
    * True when the message whose content the bubble renders has been edited.
    * `lastEdit` is only present on an edited message (the appserver omits it
    * when `comp_content.last_edit` is the creating event's own id) — a
@@ -251,6 +266,26 @@
   // Forwards aren't editable (the visible content belongs to the original).
   let canEdit = $derived(isAuthor && !isForward);
   let canDelete = $derived(isAuthor || isAdmin);
+
+  /**
+   * Space-card eligibility: the message contains exactly one link — the
+   * appserver's extracted `linkEmbeds`, the same source that renders link
+   * previews. Shown to space admins via the toolbar's "..." menu.
+   */
+  let singleLink = $derived(
+    message.linkEmbeds.length === 1 ? (message.linkEmbeds[0] ?? null) : null,
+  );
+
+  async function handleCreateCard() {
+    if (!singleLink) return;
+    try {
+      await createSpaceCard(spaceId, singleLink);
+      toast.success("Space card created.");
+    } catch (e) {
+      console.error("createSpaceCard failed:", e);
+      toast.error(e instanceof Error ? e.message : "Failed to create space card.");
+    }
+  }
 
   function handleContextAction(e: MouseEvent) {
     // On mobile (coarse pointer), long-press enters select mode — the mobile
@@ -541,6 +576,9 @@
           onRequestDelete={() => onRequestDelete(message)}
           {onForward}
           onMove={() => onMove([message])}
+          onCreateCard={
+            canCreateSpaceCard && singleLink ? () => handleCreateCard() : undefined
+          }
         />
       {/snippet}
 
@@ -557,7 +595,7 @@
       {/snippet}
     </MessageBubble>
 
-    {#if isForward && message.content}
+    {#if isForward && hasCommentary}
       <!-- The forwarder's own commentary, rendered below the forwarded
            message as if it were a separate message (it's modelled as part of
            the same forward unit). -->

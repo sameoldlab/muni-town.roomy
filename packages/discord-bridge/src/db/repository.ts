@@ -34,6 +34,56 @@ export type ChannelCursor = {
 	updatedAt: number;
 };
 
+/**
+ * Backfill phases. `phase1` = the bounded recent window is running (or was
+ * interrupted mid-window); `phase2` = window done, remainder walk in
+ * progress (or pending resume); `complete` = full history ingested;
+ * `blocked` = the bridge cannot read the channel at all (deleted channel, or
+ * the bot lacks VIEW_CHANNEL / READ_MESSAGE_HISTORY), so no run will ever
+ * ingest it. `blocked` is terminal: backfill skips it like `complete` until
+ * the user re-runs `/roomy-backfill`, which resets the pair.
+ */
+export type BackfillPhase = "phase1" | "phase2" | "complete" | "blocked";
+
+export type BackfillProgress = {
+	spaceDid: string;
+	channelId: string;
+	guildId: string | null;
+	kind: "channel" | "thread" | null;
+	channelName: string | null;
+	phase: BackfillPhase;
+	messagesSynced: number;
+	messagesSkipped: number;
+	/** Oldest message ingested by Phase 1; the Phase 2 walk covers ids strictly below it. */
+	windowBoundary: string | null;
+	/** Resume position of the Phase 2 walk (id of the newest message the walk has ingested). */
+	walkCursor: string | null;
+	/** Thread rows only: Discord id of the parent channel (for panel nesting). */
+	parentId: string | null;
+	/** Snapshot of messagesSynced at the phase1→phase2 transition (recent-window size). */
+	windowSynced: number | null;
+	/** `blocked` rows only: why the bridge cannot read the channel. */
+	blockedReason: string | null;
+	updatedAt: number;
+};
+
+/** Identity + counts used to upsert a progress row (counts are absolute). */
+export type BackfillProgressUpdate = {
+	spaceDid: string;
+	channelId: string;
+	guildId?: string | null;
+	kind?: "channel" | "thread" | null;
+	channelName?: string | null;
+	phase: BackfillPhase;
+	messagesSynced: number;
+	messagesSkipped: number;
+	windowBoundary?: string | null;
+	walkCursor?: string | null;
+	parentId?: string | null;
+	windowSynced?: number | null;
+	blockedReason?: string | null;
+};
+
 export type WebhookToken = {
 	channelId: string;
 	webhookId: string;
@@ -91,6 +141,24 @@ export class BridgeRepository {
 			.run(guildId, spaceDid, mode, now, now);
 	}
 
+	/**
+	 * Disconnect a (guild, space) bridge: the config, its allowlist, and all
+	 * the durable state that says how far this pair's backfill has got — the
+	 * per-(space, channel) cursors, the progress rows, and the one-shot
+	 * structure marker. A reconnect therefore backfills the pair from
+	 * scratch, which is the only way history posted while disconnected is
+	 * ever ingested.
+	 *
+	 * `id_mappings` is deliberately NOT dropped. Message mappings are the
+	 * dedup record: keeping them means the re-run re-ingests only what the
+	 * space is missing rather than duplicating what it already has. Channel
+	 * and thread mappings are Roomy room ids, and those rooms outlive the
+	 * bridge config — dropping them would create a second room per channel on
+	 * reconnect, orphaning the first, and the Roomy→Discord routes to the
+	 * already-bridged rooms would go with it. The cost of keeping them is
+	 * that a reconnect reuses the existing rooms instead of re-creating them,
+	 * which is exactly what a reconnect should do.
+	 */
 	removeBridgeConfig(guildId: string, spaceDid: string): void {
 		this.db.transaction(() => {
 			this.db
@@ -99,6 +167,25 @@ export class BridgeRepository {
 			this.db
 				.prepare(
 					"DELETE FROM bridge_config WHERE guild_id = ? AND space_did = ?",
+				)
+				.run(guildId, spaceDid);
+			// Backfill bookkeeping, dropped so a reconnect starts the pair
+			// from scratch: a surviving cursor makes Phase 1 skip the pair as
+			// already done, and a surviving `complete` row makes the Phase-2
+			// walk return early — the two together mean a reconnect ingests
+			// nothing, including whatever was posted while disconnected.
+			this.db
+				.prepare("DELETE FROM channel_cursors WHERE space_did = ?")
+				.run(spaceDid);
+			this.db
+				.prepare("DELETE FROM backfill_progress WHERE space_did = ?")
+				.run(spaceDid);
+			// The one-shot structure marker goes too: the space's sidebar
+			// structure is applied once per (guild, space), and a reconnect is
+			// a new claim on it.
+			this.db
+				.prepare(
+					"DELETE FROM structure_sync WHERE guild_id = ? AND space_did = ?",
 				)
 				.run(guildId, spaceDid);
 		})();
@@ -386,11 +473,193 @@ export class BridgeRepository {
 					"DELETE FROM channel_cursors WHERE space_did = ? AND channel_id = ?",
 				)
 				.run(spaceDid, channelId);
+			// Re-backfill starts from scratch, so the durable progress record
+			// (phase, window boundary, walk cursor, blocked reason) must be
+			// dropped with the cursor — keeping it would leave a stale phase
+			// (a `blocked` pair would never be retried) and boundary.
+			this.db
+				.prepare(
+					"DELETE FROM backfill_progress WHERE space_did = ? AND channel_id = ?",
+				)
+				.run(spaceDid, channelId);
 		} else {
 			this.db
 				.prepare("DELETE FROM channel_cursors WHERE channel_id = ?")
 				.run(channelId);
+			this.db
+				.prepare("DELETE FROM backfill_progress WHERE channel_id = ?")
+				.run(channelId);
 		}
+	}
+
+	// === Backfill progress (per (space, channel)) ===
+
+	getBackfillProgress(
+		spaceDid: string,
+		channelId: string,
+	): BackfillProgress | undefined {
+		const row = this.db
+			.query<
+				{
+					space_did: string;
+					channel_id: string;
+					guild_id: string | null;
+					kind: "channel" | "thread" | null;
+					channel_name: string | null;
+					phase: BackfillPhase;
+					messages_synced: number;
+					messages_skipped: number;
+					window_boundary: string | null;
+					walk_cursor: string | null;
+					parent_id: string | null;
+					window_synced: number | null;
+					blocked_reason: string | null;
+					updated_at: number;
+				},
+				[string, string]
+			>(
+				`SELECT space_did, channel_id, guild_id, kind, channel_name, phase,
+				        messages_synced, messages_skipped, window_boundary, walk_cursor,
+				        parent_id, window_synced, blocked_reason, updated_at
+				 FROM backfill_progress
+				 WHERE space_did = ? AND channel_id = ?`,
+			)
+			.get(spaceDid, channelId);
+		if (!row) return undefined;
+		return {
+			spaceDid: row.space_did,
+			channelId: row.channel_id,
+			guildId: row.guild_id,
+			kind: row.kind,
+			channelName: row.channel_name,
+			phase: row.phase,
+			messagesSynced: row.messages_synced,
+			messagesSkipped: row.messages_skipped,
+			windowBoundary: row.window_boundary,
+			walkCursor: row.walk_cursor,
+			parentId: row.parent_id,
+			windowSynced: row.window_synced,
+			blockedReason: row.blocked_reason,
+			updatedAt: row.updated_at,
+		};
+	}
+
+	/**
+	 * Upsert a backfill progress row. Counts/phase/cursors are absolute and
+	 * overwrite; the optional identity fields (guild, kind, name) are merged
+	 * with COALESCE so a later writer that lacks them never erases earlier
+	 * resolution work.
+	 */
+	upsertBackfillProgress(update: BackfillProgressUpdate): void {
+		this.db
+			.prepare(
+				`INSERT INTO backfill_progress
+				   (space_did, channel_id, guild_id, kind, channel_name, phase,
+				    messages_synced, messages_skipped, window_boundary, walk_cursor,
+				    parent_id, window_synced, blocked_reason, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(space_did, channel_id) DO UPDATE SET
+				   guild_id = COALESCE(excluded.guild_id, backfill_progress.guild_id),
+				   kind = COALESCE(excluded.kind, backfill_progress.kind),
+				   channel_name = COALESCE(excluded.channel_name, backfill_progress.channel_name),
+				   parent_id = COALESCE(excluded.parent_id, backfill_progress.parent_id),
+				   window_synced = COALESCE(excluded.window_synced, backfill_progress.window_synced),
+				   phase = excluded.phase,
+				   messages_synced = excluded.messages_synced,
+				   messages_skipped = excluded.messages_skipped,
+				   window_boundary = excluded.window_boundary,
+				   walk_cursor = excluded.walk_cursor,
+				   blocked_reason = excluded.blocked_reason,
+				   updated_at = excluded.updated_at`,
+			)
+			.run(
+				update.spaceDid,
+				update.channelId,
+				update.guildId ?? null,
+				update.kind ?? null,
+				update.channelName ?? null,
+				update.phase,
+				update.messagesSynced,
+				update.messagesSkipped,
+				update.windowBoundary ?? null,
+				update.walkCursor ?? null,
+				update.parentId ?? null,
+				update.windowSynced ?? null,
+				update.blockedReason ?? null,
+				Date.now(),
+			);
+	}
+
+	/** List progress rows, optionally scoped to one space. */
+	listBackfillProgress(spaceDid?: string): BackfillProgress[] {
+		const rows = spaceDid
+			? this.db
+					.query<
+						{
+							space_did: string;
+							channel_id: string;
+							guild_id: string | null;
+							kind: "channel" | "thread" | null;
+							channel_name: string | null;
+							phase: BackfillPhase;
+							messages_synced: number;
+							messages_skipped: number;
+							walk_cursor: string | null;
+							window_boundary: string | null;
+							parent_id: string | null;
+							window_synced: number | null;
+							blocked_reason: string | null;
+							updated_at: number;
+						},
+						[string]
+					>(
+						`SELECT space_did, channel_id, guild_id, kind, channel_name, phase,
+						        messages_synced, messages_skipped, window_boundary, walk_cursor,
+						        parent_id, window_synced, blocked_reason, updated_at
+						 FROM backfill_progress WHERE space_did = ?
+						 ORDER BY updated_at DESC`,
+					)
+					.all(spaceDid)
+			: this.db
+					.query<
+						{
+							space_did: string;
+							channel_id: string;
+							guild_id: string | null;
+							kind: "channel" | "thread" | null;
+							channel_name: string | null;
+							phase: BackfillPhase;
+							messages_synced: number;
+							messages_skipped: number;
+							window_boundary: string | null;
+							walk_cursor: string | null;
+							parent_id: string | null;
+							window_synced: number | null;
+							blocked_reason: string | null;
+							updated_at: number;
+						},
+						[]
+					>(`SELECT space_did, channel_id, guild_id, kind, channel_name, phase,
+					        messages_synced, messages_skipped, window_boundary, walk_cursor,
+					        parent_id, window_synced, blocked_reason, updated_at
+					 FROM backfill_progress ORDER BY updated_at DESC`)
+					.all();
+		return rows.map((r) => ({
+			spaceDid: r.space_did,
+			channelId: r.channel_id,
+			guildId: r.guild_id,
+			kind: r.kind,
+			channelName: r.channel_name,
+			phase: r.phase,
+			messagesSynced: r.messages_synced,
+			messagesSkipped: r.messages_skipped,
+			windowBoundary: r.window_boundary,
+			walkCursor: r.walk_cursor,
+			parentId: r.parent_id,
+			windowSynced: r.window_synced,
+			blockedReason: r.blocked_reason,
+			updatedAt: r.updated_at,
+		}));
 	}
 
 	// === Allowlist (subset mode only) ===
@@ -509,11 +778,7 @@ export class BridgeRepository {
 	}
 
 	/** Get the most recent event errors for a space, oldest first. */
-	getEventErrors(
-		spaceDid: string,
-		limit = 100,
-		since?: number,
-	): EventError[] {
+	getEventErrors(spaceDid: string, limit = 100, since?: number): EventError[] {
 		const rows = this.db
 			.query<
 				{
@@ -591,8 +856,77 @@ export class BridgeRepository {
 		return row != null;
 	}
 
-	// === Profile sync queue (retry queue) ===
+	// === Initial structure sync (one-shot) ===
+	//
+	// The Discord guild's category structure + channel order is applied to a
+	// space's sidebar exactly once, at initial sync. These methods are the
+	// persisted guard that makes that true across restarts, reconnects, and
+	// re-runs of the backfill: the marker lives in the bridge's own DB, not in
+	// the space, because a check against the live sidebar cannot distinguish
+	// "not yet synced" from "an admin has since rearranged it" — and would
+	// re-apply the structure in the latter case, which is the ongoing re-sync
+	// this feature must not become.
 
+	/**
+	 * Claim the one-shot structure sync for (guild, space).
+	 *
+	 * Returns true only for the caller that creates the row — every later
+	 * caller gets false and must not write structure. The row is written
+	 * BEFORE the caller sends any event, so a crash between claim and write
+	 * leaves the claim set: at-most-once by construction, never twice.
+	 */
+	claimStructureSync(guildId: string, spaceDid: string): boolean {
+		const result = this.db
+			.prepare(
+				`INSERT INTO structure_sync (guild_id, space_did, claimed_at, applied_at)
+         VALUES (?, ?, ?, NULL)
+         ON CONFLICT(guild_id, space_did) DO NOTHING`,
+			)
+			.run(guildId, spaceDid, Date.now());
+		return result.changes > 0;
+	}
+
+	/**
+	 * Record that a claimed structure sync actually wrote its event. Distinct
+	 * from the claim so an unapplied claim (a sync that failed before sending)
+	 * is visible to operators — the structure is simply absent, and the claim
+	 * is left in place rather than rolled back, because once an event may have
+	 * reached the space a retry could apply the structure twice.
+	 */
+	markStructureSyncApplied(guildId: string, spaceDid: string): void {
+		this.db
+			.prepare(
+				`UPDATE structure_sync SET applied_at = ?
+         WHERE guild_id = ? AND space_did = ?`,
+			)
+			.run(Date.now(), guildId, spaceDid);
+	}
+
+	/**
+	 * Drop an UNWRITTEN claim — only safe on a path that provably sent no
+	 * event (no bridged channels to place), so the next backfill can still
+	 * perform the one initial sync. Never call this after a write.
+	 */
+	releaseStructureSync(guildId: string, spaceDid: string): void {
+		this.db
+			.prepare(
+				`DELETE FROM structure_sync
+         WHERE guild_id = ? AND space_did = ? AND applied_at IS NULL`,
+			)
+			.run(guildId, spaceDid);
+	}
+
+	/** Whether this (guild, space) has already been claimed for structure sync. */
+	hasClaimedStructureSync(guildId: string, spaceDid: string): boolean {
+		const row = this.db
+			.query<{ one: number }, [string, string]>(
+				"SELECT 1 AS one FROM structure_sync WHERE guild_id = ? AND space_did = ?",
+			)
+			.get(guildId, spaceDid);
+		return row !== null && row !== undefined;
+	}
+
+	// === Profile sync queue (retry queue) ===
 	enqueueProfileSync(
 		spaceDid: string,
 		discordUserId: string,

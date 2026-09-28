@@ -23,7 +23,6 @@ import { createAppserver, type AppserverHandle } from "../appserver.ts";
 import { testAuthVerifier } from "../xrpc/auth.ts";
 import { closeDb, openDb } from "../db/db.ts";
 import { _resetRateLimit } from "../xrpc/rateLimit.ts";
-import { _resetHydrationInflight } from "../hydration/userHydration.ts";
 import { _resetEmbedSweeper, stopEmbedSweeper } from "../embed/sweeper.ts";
 import { stopSearchIndexer, _resetSearchIndexer } from "../search/indexer.ts";
 import { stopSearchBackfill, _resetSearchBackfill } from "../search/backfill.ts";
@@ -66,7 +65,6 @@ export async function startAppserver(): Promise<E2eContext> {
   await stopSearchBackfill();
   closeDb();
   _resetRateLimit();
-  _resetHydrationInflight();
   _resetEmbedSweeper();
   _resetSearchIndexer();
   _resetSearchBackfill();
@@ -130,7 +128,6 @@ export async function startAppserver(): Promise<E2eContext> {
   // Register teardown so Bun cleans up after the test.
   afterEach(async () => {
     await handle.close();
-    _resetHydrationInflight();
     _resetEmbedSweeper();
     _resetSearchIndexer();
     _resetSearchBackfill();
@@ -202,7 +199,7 @@ export function seedSpace(
      values (?, ?, 'member')`,
     [userDid, spaceId],
   );
-  // Global entity→space index entry (Phase 3) so openSpaceDbForEntity and
+  // Global entity→space index entry so openSpaceDbForEntity and
   // related lookups resolve the space id.
   globalDb(db).run(
     "insert or ignore into entity_space (entity_id, space_did) values (?, ?)",
@@ -214,7 +211,7 @@ export function seedSpace(
 /**
  * Seed a joinedSpace edge from the user to the space (global DB, kept for
  * backward-compat assertions) AND durable membership intent in the read-state
- * DB (what getSpaces now reads).
+ * DB (what getSpaces reads).
  */
 export function seedJoinedSpace(
   db: Database,
@@ -240,7 +237,7 @@ export function seedJoinedSpace(
 
 /**
  * Seed a room entity + comp_room row in the room's per-space DB, plus the
- * global `entity_space` index entry (Phase 3) so `openSpaceDbForEntity`
+ * global `entity_space` index entry so `openSpaceDbForEntity`
  * can resolve the room to its owning space.
  */
 export function seedRoom(
@@ -294,7 +291,7 @@ export function seedMessage(
 }
 
 /**
- * Seed a user profile in the global `profiles` table (Phase 3). Roomy
+ * Seed a user profile in the global `profiles` table. Roomy
  * profiles are global (one per user), so `seedUser` writes there rather than
  * to any per-space DB.
  */
@@ -311,6 +308,11 @@ export function seedUser(
 
 /**
  * Seed a membership edge (member or admin) in the space's per-space DB.
+ *
+ * Space→user, which is the direction the access queries read: `isAdmin` and
+ * `isMember` both look up `head = spaceId and tail = did`. Seeding the reverse
+ * edge leaves a caller who looks like a member in the table but is denied by
+ * every check that actually runs.
  */
 export function seedMembership(
   db: Database,
@@ -319,10 +321,16 @@ export function seedMembership(
   label?: "member" | "admin",
 ): void {
   const sp = spaceDb(db, spaceId);
+  // The `edges` table has FKs on head/tail → entities.id, so the user's entity
+  // row must exist in this space DB before the edge.
+  sp.run("insert or ignore into entities (id, stream_id) values (?, ?)", [
+    userDid,
+    userDid,
+  ]);
   sp.run(
     `insert or ignore into edges (head, tail, label)
      values (?, ?, ?)`,
-    [userDid, spaceId, label ?? "member"],
+    [spaceId, userDid, label ?? "member"],
   );
 }
 
@@ -419,8 +427,8 @@ export function seedActivityItem(
 }
 
 /**
- * Seed a read position in the read-state DB (Phase 3: read-state is its own
- * routed DB, `data/roomy-readstate.sqlite`).
+ * Seed a read position in the read-state DB (read-state is its own routed
+ * DB, `data/roomy-readstate.sqlite`).
  */
 export function seedReadPosition(
   db: Database,
@@ -436,11 +444,11 @@ export function seedReadPosition(
   );
 }
 
-// ─── Phase 3 DB routing ──────────────────────────────────────────────────
+// ─── DB routing ──────────────────────────────────────────────────────────
 
 /**
  * The e2e seed helpers are handed the base AsyncDatabase handle returned by
- * `openDb()` (the event-log DB). In Phase 3 the materialised data lives in
+ * `openDb()` (the event-log DB). The materialised data lives in
  * the per-space DBs (`forSpace`) and the global DB (`global`), so the seed
  * helpers route each write to the correct database. These small helpers keep
  * that routing typed and local to this file.

@@ -110,6 +110,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build SDK (appserver imports its dist)
         run: pnpm turbo run build-lib
+      - name: Generate MBT traces (quint, pinned via npx)
+        run: pnpm --filter @roomy/appserver mbt:traces
       - name: Test Appserver
         run: bun test --cwd packages/appserver --isolate
 
@@ -131,8 +133,54 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Build SDK (app-lite test modules import its dist)
+        run: pnpm turbo run build-lib
       - name: Test App-lite
         run: pnpm --filter app-lite test
+
+  test-app-lite-e2e:
+    name: Test App-lite E2E
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.16.1
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # The E2E stack runs the appserver from source under Bun, and app-lite
+      # against the SDK's built dist — same prerequisite as the other jobs.
+      - name: Build SDK (app-lite and the appserver import its dist)
+        run: pnpm turbo run build-lib
+      - name: Install Playwright browser
+        run: pnpm --filter app-lite exec playwright install --with-deps chromium
+      - name: Typecheck E2E specs
+        run: pnpm --filter app-lite check:types
+      # Hermetic: a stub PDS and an in-process appserver in test mode. No
+      # docker, no real PDS, no network — see packages/app-lite/e2e/launch-stack.ts.
+      - name: Test App-lite E2E
+        run: pnpm --filter app-lite test:e2e
+      - name: Upload failure diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-lite-e2e-report
+          path: |
+            packages/app-lite/test-results/
+            packages/app-lite/playwright-report/
+          retention-days: 7
 
   test-discord-bridge:
     name: Test Discord Bridge
@@ -160,6 +208,33 @@ jobs:
         run: pnpm turbo run build-lib
       - name: Test Discord Bridge
         run: bun test --cwd packages/discord-bridge
+
+  test-cli:
+    name: Test CLI
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.16.1
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build SDK (cli imports its dist)
+        run: pnpm turbo run build-lib
+      - name: Test CLI
+        run: bun test --cwd packages/cli --isolate
 
   check-appserver:
     name: Typecheck Appserver

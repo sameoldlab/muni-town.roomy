@@ -6,6 +6,20 @@
  * it natively.
  */
 export interface DbLike {
+  /**
+   * Set to `"sqlite"` by an IN-PROCESS handle — `toAsyncDb`, the adapter over
+   * a `bun:sqlite` `Database` — where every statement runs on the calling
+   * thread and a query costs its SQL and nothing else.
+   *
+   * Left unset by the IPC handles (`AsyncDatabase`, `PooledDatabase`) and by
+   * test doubles, where each statement is a `postMessage` round-trip and the
+   * bytes it returns are structured-cloned across the thread boundary. Absence
+   * means "assume the boundary is there", so a handle that does not declare
+   * itself pays the IPC-shaped path and stays correct either way — which is
+   * why read paths that can answer a question with one wide statement or with
+   * several narrowed ones must branch on `=== "sqlite"`, never on `!==`.
+   */
+  readonly backend?: "sqlite";
   query(sql: string): {
     all<T = Record<string, unknown>>(...params: unknown[]): Promise<T[]>;
     get<T = Record<string, unknown>>(...params: unknown[]): Promise<T | null>;
@@ -24,7 +38,7 @@ export interface DbLike {
   }>): Promise<T>;
   close(): Promise<void>;
   /**
-   * Optional (per-space split, Phase 1): a routed handle whose requests
+   * Optional (per-space split): a routed handle whose requests
    * target the per-space DB for `spaceDid`. Absent on sync adapters used in
    * tests that don't exercise dual-write.
    */
@@ -50,14 +64,14 @@ export interface DbLike {
   spaceRebuildBegin?(spaceDid: string): Promise<{ ok: boolean }>;
   /**
    * Optional (blue-green): atomically swap the temp `.sqlite.new` over the
-   * canonical file, dropping the old DB, and flip routing. Idempotent:
+   * canonical file, dropping the superseded DB, and flip routing. Idempotent:
    * `{ committed: false }` when nothing is rebuilding.
    */
   spaceRebuildCommit?(spaceDid: string): Promise<{ committed: boolean }>;
   /**
    * Optional (blue-green): abandon a rebuild — delete the temp file and clear
-   * the rebuilding flag; the old DB keeps serving. `{ aborted: false }` when
-   * nothing is rebuilding.
+   * the rebuilding flag; the canonical DB keeps serving. `{ aborted: false }`
+   * when nothing is rebuilding.
    */
   spaceRebuildAbort?(spaceDid: string): Promise<{ aborted: boolean }>;
   /**
@@ -67,7 +81,7 @@ export interface DbLike {
    */
   checkSpaceSchema?(spaceDid: string): Promise<{ current: boolean }>;
   /**
-   * Optional (per-space split, Phase 1): a routed handle whose requests
+   * Optional (per-space split): a routed handle whose requests
    * target the global DB. Absent on sync adapters used in tests that don't
    * exercise dual-write.
    */
@@ -85,7 +99,7 @@ export interface DbLike {
    */
   events?(): DbLike;
   /**
-   * Optional (Phase 3): backfill the global `entity_space` index from a
+   * Optional: backfill the global `entity_space` index from a
    * per-space DB's `entities` table. Absent on sync adapters used in tests
    * that don't exercise the entity→space index.
    */
@@ -152,7 +166,7 @@ export interface WorkerRequest {
     globalSchemaVersion?: string;
     maxSpaceDbs?: number;
     /**
-     * Worker role (Phase 4 / system-worker split). "space" workers only open
+     * Worker role (system-worker split). "space" workers only open
      * per-space DBs and reject shared-DB requests; "global", "readstate" and
      * "events" workers each own exactly one of the shared DBs (the global
      * worker can also open per-space DBs for the entity_space backfill);

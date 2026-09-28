@@ -102,6 +102,68 @@ describe("QueueStore", () => {
     expect(q.status().done).toHaveLength(DONE_CAP);
   });
 
+  test("done entries are summaries — the job payload is not retained", () => {
+    // A mention payload carries the whole triggering message; at ~18 KB per
+    // entry it made an otherwise-empty queue file ~1 MB. Nothing reads it.
+    const file = path.join(tmpdir(), "queue.json");
+    const q = new QueueStore(file);
+    const job = q.enqueue("mention", mentionPayload("a"));
+    q.claim(job.id);
+    q.finish(job.id, "done");
+
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      done: Record<string, unknown>[];
+    };
+    expect(q.status().done[0]).not.toHaveProperty("payload");
+    expect(persisted.done[0]).not.toHaveProperty("payload");
+    expect(persisted.done[0]).toMatchObject({
+      id: job.id,
+      kind: "mention",
+      status: "done",
+    });
+    expect(persisted.done[0]?.enqueuedAt).toBeNumber();
+    expect(persisted.done[0]?.finishedAt).toBeNumber();
+  });
+
+  test("a legacy done entry carrying a payload still parses and is not re-persisted", () => {
+    const file = path.join(tmpdir(), "queue.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        jobSeq: 1,
+        enqueued: [],
+        active: null,
+        done: [
+          {
+            id: "legacy-1",
+            kind: "mention",
+            payload: mentionPayload("legacy-1"),
+            status: "done",
+            enqueuedAt: 10,
+            startedAt: 20,
+            finishedAt: 30,
+          },
+        ],
+        updatedAt: 40,
+      }),
+    );
+
+    const q = new QueueStore(file);
+    expect(q.status().done.map((j) => j.id)).toEqual(["legacy-1"]);
+    expect(q.status().done[0]).not.toHaveProperty("payload");
+
+    // The next write persists the summary form — that write is the migration.
+    const next = q.enqueue("cron", cronPayload("x"));
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      done: Record<string, unknown>[];
+      enqueued: { id: string }[];
+    };
+    expect(persisted.done[0]).not.toHaveProperty("payload");
+    expect(persisted.done[0]).toMatchObject({ id: "legacy-1", finishedAt: 30 });
+    expect(persisted.enqueued[0]?.id).toBe(next.id);
+  });
+
   test("corrupt queue file falls back to empty", () => {
     const file = path.join(tmpdir(), "queue.json");
     fs.writeFileSync(file, "{not json");
@@ -151,12 +213,12 @@ describe("FileLock", () => {
 
 describe("bootHeal", () => {
   test("releases the lock when it boots idle (no squat)", () => {
-    // Regression: the responder took the lock in its startup acquire() and
-    // only ever released it from inside the pump, which never runs while the
-    // queue is empty. The lock heartbeat timer then kept it fresh forever, so
-    // every lock-freshness reader (self-check.sh queue_busy, `cli queue
-    // status`, the cron only-if-idle contract) saw "job in flight" on a
-    // permanently idle host. Observed live on bramble: 73 min held, 0 active.
+    // A responder that boots idle must release the lock it took in startup
+    // acquire(): the pump (the only other release site) never runs while the
+    // queue is empty, and the lock heartbeat keeps a held lock fresh forever,
+    // so every lock-freshness reader (self-check.sh queue_busy, `cli queue
+    // status`, the cron only-if-idle contract) would see "job in flight" on a
+    // permanently idle host and never start work.
     const dir = tmpdir();
     const q = new QueueStore(path.join(dir, "queue.json"));
     const lock = new FileLock(path.join(dir, "queue.json.lock"));
@@ -166,9 +228,9 @@ describe("bootHeal", () => {
   });
 
   test("requeues a job orphaned in active by a dead holder", () => {
-    // The heal this must not lose: a crashed responder leaves `active` set,
-    // and with nothing `enqueued` the drain timer never triggers the pump, so
-    // the orphan would otherwise never be retried.
+    // Why this heal exists: a crashed responder leaves `active` set, and with
+    // nothing `enqueued` the drain timer never triggers the pump, so the
+    // orphan would otherwise never be retried.
     const dir = tmpdir();
     const file = path.join(dir, "queue.json");
     const q = new QueueStore(file);

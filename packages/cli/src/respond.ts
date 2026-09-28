@@ -3,12 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
 import { transport, createThread, type Ulid } from "@roomy-space/sdk";
-import { buildPrompt, runOmp, type OmpOptions } from "./omp.js";
+import { buildPrompt, runOmp, type OmpOptions, type OmpReply } from "./omp.js";
 import {
   THINKING_MARKER,
   buildReplyBlocks,
   buildThinkingBlocks,
   plaintextOf,
+  readMessages,
   sendReply,
   type MessageInfo,
 } from "./messages.js";
@@ -24,6 +25,14 @@ const IN_ROOM_TRACE_KINDS: Record<string, true> = {
 
 /** URL prefix for linking a trace thread from the answer in the channel. */
 const ROOMY_APP_URL = "https://roomy.space";
+
+/**
+ * Marks a posted notice that the agent's turn FAILED, so it is not mistaken for
+ * an answer. Without this the two are indistinguishable in the room: an agent
+ * whose model provider refused the turn would simply say nothing, which reads
+ * exactly like "nothing to report" (TASK-88's class).
+ */
+const FAILURE_MARKER = "⚠️";
 
 /**
  * One mention event as emitted by the roomy bridge (`roomy-bridge`, a
@@ -87,6 +96,10 @@ export interface RespondOptions extends Omit<OmpOptions, "resume"> {
   /** How long a lock may go without a heartbeat before it is considered
    *  stale and taken over (ms). Default 120000. */
   lockTtlMs?: number;
+  /** How often the drain timer polls the queue for work left by other
+   *  processes, including a stranded `active` job behind a stale lock (ms).
+   *  Default 5000. Test-only overridable seam; production uses 5s. */
+  drainIntervalMs?: number;
   /** Approx char threshold for each streamed thinking chunk. Default 2000. */
   thinkingChunkSize?: number;
   /** Path to a file whose contents are appended to omp's system prompt on every
@@ -107,16 +120,6 @@ interface ChainWalk {
   context: string;
   /** Name of the room the agent was prompted in (best-effort). */
   roomName?: string;
-}
-
-/** A fetched message row (the server-side MessageDto surface we read). */
-interface MessageDto {
-  id: string;
-  replyTo?: string;
-  authorDid: string;
-  authorName?: string;
-  content: string;
-  mimeType?: string;
 }
 
 interface StoredSession {
@@ -257,9 +260,26 @@ export async function respond(
   // Drain work enqueued by other processes (cron `queue push`): without
   // this, a job pushed while the responder is idle would sit until the next
   // stdin event. 5s poll keeps lock churn negligible (peek is one tiny read).
+  //
+  // A job stranded in `active` by a dead holder is not in `enqueued`, so the
+  // `enqueued > 0` check alone would never trigger a pump here — and if the
+  // holder died while its lock was still within TTL (the lock has not yet gone
+  // stale), the boot heal is also a no-op. The orphan would then sit forever
+  // with no external stdin event to reclaim it. Extend the predicate to pump
+  // whenever a foreign-dead holder's `active` job remains outstanding; the
+  // pump's `acquire()` then takes over the stale lock and `requeueStaleActive`
+  // heals the job back to the queue head. `lock.info()` is one tiny read, so
+  // the extra check keeps the 5s poll's lock churn negligible.
+  const drainIntervalMs = opts.drainIntervalMs ?? 5_000;
   const drainTimer = setInterval(() => {
-    if (queue.status().enqueued.length > 0) void pump();
-  }, 5_000);
+    const state = queue.status();
+    if (state.enqueued.length > 0) {
+      void pump();
+      return;
+    }
+    const lockInfo = lock.info();
+    if (state.active && lockInfo && lockInfo.stale) void pump();
+  }, drainIntervalMs);
   drainTimer.unref();
 
   const rl = createInterface({ input: process.stdin });
@@ -366,29 +386,49 @@ async function runMentionJob(
   const thinkingPosts = new PostChain((m) => log(`thinking-chunk ${m}`));
   let streamedThinking = false;
   let lastTraceChunkId: string | undefined;
-  const reply = await runOmp(prompt, { ...opts, resume }, {
-    onThinking: (chunk) => {
-      // Self-triggered ticks post no thinking at all: dropping the callback
-      // here (not just the flags below) is what prevents the chunks, since
-      // omp streams them regardless of the streamThinking/postThinking flags.
-      if (selfTriggered) return;
-      streamedThinking = true;
-      thinkingPosts.push(async () => {
-        if (traceRoomId) {
-          const { messageId } = await sendReply(xrpc, spaceId, traceRoomId, chunk, buildThinkingBlocks(chunk), lastTraceChunkId);
-          lastTraceChunkId = messageId;
-        } else {
-          await sendReply(xrpc, spaceId, roomId, chunk, buildThinkingBlocks(chunk), parent);
-        }
-      });
-    },
-  });
+  let reply: OmpReply;
+  try {
+    reply = await runOmp(prompt, { ...opts, resume }, {
+      onThinking: (chunk) => {
+        // Self-triggered ticks post no thinking at all: dropping the callback
+        // here (not just the flags below) is what prevents the chunks, since
+        // omp streams them regardless of the streamThinking/postThinking flags.
+        if (selfTriggered) return;
+        streamedThinking = true;
+        thinkingPosts.push(async () => {
+          if (traceRoomId) {
+            const { messageId } = await sendReply(xrpc, spaceId, traceRoomId, chunk, buildThinkingBlocks(chunk), lastTraceChunkId);
+            lastTraceChunkId = messageId;
+          } else {
+            await sendReply(xrpc, spaceId, roomId, chunk, buildThinkingBlocks(chunk), parent);
+          }
+        });
+      },
+    });
+  } catch (error) {
+    // The turn failed (provider 429/quota, auth, transport). `runOmp` refuses
+    // to invent an answer, so nothing would be posted and the job would fail
+    // with only a log line — an absence the room cannot distinguish from "no
+    // report" (TASK-88's class: the failure mode that reads as a quiet day).
+    // Post a SHORT, readable notice, then rethrow so the queue records the job
+    // as failed with the real cause.
+    const note = `${FAILURE_MARKER} ${kind} job failed: no answer produced.\n\n\`${truncate(errorText(error), 300)}\``;
+    try {
+      await sendReply(xrpc, spaceId, roomId, note, undefined, parent);
+      log("posted failure notice to the room");
+    } catch (postError) {
+      log(`could not post failure notice: ${errorText(postError)}`);
+    }
+    throw error;
+  }
   // Self-triggered ticks are independent (each is a fresh root id), so
   // persisting an entry per tick would only grow the session file forever.
   if (reply.sessionId && !selfTriggered) {
     sessions?.set(chainKey, { sessionId: reply.sessionId, traceThreadId: traceRoomId });
   }
-  if (!reply || !reply.answer.trim()) {
+  // `runOmp` rejects on a failed turn, so reaching here means a successful turn
+  // that produced no text. Do not post an empty message.
+  if (!reply.answer.trim()) {
     log("empty reply — not posting");
     return;
   }
@@ -464,17 +504,17 @@ async function walkChain(
     return { rootId: msgId, parent: msgId, context: "" };
   }
   try {
-    const res = await xrpc.query("space.roomy.room.getMessages", {
-      roomId,
-      limit: String(limit),
-    });
-    const byId = new Map<string, MessageDto>();
-    for (const m of res.messages) byId.set(m.id, m);
+    // `limit` is user-controlled (`--recent`) and the server caps a single
+    // request at 100; the paged reader walks the cursor so a larger window is
+    // several bounded requests instead of a 400.
+    const { messages } = await readMessages(xrpc, roomId, { limit });
+    const byId = new Map<string, MessageInfo>();
+    for (const m of messages) byId.set(m.id, m);
     const meta = await xrpc.query("space.roomy.room.getMetadata", { roomId });
 
     // Walk the chain: triggering message → its replyTo → … → root.
-    const chain: MessageDto[] = [];
-    let cur: MessageDto | undefined = byId.get(msgId);
+    const chain: MessageInfo[] = [];
+    let cur: MessageInfo | undefined = byId.get(msgId);
     let rootId = msgId;
     while (cur) {
       chain.push(cur);
@@ -498,7 +538,8 @@ async function walkChain(
     for (const m of chain.slice(1).reverse()) {
       if (m.authorDid === agentDid) continue;
       const from = m.authorName ?? m.authorDid ?? "?";
-      const content = plaintextOf(m);
+      // `readMessages` already decoded the body to plaintext.
+      const content = m.content;
       if (!content) continue;
       if (content.startsWith(THINKING_MARKER)) continue;
       lines.push(`[${from}]: ${content}`);

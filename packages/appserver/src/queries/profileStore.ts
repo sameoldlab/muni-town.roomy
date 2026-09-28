@@ -19,10 +19,8 @@
  * materialisation and the `getProfile` handler. It can be missing a row for
  * a real user (backfill/fetch failure, a freshly-cleared store, or a user
  * seen for the first time after the backfill that materialised everyone
- * else). Previously this read path silently returned a fallback (the message
- * row's own author fields) for those users — so `getMessages` could omit a
- * profile that the profile page (which hydrates on demand via HappyView then
- * Bluesky) reliably showed.
+ * else). The profile page shows such a user because it hydrates on demand via
+ * HappyView then Bluesky; a read of this store alone must not omit them.
  *
  * To make reads as reliable as the profile page, DIDs that aren't in the
  * global store are hydrated on demand (HappyView-first, Bluesky fallback) and
@@ -36,6 +34,7 @@ import { tryOpenGlobalDb } from "../db/db.ts";
 import type { AsyncDatabase } from "../db/asyncDatabase.ts";
 import { getHappyView } from "../happyview.ts";
 import {
+  PROFILE_REFRESH_TTL_MS,
   getProfilesRoomyFirst,
   insertProfilesWithExtras,
   isProfileFetchBackedOff,
@@ -66,6 +65,63 @@ const CACHE_TTL_MS = 60_000;
 const cache = new Map<string, CacheEntry>();
 
 /**
+ * In-flight background hydrations, keyed by DID.
+ *
+ * A profile fetch is a third-party HTTP round-trip, so it must never sit
+ * inside the caller's request: `room.getMessages` blocking on it would make a
+ * slow HappyView or Bluesky a slow message list. No fetch runs on that path —
+ * reads serve whatever the global `profiles` row already holds and the fetch
+ * lands in the background for the next read.
+ *
+ * The map is what keeps that from multiplying the fetches: without it, N
+ * concurrent readers of the same unknown author each launch their own batch.
+ * With it, the second reader of a DID already in flight joins the existing
+ * promise and issues nothing. The negative cache covers the sequential case (a
+ * DID that resolved to nothing); this covers the concurrent one.
+ */
+const hydrationInflight = new Map<string, Promise<void>>();
+
+/** Test/shutdown helper: the hydration batches currently in flight. */
+export function _profileHydrationInFlight(): Promise<void>[] {
+  return [...new Set(hydrationInflight.values())];
+}
+
+/**
+ * Fetch profile rows for `dids` off the request path.
+ *
+ * Returns immediately. The results are written to the global `profiles` table
+ * by the fetch pipeline, so the next read of these DIDs sees them; the
+ * in-memory cache entries are dropped on completion so that next read re-reads
+ * the row instead of serving the pre-fetch value for the rest of its 60 s TTL.
+ *
+ * DIDs already being fetched are skipped — the in-flight batch will write them.
+ */
+function startHydration(globalDb: AsyncDatabase, dids: string[]): void {
+  const fresh = dids.filter((d) => !hydrationInflight.has(d));
+  if (fresh.length === 0) return;
+
+  const run = hydrateMissingProfiles(globalDb, fresh)
+    .catch((err) => {
+      // `hydrateMissingProfiles` swallows its own failures; this is the outer
+      // guard so a defect in that path can never surface as an unhandled
+      // rejection (the process installs a fatal handler on one).
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn(`[profileStore] background hydration failed: ${message}`);
+    })
+    .finally(() => {
+      for (const did of fresh) {
+        hydrationInflight.delete(did);
+        // The row may now hold fresher values than the copy read into the
+        // cache before the fetch started. Drop it rather than leave a stale
+        // positive in place until the TTL expires.
+        cache.delete(did);
+      }
+    });
+
+  for (const did of fresh) hydrationInflight.set(did, run);
+}
+
+/**
  * Test-only override for on-demand hydration's network fetch. When set,
  * `hydrateMissingProfiles` uses it instead of the HappyView-first / Bluesky
  * pipeline. E2E tests set a no-op stub to keep runs hermetic (no
@@ -82,10 +138,10 @@ export function _setTestGetProfiles(
 }
 
 function entryToFields(entry: CacheEntry): ProfileFields | null {
-  // `''` is not a handle: it's what an older revision of the profile write
-  // path stored for Roomy-record users (whose records carry no handle). Treat
-  // it as absent so consumers fall back to name/did instead of rendering an
-  // empty `@`, and so the row is eligible for handle hydration below.
+  // `''` is not a handle: the profile write path stores it for Roomy-record
+  // users (whose records carry no handle). Treat it as absent so consumers
+  // fall back to name/did instead of rendering an empty `@`, and so the row is
+  // eligible for handle hydration below.
   const handle = entry.handle || null;
   if (entry.name === null && handle === null && entry.avatar === null) {
     return null;
@@ -102,10 +158,11 @@ function entryToFields(entry: CacheEntry): ProfileFields | null {
  * Returns a Map keyed by DID; DIDs with no resolvable profile are absent
  * (callers fall back to whatever they already have).
  *
- * DIDs missing from the global store are hydrated on-demand (HappyView-first,
- * Bluesky fallback) and written back, so the read path self-heals instead of
- * depending on the store already being populated by event materialisation or
- * the profile page.
+ * A DID that is missing, handle-less or TTL-stale has a background fetch
+ * started for it — the read path self-heals instead of depending on the store
+ * already being populated by event materialisation or the profile page, but
+ * it does not wait for the fetch. The caller gets the pre-fetch state and the
+ * next read gets whatever the fetch found.
  */
 export async function resolveProfiles(
   dids: string[],
@@ -142,14 +199,20 @@ export async function resolveProfiles(
 }
 
 /**
- * Look up a set of DIDs in the global `profiles` table, then — when
- * `allowNetworkFetch` — self-heal any that are still missing via on-demand
- * HappyView-first hydration.
+ * Look up a set of DIDs in the global `profiles` table, and — when
+ * `allowNetworkFetch` — kick off a *background* fetch for the rows that are
+ * missing, handle-less or TTL-stale.
+ *
+ * This function never touches the network itself. Fetching a profile is a
+ * third-party HTTP round-trip to HappyView/Bluesky, and parking the caller's
+ * request on it would make a message list as slow as its slowest profile
+ * lookup; the fetch runs detached, and whatever it writes is visible to the
+ * next read.
  *
  * `allowNetworkFetch: false` keeps the global-store read (an indexed SQLite
- * lookup) but skips the fetch. Callers on the write path pass it: reading
- * local rows is free, whereas a fetch is a third-party HTTP round-trip
- * parked inside someone's write.
+ * lookup) and starts nothing. Callers on the write path pass it: reading local
+ * rows is free, and the write path has its own fetch site that must stay
+ * ordered with the batch it is materialising.
  */
 async function resolveFromGlobalDb(
   dids: string[],
@@ -162,19 +225,22 @@ async function resolveFromGlobalDb(
   // nothing to read from or hydrate into.
   if (!globalDb) return;
 
-  const stillMissing: string[] = [];
   const placeholders = dids.map(() => "?").join(",");
   const rows = await globalDb
     .query(
-      `select did, handle, name, avatar from profiles where did in (${placeholders})`,
+      `select did, handle, name, avatar, updated_at from profiles where did in (${placeholders})`,
     )
     .all<{
       did: string;
       handle: string | null;
       name: string | null;
       avatar: string | null;
+      updated_at: number;
     }>(...dids);
+
+  const present = new Set<string>();
   for (const row of rows) {
+    present.add(row.did);
     const entry: CacheEntry = {
       name: row.name,
       handle: row.handle,
@@ -183,84 +249,63 @@ async function resolveFromGlobalDb(
     };
     cache.set(row.did, entry);
     const fields = entryToFields(entry);
+    // A row with no usable field is cached as a miss — it keeps the global DB
+    // re-read cheap without claiming the DID is resolved (the network backoff
+    // is the negative cache's job).
     if (fields) result.set(row.did, fields);
-    else stillMissing.push(row.did);
+  }
+  // DIDs with no row at all are cached the same way. The cache only suppresses
+  // the *global DB read*: `resolveProfiles` re-checks any entry that resolves
+  // to no fields, since a row can appear at any time.
+  for (const did of dids) {
+    if (!present.has(did)) {
+      cache.set(did, { name: null, handle: null, avatar: null, fetchedAt: now });
+    }
   }
 
-  const notInDb = allowNetworkFetch
-    ? dids.filter((d) => !rows.some((r) => r.did === d))
-    : [];
-  // Rows that exist but carry no usable handle — the `''` an older revision
-  // of the profile write path left behind. Hydrate them too, so the row heals
+  if (!allowNetworkFetch) return;
+
+  const notInDb = dids.filter((d) => !present.has(d));
+  // Rows that exist but carry no usable handle — the `''` the profile write
+  // path stores for Roomy-record users. Hydrate them too, so the row heals
   // rather than being pinned to a handle-less profile forever (the write path
   // treats `''` as absent, so a successful fetch replaces it).
-  const handleless = allowNetworkFetch
-    ? rows.filter((r) => !r.handle).map((r) => r.did)
-    : [];
-  const toHydrate = [...new Set([...notInDb, ...handleless])];
-  if (toHydrate.length > 0) {
-    // On-demand hydration mirroring the getProfile handler: fetch Roomy
-    // records from HappyView (batch) and fall back to Bluesky, then write
-    // back to the global store. This is what makes reads as reliable as the
-    // profile page even when the store was cleared or never populated — and
-    // it is the same pipeline the write path uses, so a DID that resolves
-    // nowhere (`getProfilesRoomyFirst` backs it off) is not re-fetched here
-    // either.
-    await hydrateMissingProfiles(globalDb, toHydrate);
-  }
+  const handleless = rows.filter((r) => !r.handle).map((r) => r.did);
+  // Rows older than the freshness TTL — re-fetch so a display-name/avatar
+  // change on the PDS propagates to message/member lists without a visit to
+  // the profile page. Mirrors `filterMissing` in materialization/profiles.ts,
+  // so the write and read paths refresh a stale row on the same cadence.
+  const stale = rows
+    .filter((r) => now - r.updated_at >= PROFILE_REFRESH_TTL_MS)
+    .map((r) => r.did);
 
-  // Re-read the global store to pick up whatever hydration wrote, and cache
-  // the outcome. A DID the fetch left unresolved is remembered by the shared
-  // backoff (materialization/profiles.ts), so the next read skips the fetch
-  // entirely rather than relying on this cache's TTL.
-  const recheck = [...toHydrate, ...stillMissing];
-  if (recheck.length > 0) {
-    const ph = recheck.map(() => "?").join(",");
-    const afterRows = await globalDb
-      .query(
-        `select did, handle, name, avatar from profiles where did in (${ph})`,
-      )
-      .all<{
-        did: string;
-        handle: string | null;
-        name: string | null;
-        avatar: string | null;
-      }>(...recheck);
-    for (const row of afterRows) {
-      const entry: CacheEntry = {
-        name: row.name,
-        handle: row.handle,
-        avatar: row.avatar,
-        fetchedAt: now,
-      };
-      cache.set(row.did, entry);
-      const fields = entryToFields(entry);
-      if (fields) result.set(row.did, fields);
-    }
-    for (const did of recheck) {
-      if (!result.has(did)) {
-        // No row yet. Cached only to keep the *global DB re-read* cheap; the
-        // network backoff is the negative cache's job.
-        cache.set(did, { name: null, handle: null, avatar: null, fetchedAt: now });
-      }
-    }
-  }
+  // Detached: mirrors the getProfile handler's pipeline (HappyView batch, then
+  // Bluesky), writes back to the global store, and honours the shared negative
+  // cache — so a DID that resolves nowhere is not retried here either. The
+  // caller returns the pre-fetch values it already has; the client renders
+  // those (name from the row, else a handle, else the DID) and the next read
+  // picks up whatever the fetch found.
+  startHydration(globalDb, [...new Set([...notInDb, ...handleless, ...stale])]);
 }
 
 /**
- * On-demand profile hydration for DIDs missing from the global store.
+ * One profile-hydration batch for DIDs missing from the global store.
  *
  * Mirrors the `getProfile` handler: query HappyView (batched) for Roomy
  * profile records, fall back to the Bluesky appview, and write whatever is
  * found into the global `profiles` table (idempotent upsert). Failures are
- * swallowed — the caller returns its existing fallback and the DID is backed
- * off, then retried after the negative cache's TTL or by the event
- * materialisation path.
+ * swallowed — the DID is backed off and retried after the negative cache's TTL
+ * or by the event materialisation path.
  *
  * The backoff lives in this function rather than inside the pipeline it calls,
  * so it applies identically whether the fetch is the real pipeline or a test
  * stub. `getProfilesRoomyFirst` also consults it, which is what keeps the write
  * path and the read path from retrying each other's failures.
+ *
+ * Callers on the read path reach this through {@link startHydration}, which
+ * runs it detached and deduplicates by DID; it is awaited inline only where
+ * the result is needed before continuing (nothing does today, but the function
+ * itself stays awaitable so a caller that genuinely needs the rows can).
  */
 async function hydrateMissingProfiles(
   globalDb: AsyncDatabase,
@@ -318,7 +363,13 @@ export async function hydrateProfiles<T>(
   }
 }
 
-/** Test helper. */
+/**
+ * Test helper. Clears the read cache *and* the in-flight dedup keys, so a
+ * batch left running by one test cannot suppress the next test's fetch for the
+ * same DID. The promises themselves keep running — they cannot be cancelled —
+ * and their own `finally` still clears the cache entries they touched.
+ */
 export function _resetProfileStoreCache(): void {
   cache.clear();
+  hydrationInflight.clear();
 }

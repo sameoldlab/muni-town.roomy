@@ -3,11 +3,11 @@
  * from options, decoupled from the process env and the boot path in
  * `index.ts`.
  *
- * Why: `index.ts` previously called `Bun.serve()` at module top-level with
- * hard-wired env reads, so importing it started the server and hit the
- * network. Extracting the construction here lets tests spin up a clean
- * appserver on an ephemeral port with a test auth verifier, a temp DB, and
- * backfill disabled — then `close()` it — without spawning a process.
+ * Why: `index.ts` reads env and calls `Bun.serve()` at module top-level, so
+ * importing it starts the server and hits the network. Extracting the
+ * construction here lets tests spin up a clean appserver on an ephemeral port
+ * with a test auth verifier, a temp DB, and backfill disabled — then `close()`
+ * it — without spawning a process.
  *
  * The boot path (`index.ts`) calls `createAppserver` with env-derived
  * options and then starts backfill; tests call it with `backfillMode:
@@ -46,6 +46,7 @@ import { getMembersHandler } from "./handlers/space.roomy.space.getMembers.ts";
 import { getMetadataHandler } from "./handlers/space.roomy.space.getMetadata.ts";
 import { getSpaceSummaryHandler } from "./handlers/space.roomy.space.getSpaceSummary.ts";
 import { getSpaceThreadsHandler } from "./handlers/space.roomy.space.getThreads.ts";
+import { getSpaceLinksHandler } from "./handlers/space.roomy.space.getLinks.ts";
 import { getRolesHandler } from "./handlers/space.roomy.space.getRoles.ts";
 import { getInvitesHandler } from "./handlers/space.roomy.space.getInvites.ts";
 import { getFederationRequestsHandler } from "./handlers/space.roomy.federation.getRequests.ts";
@@ -55,6 +56,7 @@ import { getFederationGrantsHandler } from "./handlers/space.roomy.federation.ge
 import { getRoomMetadataHandler } from "./handlers/space.roomy.room.getMetadata.ts";
 import { getRoomSummaryHandler } from "./handlers/space.roomy.room.getRoomSummary.ts";
 import { getRoomThreadsHandler } from "./handlers/space.roomy.room.getThreads.ts";
+import { getRoomLinksHandler } from "./handlers/space.roomy.room.getLinks.ts";
 import { getMessagesHandler } from "./handlers/space.roomy.room.getMessages.ts";
 import { getMessageHandler } from "./handlers/space.roomy.message.getMessage.ts";
 import { getReactionsHandler } from "./handlers/space.roomy.message.getReactions.ts";
@@ -323,6 +325,11 @@ export function buildRouter(
       paramsSchema: schemas.queries.getSpaceThreads.Params,
       outputSchema: schemas.queries.getSpaceThreads.Response,
     })
+    .query("space.roomy.space.getLinks", {
+      handler: getSpaceLinksHandler,
+      paramsSchema: schemas.queries.getSpaceLinks.Params,
+      outputSchema: schemas.queries.getSpaceLinks.Response,
+    })
     .query("space.roomy.space.getRoles", {
       handler: getRolesHandler,
       paramsSchema: schemas.queries.getRoles.Params,
@@ -392,6 +399,11 @@ export function buildRouter(
       handler: getRoomThreadsHandler,
       paramsSchema: schemas.queries.getRoomThreads.Params,
       outputSchema: schemas.queries.getRoomThreads.Response,
+    })
+    .query("space.roomy.room.getLinks", {
+      handler: getRoomLinksHandler,
+      paramsSchema: schemas.queries.getRoomLinks.Params,
+      outputSchema: schemas.queries.getRoomLinks.Response,
     })
     .query("space.roomy.room.getMessages", {
       handler: getMessagesHandler,
@@ -550,9 +562,9 @@ export async function createAppserver(
   // singletons (closeDb) before calling createAppserver.
   //
   // `opts.dbPath` is honored here (event-log path; `:memory:` also pins the
-  // read-state/global/spaces DBs to memory, see `openDb`). Previously the
-  // option was dead: every factory test silently opened the real files under
-  // `DATA_DIR`, and closeDb→reopen cycles raced SQLite file locks on shared
+  // read-state/global/spaces DBs to memory, see `openDb`). Honoring it matters
+  // in tests: ignoring the option silently opens the real files under
+  // `DATA_DIR`, and closeDb→reopen cycles then race SQLite file locks on shared
   // CI runners (surfacing as `database is locked` 500s).
   const mainDb = openDb(opts.dbPath !== undefined ? { path: opts.dbPath } : {});
 
@@ -574,33 +586,58 @@ export async function createAppserver(
   // backend. This is what surfaces a worker backlog (e.g. the system-worker
   // N+1) as a visible trend rather than a manual /health/pool curl.
   const metricsTimer = setInterval(() => {
-    const pool = poolStats();
-    const cache = queryCache?.stats ?? { hits: 0, misses: 0, evictions: 0, size: 0 };
-    const embed = embedSweeperStats();
-    const search = searchIndexerStats();
-    const backfill = searchBackfillStats();
-    log.info("[metrics] snapshot", {
-      pool: pool
-        ? {
-            size: pool.size,
-            spaceWorkers: pool.spaceWorkers.map((w) => w.pending),
-            globalWorker: pool.globalWorker.pending,
-            readStateWorker: pool.readStateWorker.pending,
-            eventsWorker: pool.eventsWorker.pending,
-          }
-        : null,
-      cache,
-      embed: {
-        pending: embed.priorityQueue ?? 0,
-        inFlight: embed.inFlight ?? 0,
-        enrichedNull: embed.enrichedNull ?? 0,
-        dbBackoff: embed.dbBackoffActive ?? false,
-      },
-      search: {
-        queue: search.queueLength ?? 0,
-        backfilled: backfill.backfilled ?? 0,
-      },
-    });
+    // Fire-and-forget: the callback must stay synchronous, and the DB count
+    // is the one async part. Failures are swallowed below so a DB hiccup
+    // can't turn a metrics snapshot into an unhandled rejection.
+    void (async () => {
+      const pool = poolStats();
+      const cache = queryCache?.stats ?? { hits: 0, misses: 0, evictions: 0, size: 0 };
+      const embed = embedSweeperStats();
+      const search = searchIndexerStats();
+      const backfill = searchBackfillStats();
+      // Backlog from the DB (same source as /health/embed), plus the
+      // in-memory queue under its own key. Logging both makes the
+      // "backlog non-empty but sweeper idle" state self-evident.
+      const pending = await countPendingLinks(openGlobalDb()).catch(() => -1);
+      log.info("[metrics] snapshot", {
+        pool: pool
+          ? {
+              size: pool.size,
+              spaceWorkers: pool.spaceWorkers.map((w) => w.pending),
+              globalWorker: pool.globalWorker.pending,
+              readStateWorker: pool.readStateWorker.pending,
+              eventsWorker: pool.eventsWorker.pending,
+            }
+          : null,
+        cache,
+        embed: {
+          // `pending` is the DB backlog ROW count (same source as
+          // /health/embed); the rest is in-memory sweeper state. NOTE
+          // `transientBackoff` counts URLs while `pending` counts rows, so do
+          // NOT subtract them — read `lastCycle.selectableRows` for how many
+          // rows were actually selectable, and `lastStallCause` for why a
+          // stalled cycle selected nothing.
+          pending,
+          inFlight: embed.inFlight ?? 0,
+          enrichedOk: embed.enrichedOk ?? 0,
+          enrichedDefinitive: embed.enrichedDefinitive ?? 0,
+          enrichedTransient: embed.enrichedTransient ?? 0,
+          enrichedNull: embed.enrichedNull ?? 0,
+          sweepCycles: embed.sweepCycles ?? 0,
+          sweepThrottled: embed.sweepThrottled ?? 0,
+          dbBackoff: embed.dbBackoffActive ?? false,
+          transientBackoff: embed.transientBackoff ?? 0,
+          backlogStuck: embed.backlogStuck ?? false,
+          backlogStuckTransitions: embed.backlogStuckTransitions ?? 0,
+          lastStallCause: embed.lastStallCause ?? null,
+          lastCycle: embed.lastCycle ?? null,
+        },
+        search: {
+          queue: search.queueLength ?? 0,
+          backfilled: backfill.backfilled ?? 0,
+        },
+      });
+    })();
   }, 30 * 1000);
   metricsTimer.unref();
 
@@ -725,10 +762,45 @@ export async function createAppserver(
   const cacheMisses = metrics.gauge("roomy_cache_misses_total", "Query response cache misses.");
   const cacheEvictions = metrics.gauge("roomy_cache_evictions_total", "Query response cache evictions.");
   const cacheSize = metrics.gauge("roomy_cache_size", "Query response cache entries.");
-  const embedPending = metrics.gauge("roomy_embed_pending", "Embed links awaiting enrichment.");
+  // `roomy_embed_pending` carries the DB BACKLOG — the count /health/embed
+  // reports — by re-reading it in this scrape handler (see below). It must
+  // NOT come from `embedSweeperStats().priorityQueue`: that is the in-memory
+  // set of freshly-poked URLs, which reads 0 when the backlog is stuck in
+  // transient-retry backoff, so a Grafana alert on this gauge could never
+  // fire. The in-memory queue keeps its own name below.
+  const embedPending = metrics.gauge(
+    "roomy_embed_pending",
+    "Rows in the global pending_links backlog awaiting enrichment (same value as /health/embed's `pending`).",
+  );
+  const embedPriorityQueue = metrics.gauge(
+    "roomy_embed_priority_queue",
+    "Freshly-detected embed URLs waiting in the in-memory priority queue (NOT the DB backlog).",
+  );
   const embedInFlight = metrics.gauge("roomy_embed_in_flight", "Embed enrichments currently in flight.");
-  const embedEnrichedNull = metrics.gauge("roomy_embed_enriched_null", "Embed links enriched to null (no card).");
+  // The null outcome is split by CLASS (see the sweeper counters):
+  // `definitive` settles the row and removes it from the backlog, `transient`
+  // leaves it pending for a retry. Their sum keeps the old series meaningful.
+  const embedEnrichedNull = metrics.gauge(
+    "roomy_embed_enriched_null",
+    "Embed links enriched to null (definitive + transient). Prefer the split series below.",
+  );
   const embedDbBackoff = metrics.gauge("roomy_embed_db_backoff", "1 when the embed sweeper is in DB backoff.");
+  const embedTransientBackoff = metrics.gauge(
+    "roomy_embed_transient_backoff",
+    "Embed URLs currently skipped inside a transient-retry backoff window (URL-keyed; NOT row-comparable to roomy_embed_pending).",
+  );
+  const embedSelectableRows = metrics.gauge(
+    "roomy_embed_selectable_rows",
+    "Pending_links ROWS selectable by the sweeper's last stalled cycle (rows the URL backoff skip-set did not exclude).",
+  );
+  const embedBacklogStuck = metrics.gauge(
+    "roomy_embed_backlog_stuck",
+    "1 when the embed backlog is non-empty but the sweeper selected nothing and the oldest row is stale.",
+  );
+  const embedBacklogStuckSince = metrics.gauge(
+    "roomy_embed_backlog_stuck_since_seconds",
+    "Unix timestamp when the embed backlog stall began (0 when not stuck).",
+  );
   const searchQueue = metrics.gauge("roomy_search_indexer_queue", "Search indexer queue length.");
   const searchBackfilled = metrics.gauge("roomy_search_backfilled", "Search backfill progress.");
   const pushQueued = metrics.gauge("roomy_push_queued", "Push dispatcher queued messages.");
@@ -849,10 +921,30 @@ export async function createAppserver(
         cacheEvictions.set({}, cache.evictions);
         cacheSize.set({}, cache.size);
         const embed = embedSweeperStats();
-        embedPending.set({}, embed.priorityQueue ?? 0);
+        // `roomy_embed_pending` is the DB backlog, not the in-memory priority
+        // queue (see the gauge's definition above). Re-read the count on each
+        // scrape so the gauge equals /health/embed's `pending` by construction.
+        // One indexed `count(*)` per scrape on the global worker, on the same
+        // DB/worker the /health/embed route already counts on each request.
+        // Measured on a 21,756-row pending_links: well under 1ms.
+        try {
+          embedPending.set({}, await countPendingLinks(openGlobalDb()));
+        } catch {
+          // DB unavailable — leave the last value rather than publish a lie.
+        }
+        embedPriorityQueue.set({}, embed.priorityQueue ?? 0);
         embedInFlight.set({}, embed.inFlight ?? 0);
         embedEnrichedNull.set({}, embed.enrichedNull ?? 0);
         embedDbBackoff.set({}, embed.dbBackoffActive ? 1 : 0);
+        embedTransientBackoff.set({}, embed.transientBackoff ?? 0);
+        embedBacklogStuck.set({}, embed.backlogStuck ? 1 : 0);
+        embedBacklogStuckSince.set(
+          {},
+          embed.backlogStuck ? Math.floor(embed.backlogStuckSince / 1000) : 0,
+        );
+        // Published only while stalled (0 otherwise): a stale non-zero value
+        // after recovery would misreport selectable rows for a healthy queue.
+        embedSelectableRows.set({}, embed.lastCycle?.selectableRows ?? 0);
         const search = searchIndexerStats();
         searchQueue.set({}, search.queueLength ?? 0);
         const backfill = searchBackfillStats();

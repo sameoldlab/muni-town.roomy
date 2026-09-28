@@ -78,7 +78,53 @@ The appserver exposes a Prometheus `/metrics` endpoint (see
 - `roomy_xrpc_requests_total` / `roomy_xrpc_request_duration_seconds` — per-endpoint request count + latency histogram
 - `roomy_pool_size` / `roomy_pool_worker_pending` — DB pool size + per-worker queue depth (the signal that caught the system-worker N+1)
 - `roomy_cache_hits_total` / `roomy_cache_misses_total` / `roomy_cache_evictions_total` / `roomy_cache_size`
-- `roomy_embed_pending` / `roomy_embed_in_flight` / `roomy_embed_enriched_null` / `roomy_embed_db_backoff`
+- `roomy_embed_pending` / `roomy_embed_in_flight` / `roomy_embed_enriched_null` / `roomy_embed_db_backoff` / `roomy_embed_priority_queue` / `roomy_embed_transient_backoff`
+  - `roomy_embed_pending` is the DB `pending_links` backlog — the same number
+    `/health/embed` reports as `pending` (both are a `count(*)` on the global
+    DB). It is **not** the in-memory queue; that is `roomy_embed_priority_queue`.
+    **Alert:** `roomy_embed_pending > 1000` held for 30m.
+  - `roomy_embed_transient_backoff` is how many URLs are currently skipped
+    inside a transient-retry backoff window. When it approaches
+    `roomy_embed_pending` with `roomy_embed_in_flight` at 0, the whole backlog
+    is parked and nothing is being enriched — the DB backlog and the in-memory
+    gauge disagree.
+- `roomy_embed_backlog_stuck` / `roomy_embed_backlog_stuck_since_seconds` /
+  `roomy_embed_backlog_stuck_transitions_total`
+  - `roomy_embed_backlog_stuck` is 1 when the backlog is non-empty but the
+    sweeper is making no progress: it selected nothing (every pending link is
+    inside its transient-retry backoff, or the selection is broken), or the
+    work it selected settled no rows. `inFlight` 0 and `dbBackoff` 0 in that
+    state, so those two gauges cannot express it. **Alert:**
+    `roomy_embed_backlog_stuck == 1` for 15m — the backlog is not draining and
+    needs intervention.
+  - The flag is set/cleared only on a real change of state, and
+    `roomy_embed_backlog_stuck_transitions_total` counts those changes in both
+    directions. A rising rate there with a flat `roomy_embed_enriched_ok_total`
+    means the flag is flapping without the backlog moving. Read
+    `lastStallCause` / `lastCycle` on `/health/embed`
+    for the measured cause and row counts of the last stalled cycle.
+- `roomy_embed_enriched_ok_total` / `roomy_embed_enriched_definitive_total` /
+  `roomy_embed_enriched_transient_total` / `roomy_embed_sweep_cycles_total` /
+  `roomy_embed_sweep_throttled_total` — the enrich RATE and its outcome mix
+  (counters, primed with a 0 series at startup so they are always present).
+  - `roomy_embed_enriched_ok_total` is the success metric: **flat while
+    `roomy_embed_sweep_cycles_total` still climbs IS churn** — the sweeper
+    spending time and outbound requests resolving nothing. The single
+    `roomy_embed_enriched_null` gauge sums a *definitive* no-data settlement
+    (the row is deleted, the backlog drains) with a *transient* failure (the
+    row stays pending), so "churning and resolving nothing" cannot be told
+    apart from "settling dead links" on that series alone.
+  - `roomy_embed_enriched_definitive_total` vs
+    `roomy_embed_enriched_transient_total` is that split.
+  - `roomy_embed_sweep_throttled_total` counts cycles the loop **yielded**
+    after: a full batch that produced no `ok`. The loop runs a full batch
+    back-to-back only when it resolved something (the latency optimisation for
+    freshly-posted links); otherwise it waits one idle-poll interval, so a
+    backlog of links that all fail cannot be fetched flat out. Measured
+    against a 20,000-link all-failing backlog: 20,000 fetches/min unbounded,
+    50/min bounded.
+  - **Alert:** `rate(roomy_embed_sweep_cycles_total[5m]) > 0` with
+    `rate(roomy_embed_enriched_ok_total[5m]) == 0` for 15m.
 - `roomy_search_indexer_queue` / `roomy_search_backfilled` / `roomy_push_queued`
 - `roomy_db_timeouts_total` — DB requests that hit the 30s timeout (pool saturation)
 - `roomy_process_starts_total` — process boots, incremented once per process
@@ -91,8 +137,8 @@ The appserver exposes a Prometheus `/metrics` endpoint (see
   the process dies, as a `level="error"`, `scope="fatal"`, `fatal=true`
   record carrying `kind`, `error_name`, and the error message/stack. Query
   Loki with `{service_name="appserver"} | json | scope="fatal"` to see why a
-  process died — the record that was missing entirely during the 2026-09-14
-  restart loop (289 restarts, zero error lines).
+  process died — without this record a crash-looping process leaves only
+  container stdout noise, which is gone once the container goes away.
 
 Alloy scrapes it (`prometheus.scrape "appserver"`) and remote-writes to
 Grafana Cloud Mimir. Build Grafana dashboards + alerts on these, e.g. alert
@@ -115,7 +161,7 @@ network — no stdout pipes or sidecar forwarders.
   unset means stdout only. Every structured log record is batched (500 / 2s)
   and POSTed with stream labels `service_name`, `level`, `scope` (plus
   Railway replica labels when present).
-- **app-lite** — ships logs from the browser via Faro (TASK-66), not the
+- **app-lite** — ships logs from the browser via Faro, not the
   Alloy collector.
 
 app-lite is a static SPA (no server stdout): set `PUBLIC_FARO_URL` on the

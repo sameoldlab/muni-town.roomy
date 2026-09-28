@@ -301,7 +301,7 @@ describe("LiveRoomyGateway", () => {
 		});
 	});
 
-	test("isBackfill transitions from true to false when hasMore flips to false (L1)", async () => {
+	test("isBackfill transitions from true to false when hasMore flips to false", async () => {
 		const callback = vi.fn() as unknown as RoomyEventCallback;
 		const event1 = makeEvent();
 		const event2 = makeEvent();
@@ -428,7 +428,7 @@ describe("LiveRoomyGateway", () => {
 		await subscribeAndConnect(SPACE_DID, callback);
 
 		// The SDK replays the topic registered before connect (cursor 10),
-		// then the onOpen handler (M3) unsubscribes the stale topic and
+		// then the onOpen handler unsubscribes the stale topic and
 		// re-subscribes with the fresh cursor from the repo (also 10 here,
 		// since no frames have arrived yet). Both sub messages carry 10.
 		const subMessages = lastSocket!.sent.filter((s) => s.includes('"sub"'));
@@ -451,7 +451,7 @@ describe("LiveRoomyGateway", () => {
 		expect(subMessages[subMessages.length - 1]).toContain('"cursor":-1');
 	});
 
-	test("connect failure cleans up the subscription so re-subscribe works (M2)", async () => {
+	test("connect failure cleans up the subscription so re-subscribe works", async () => {
 		const callback = vi.fn() as unknown as RoomyEventCallback;
 
 		// Make the next ticket fetch fail so connect() rejects.
@@ -621,11 +621,20 @@ describe("LiveRoomyGateway", () => {
 			expect(reconnectDelayMs(10, 1000, 5000)).toBe(5000);
 		});
 
-		test("full jitter spreads reconnects (random in [0, cap))", () => {
-			vi.spyOn(Math, "random").mockReturnValue(0);
-			expect(reconnectDelayMs(0, 1000, 100_000)).toBe(0);
+		test("full jitter spreads reconnects (random in [0, cap), floored at 1ms)", () => {
 			vi.spyOn(Math, "random").mockReturnValue(0.999);
 			expect(reconnectDelayMs(0, 1000, 100_000)).toBe(999);
+			expect(reconnectDelayMs(2, 1000, 100_000)).toBe(3996);
+		});
+
+		test("a zero jitter draw never disables reconnect", () => {
+			// A zero draw must floor at 1ms: SyncConnection reads 0 as the
+			// "stop reconnecting" signal — a permanent, silent wedge.
+			vi.spyOn(Math, "random").mockReturnValue(0);
+			expect(reconnectDelayMs(0, 1000, 100_000)).toBe(1);
+			expect(reconnectDelayMs(5, 1000, 100_000)).toBe(1);
+			// A non-finite cap (base 0 with an overflowing 2^failures) floors too.
+			expect(reconnectDelayMs(2000, 0, 100_000)).toBe(1);
 		});
 	});
 

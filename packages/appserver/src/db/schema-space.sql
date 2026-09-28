@@ -12,9 +12,9 @@
 -- The `materialization_cursor` table lives here too (one row per stream):
 -- each space DB is self-describing about its own re-materialization state.
 --
--- Materialiser functions in the SDK target the monolithic schema shape
--- (column names and types must stay in sync with the frontend schema), so
--- the per-space shape mirrors it exactly for the tables that remain.
+-- Materialiser functions in the SDK emit column names and types this file
+-- must stay in sync with, so the per-space shape mirrors them exactly for the
+-- tables that remain.
 --
 -- IMPORTANT: keep the per-space version constant in sync whenever this file
 -- changes (see src/db/db.ts, SPACE_SCHEMA_VERSION).
@@ -50,6 +50,17 @@ create index if not exists idx_entities_room on entities (room, id desc);
 -- Without this, idx_entities_room orders by id (not sort_idx), so those
 -- aggregates scan every entity in the room. Purely additive/idempotent.
 create index if not exists idx_entities_room_sort on entities (room, sort_idx);
+
+-- The room timeline's page key: `selectMessages` orders a room's messages by
+-- `coalesce(sort_idx, id)` descending and seeks the next page on that same
+-- expression, tie-broken by id. It needs an index matching the ORDER BY
+-- expression exactly — `idx_entities_room_sort` cannot serve it, so ordering by
+-- the expression without this index degrades to a temp-B-tree sort of every
+-- entity in the room. `coalesce` is stored because the expression must match:
+-- `sort_idx` alone is not the key, and rows the materialiser never sorted fall
+-- back to their id.
+create index if not exists idx_entities_room_sort_key
+  on entities (room, coalesce(sort_idx, id), id);
 
 create table if not exists edges (
     head text not null, -- did or ulid
@@ -342,10 +353,57 @@ create index if not exists idx_activity_item_global
 -- Per-stream materialization cursor. Tracks the highest event idx that has
 -- been applied to the materialized views for each stream. Lives in the
 -- per-space DB so each space DB is self-describing about its own
--- re-materialization progress: deleting a corrupted space DB and replaying
--- the local event log for that stream restores it without touching any
+-- re-materialization progress: deleting a corrupted space DB and replaying the
+-- local event log for that stream restores it without touching any
 -- other space.
 create table if not exists materialization_cursor (
   stream_id text primary key,
   materialized_to integer not null default -1
+) strict;
+
+-- Denormalised read projection: the room→space→parent→access facts
+-- that `auth/access.ts:resolveRoom` re-derives per room, per request, per
+-- caller. Those three queries are 36 of the ~50 DB round-trips
+-- `room.getThreads` spends (measured in perf/probe-projections.ts).
+--
+-- Maintained on LIVE events only — `applyBatch` appends the upsert to the
+-- per-event transaction it already opens, so maintenance costs zero extra
+-- worker round-trips and is atomic with the event that dirtied it.
+-- Rematerialisation (isBackfill) never writes it; the read path warms any
+-- missing row on first access, so a blue-green rebuild heals lazily.
+--
+-- Purely additive: declared here so every existing per-space DB gains it at
+-- next open (the schema file is exec'd on every open regardless of version),
+-- with no SPACE_SCHEMA_VERSION bump and therefore no forced rebuild.
+create table if not exists room_access (
+  room_id           text primary key,
+  space_id          text not null,
+  parent_channel_id text
+) strict;
+
+create index if not exists idx_room_access_space on room_access(space_id);
+
+-- Denormalised read projection: each room's latest message and
+-- its distinct recent authors, reduced once per write instead of once per
+-- board read. `fetchRoomActivity` otherwise reads EVERY message in EVERY room
+-- in scope to pick one per room (measured: 8001 rows to keep 2 at 8000
+-- messages), which is what makes `space.getThreads` grow with channel size.
+--
+-- Maintained on LIVE events only, inside the per-event transaction
+-- `applyBatch` already opens: createMessage folds one message in, delete/
+-- moveMessages invalidate the affected rooms and the materialiser's
+-- side-effect stage rebuilds them. Rematerialisation invalidates but never
+-- populates. The read path falls back to the live scan whenever a page is not
+-- fully projected, so a blue-green rebuild heals lazily.
+--
+-- Purely additive: declared here so every existing per-space DB gains it at
+-- next open (the schema file is exec'd on every open regardless of version),
+-- with no SPACE_SCHEMA_VERSION bump and therefore no forced rebuild.
+create table if not exists room_activity (
+  room_id           text primary key,
+  latest_message_id text,
+  latest_at         integer,
+  -- JSON array of {did, ts}, distinct authors newest-first, ts = that author's
+  -- newest message. The board takes the first 3.
+  recent_authors    text not null default '[]'
 ) strict;

@@ -144,6 +144,13 @@ export const DiscordChannelData = type({
 	"guildId?": "string",
 	"topic?": "string | null",
 	"ownerId?": "string",
+	"position?": "number",
+	/**
+	 * Newest message id in the channel. Set by Discord whenever the channel
+	 * has history — the discriminator for a channel whose history the bot
+	 * cannot read (Discord answers an empty page rather than an error).
+	 */
+	"lastMessageId?": "string | null",
 	"permissionOverwrites?": permissionOverwriteSchema.array(),
 });
 export type DiscordChannelData = typeof DiscordChannelData.infer;
@@ -170,6 +177,12 @@ export const THREAD_TYPES = new Set([11, 12, 10]); // PublicThread, PrivateThrea
 
 /** Private thread type — excluded from sync. */
 export const PRIVATE_THREAD = 12;
+
+/**
+ * Guild category — a grouping header, not a channel. Never bridged as a room;
+ * read only for initial-sync structure (see services/room-sync.ts).
+ */
+export const CATEGORY_TYPE = 4;
 
 /** Any channel type that can carry messages. */
 export const MESSAGE_CHANNEL_TYPES = new Set([

@@ -5,17 +5,17 @@
   import { formatRelativeTime } from "@roomy/design/utils";
   import SpaceAvatar from "@roomy/design/components/spaces/SpaceAvatar.svelte";
   import UserAvatar from "@roomy/design/components/user/UserAvatar.svelte";
-  import ActivityFeedSkeleton from "./ActivityFeedSkeleton.svelte";
+  import ActivityFeedSkeleton from "@roomy/design/components/content/feed/ActivityFeedSkeleton.svelte";
   import ErrorMessage from "@roomy/design/components/helper/ErrorMessage.svelte";
   import MediaEmbed from "../chat/embeds/MediaEmbed.svelte";
-  import LinkCard from "../chat/embeds/LinkCard.svelte";
+  import LinkCard from "@roomy/design/components/content/thread/message/embeds/LinkCard.svelte";
   import MessageContent from "../chat/MessageContent.svelte";
   import MessageReactions from "../chat/MessageReactions.svelte";
   import { prefetchInternalLinkSummaries } from "../chat/prefetch-link-summaries";
   import {
     prefetchInternalLinkSummariesFromBlocks,
   } from "../chat/prefetch-link-summaries";
-  import { parseRichTextContent } from "../chat/enrich-internal-links";
+  import { parseRichTextContent } from "../chat/message-body";
   import { RICHTEXT_MIME } from "@roomy-space/sdk";
   import type { Block } from "@roomy-space/sdk";
   import { auth } from "$lib/auth.svelte";

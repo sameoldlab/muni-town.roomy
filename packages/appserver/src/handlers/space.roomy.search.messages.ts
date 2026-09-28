@@ -1,14 +1,14 @@
 /**
  * XRPC: space.roomy.search.messages (query).
  *
- * Cross-space full-text message search backed by Qdrant (Phase 2 of
- * search-endpoints.md). The query is BM25-encoded to a sparse vector and
- * searched against the global `messages` collection, payload-filtered to
- * the caller's readable spaces (spaceId narrows the filter to one space;
- * roomId narrows it to one room — a channel plus its threads, or a thread
- * plus its parent channel). Results are over-fetched (limit×10), hydrated
- * via selectMessages (`{ kind: "ids" }`), post-filtered by per-room read
- * access, trimmed to `limit`, and returned ranked best-match-first.
+ * Cross-space full-text message search backed by Qdrant. The query is
+ * BM25-encoded to a sparse vector and searched against the global `messages`
+ * collection, payload-filtered to the caller's readable spaces (spaceId
+ * narrows the filter to one space; roomId narrows it to one room — a channel
+ * plus its threads, or a thread plus its parent channel). Results are
+ * over-fetched (limit×10), hydrated via selectMessages (`{ kind: "ids" }`),
+ * post-filtered by per-room read access, trimmed to `limit`, and returned
+ * ranked best-match-first.
  *
  * Scope precedence: roomId < spaceId < joined spaces. A caller-supplied
  * spaceId must match the room's owning space (a mismatch is 404 — the room
@@ -36,7 +36,6 @@
 import { createAccessMemo, resolveRoom, roomAccess } from "../auth/access.ts";
 import { federatedRoomAccess } from "../auth/federation.ts";
 import { openGlobalDb, openReadStateDb, openSpaceDb, openSpaceDbForEntity } from "../db/db.ts";
-import { hydrateUserMembership } from "../hydration/userHydration.ts";
 import { selectJoinedSpaceDids } from "../queries/userSpaceMembership.ts";
 import { selectMessages } from "../queries/selectMessages.ts";
 import { encodeSparse } from "../search/bm25.ts";
@@ -110,7 +109,6 @@ export const searchMessagesHandler: QueryHandler<
   }
 
   if (userDid !== null) {
-    await hydrateUserMembership(userDid);
   }
 
   // Room-scoped search (roomId): resolve the room's owning space and the

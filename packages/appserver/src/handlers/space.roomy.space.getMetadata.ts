@@ -9,7 +9,6 @@
 import { createAccessMemo, roomAccessMany, spaceAccess } from "../auth/access.ts";
 import { createFederationMemo, federatedRoomAccess } from "../auth/federation.ts";
 import { openReadStateDb, openSpaceDb, openGlobalDb } from "../db/db.ts";
-import { hydrateUserMembership } from "../hydration/userHydration.ts";
 import { getReadPositions, getSpaceSidebarData, ensureReadPositions } from "../queries/readPositions.ts";
 import { queryActiveThreads, resolveThreadsByIds } from "../queries/userActiveThreads.ts";
 import { parseUserDid } from "../xrpc/authGuards.ts";
@@ -92,9 +91,6 @@ export const getMetadataHandler: QueryHandler<
   const userDid = parseUserDid(auth);
   const spaceId = requireString(params, "spaceId");
 
-  if (userDid !== null) {
-    await hydrateUserMembership(userDid);
-  }
 
   const db = openSpaceDb(spaceId);
   const mainDb = openReadStateDb();
@@ -201,11 +197,11 @@ export const getMetadataHandler: QueryHandler<
       }) as SidebarChannel;
     };
 
-    // ── Federated channels (Phase 2) ─────────────────────────────────
+    // ── Federated channels ───────────────────────────────────────────
     // Channels of OTHER spaces (origins) that are federated INTO this space
     // with an origin grant. They appear in B's sidebar, decorated with their
     // origin space. B admins see all federated channels; B members see only
-    // those they have a receiver grant for (see plan §5.5 / Phase 3).
+    // those they have a receiver grant for (see plan §5.5).
     // Resolved BEFORE the category loop so federated channels referenced in
     // the sidebar config (placed there by drag-and-drop reorder) render in
     // their configured category/position instead of always falling back to
@@ -419,7 +415,7 @@ async function buildFederatedSidebarChannels(
     const nameById = new Map(infoRows.map((r) => [r.id, r.name]));
 
     for (const g of grants) {
-      // Skip grants whose origin channel no longer exists (deleted/archived)
+      // Skip grants whose origin channel is gone (deleted/archived)
       // so the sidebar doesn't show a dangling federated entry.
       if (!nameById.has(g.roomId)) continue;
 

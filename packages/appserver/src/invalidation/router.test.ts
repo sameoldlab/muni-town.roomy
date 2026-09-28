@@ -110,44 +110,32 @@ describe("Router", () => {
     );
   });
 
-  it("assigns monotonically increasing seq to message diffs", async () => {
-    // Both createMessage events share the same event id (see `makeEvent`),
-    // so one materialized message row covers both.
+  it("passes message diffs through without an emission-time seq", async () => {
+    // The gap-detection cursor is assigned per connection at delivery, not at
+    // emission: delivery is selective, so a global counter would leave every
+    // connection's seq sparse. A signal must therefore carry no seq at all.
     await seedMessageDb("01EVENT123");
 
     const router = new Router();
-    const seqs: number[] = [];
+    const diffs: InvalidationEvent[] = [];
 
     router.subscribe((events) => {
-      for (const e of events) {
-        if (e.kind === "messageDiff") {
-          seqs.push(e.signal.seq);
-        }
-      }
+      for (const e of events) if (e.kind === "messageDiff") diffs.push(e);
     });
 
     await router.onEventsApplied(
       STREAM_DID,
-      [
-        makeEvent("space.roomy.message.createMessage.v0", {
-          roomId: "01ROOM1AAAAAAAAAAAAAA000" as Ulid,
-        }),
-      ],
+      [makeEvent("space.roomy.message.createMessage.v0", { roomId: "01ROOM1AAAAAAAAAAAAAA000" as Ulid })],
       { isBackfill: false },
     );
-
     await router.onEventsApplied(
       STREAM_DID,
-      [
-        makeEvent("space.roomy.message.createMessage.v0", {
-          roomId: "01ROOM2AAAAAAAAAAAAAA000" as Ulid,
-        }),
-      ],
+      [makeEvent("space.roomy.message.createMessage.v0", { roomId: "01ROOM2AAAAAAAAAAAAAA000" as Ulid })],
       { isBackfill: false },
     );
 
-    expect(seqs).toHaveLength(2);
-    expect(seqs[1]!).toBeGreaterThan(seqs[0]!);
+    expect(diffs).toHaveLength(2);
+    for (const d of diffs) expect("seq" in d.signal).toBe(false);
   });
 
   it("batch-fetches message snapshots once for a batch of message events", async () => {
@@ -292,10 +280,10 @@ describe("Router", () => {
     expect(events).toHaveLength(0);
   });
 
-  // ─── Per-batch signal dedup (TASK-134) ───────────────────────────────
-  // A batch of N same-type events used to make every handler emit N copies of
-  // the whole batch-level signal set, and the WS handler broadcasts each copy
-  // to every connection. These pin the coalescing contract.
+  // ─── Per-batch signal dedup ──────────────────────────────────────────
+  // A batch of N same-type events would otherwise make every handler emit N
+  // copies of the whole batch-level signal set, and the WS handler broadcasts
+  // each copy to every connection. These pin the coalescing contract.
 
   it("a batch of N deletes emits ONE getActivityFeed invalidation", async () => {
     const router = new Router();
@@ -321,8 +309,7 @@ describe("Router", () => {
     );
     expect(feedInvalidations).toHaveLength(1);
 
-    // Every other batch-level invalidation collapses too (they were emitted
-    // once per delete before this fix).
+    // Every other batch-level invalidation collapses too.
     const nsids = events[0]!
       .filter((e) => e.kind === "queryInvalidation")
       .map((e) => (e.kind === "queryInvalidation" ? e.signal.nsid : ""));
@@ -376,6 +363,81 @@ describe("Router", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]).toHaveLength(1);
+  });
+
+  it("keeps only the LAST roomActivityDiff per room (a superseding snapshot, not a delta)", () => {
+    const router = new Router();
+    const { events, listener } = collect();
+    router.subscribe(listener);
+
+    const activity = (messageId: string, ts: string): InvalidationEvent => ({
+      kind: "roomActivityDiff",
+      signal: {
+        spaceId: STREAM_DID,
+        roomId: "01ROOM" as Ulid,
+        kind: "channel",
+        activity: {
+          latestTimestamp: ts,
+          latestMembers: [{ did: USER_DID, name: null, avatar: null }],
+          latestMessage: {
+            id: messageId,
+            content: messageId,
+            author: { did: USER_DID, name: null, avatar: null },
+            timestamp: ts,
+          },
+        },
+      },
+    });
+
+    // Three messages in one room — each diff is a full snapshot of the room's
+    // latest activity, so only the newest is true. Collapsing keeps the first
+    // slot (emission order) but holds the LAST payload.
+    router.emit([
+      activity("01MSG1", "2026-09-21T10:00:00.000Z"),
+      activity("01MSG2", "2026-09-21T10:01:00.000Z"),
+      activity("01MSG3", "2026-09-21T10:02:00.000Z"),
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toHaveLength(1);
+    const kept = events[0]![0]!;
+    expect(kept.kind).toBe("roomActivityDiff");
+    if (kept.kind === "roomActivityDiff") {
+      expect(kept.signal.activity.latestMessage?.id).toBe("01MSG3");
+      expect(kept.signal.activity.latestTimestamp).toBe("2026-09-21T10:02:00.000Z");
+    }
+  });
+
+  it("keeps roomActivityDiffs for DIFFERENT rooms separate", () => {
+    const router = new Router();
+    const { events, listener } = collect();
+    router.subscribe(listener);
+
+    const activity = (roomId: string, messageId: string): InvalidationEvent => ({
+      kind: "roomActivityDiff",
+      signal: {
+        spaceId: STREAM_DID,
+        roomId: roomId as Ulid,
+        kind: "channel",
+        activity: {
+          latestTimestamp: "2026-09-21T10:00:00.000Z",
+          latestMembers: [],
+          latestMessage: {
+            id: messageId,
+            content: messageId,
+            author: { did: USER_DID, name: null, avatar: null },
+            timestamp: "2026-09-21T10:00:00.000Z",
+          },
+        },
+      },
+    });
+
+    router.emit([
+      activity("01ROOM1AAAAAAAAAAAAAA000", "01MSG1"),
+      activity("01ROOM2BBBBBBBBBBBBBB000", "01MSG2"),
+    ]);
+
+    expect(events[0]).toHaveLength(2);
   });
 
   it("keeps invalidations that differ by affectedUser separate", async () => {
@@ -488,29 +550,22 @@ describe("Router", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("emit stamps a monotonic seq on messageDiff signals (embed sweeper path)", () => {
-    // Regression: signals emitted via `emit` (e.g. the embed sweeper's
-    // enrichment diffs) used to carry seq 0, which the client read as a server
-    // seq reset and triggered a spurious refetch on every card-enrichment diff.
+  it("emit preserves message diffs for delivery (no emission-time seq)", () => {
     const router = new Router();
     const { events, listener } = collect();
     router.subscribe(listener);
 
     const diff = (): InvalidationEvent => ({
       kind: "messageDiff",
-      signal: { roomId: "01ROOM" as Ulid, seq: 0, ops: [] },
+      signal: { roomId: "01ROOM" as Ulid, ops: [] },
     });
 
     router.emit([diff()]);
     router.emit([diff()]);
 
     expect(events).toHaveLength(2);
-    const seqs = events.map(
-      (e) => (e[0]!.kind === "messageDiff" ? e[0]!.signal.seq : -1),
-    );
-    // seq must be positive, strictly increasing, and shared across emits.
-    expect(seqs[0]).toBeGreaterThan(0);
-    expect(seqs[1]!).toBe(seqs[0]! + 1);
+    expect(events[0]![0]!.kind).toBe("messageDiff");
+    expect(events[1]![0]!.kind).toBe("messageDiff");
   });
 });
 

@@ -6,6 +6,7 @@ import type {
   AppliedEvent,
 } from "../invalidation/types.ts";
 import type { DecodedStreamEvent, Event, StreamDid, StreamIndex, UserDid, Ulid } from "@roomy-space/sdk";
+import { schemas, type } from "@roomy-space/sdk";
 import { SyncManager, type StreamEventSource, type SyncDbAccess } from "./handler.ts";
 import type { DbLike } from "../db/types.ts";
 
@@ -381,12 +382,11 @@ function queryInvalidation(
   };
 }
 
-function messageDiff(roomId: Ulid, seq: number): InvalidationEvent {
+function messageDiff(roomId: Ulid): InvalidationEvent {
   return {
     kind: "messageDiff",
     signal: {
       roomId,
-      seq,
       ops: [
         {
           op: "add",
@@ -408,14 +408,13 @@ function messageDiff(roomId: Ulid, seq: number): InvalidationEvent {
   };
 }
 
-function mentionDiff(did: UserDid, seq: number): InvalidationEvent {
+function mentionDiff(did: UserDid): InvalidationEvent {
   return {
     kind: "mentionDiff",
     signal: {
       did,
       spaceId: SPACE_ID,
       roomId: ROOM_ID,
-      seq,
       ops: [
         {
           op: "add",
@@ -461,13 +460,13 @@ describe("SyncManager", () => {
     socket.sentFrames.length = 0;
 
     // Emit a message diff for that room.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
-
     expect(socket.sentFrames.length).toBe(1);
     const body = decodeFrameBody(socket.sentFrames[0]!);
     expect(body).toEqual({
       roomId: ROOM_ID,
+      // Delivery-time per-connection cursor (ConnectionState.seq), starting at 1.
       seq: 1,
       ops: expect.any(Array),
     });
@@ -487,8 +486,7 @@ describe("SyncManager", () => {
     socket.receive({ type: "sub", topic: "mentions", id: USER_B });
     socket.sentFrames.length = 0;
 
-    router.emitSignals([mentionDiff(USER_B, 1)]);
-
+    router.emitSignals([mentionDiff(USER_B)]);
     expect(socket.sentFrames.length).toBe(1);
     const body = decodeFrameBody(socket.sentFrames[0]!);
     expect(body).toEqual({
@@ -513,8 +511,7 @@ describe("SyncManager", () => {
     // Subscribed to USER_B's mentions, but the signal is for USER_A.
     socket.receive({ type: "sub", topic: "mentions", id: USER_B });
     socket.sentFrames.length = 0;
-
-    router.emitSignals([mentionDiff(USER_A, 1)]);
+    router.emitSignals([mentionDiff(USER_A)]);
 
     expect(socket.sentFrames.length).toBe(0);
 
@@ -530,9 +527,8 @@ describe("SyncManager", () => {
 
     // USER_B tries to subscribe to USER_A's mentions — must be ignored.
     socket.receive({ type: "sub", topic: "mentions", id: USER_A });
-    socket.sentFrames.length = 0;
-
-    router.emitSignals([mentionDiff(USER_A, 1)]);
+    router.emitSignals([mentionDiff(USER_A)]);
+    router.emitSignals([mentionDiff(USER_A)]);
 
     expect(socket.sentFrames.length).toBe(0);
 
@@ -555,7 +551,7 @@ describe("SyncManager", () => {
     socket.sentFrames.length = 0;
 
     // Emit a message diff for ROOM_ID.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
 
     expect(socket.sentFrames.length).toBe(0);
@@ -656,7 +652,7 @@ describe("SyncManager", () => {
     // assertion captures only the post-unsub emit below.
     socket.sentFrames.length = 0;
 
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
 
     expect(socket.sentFrames.length).toBe(0);
@@ -680,7 +676,7 @@ describe("SyncManager", () => {
     socket.sentFrames.length = 0;
 
     // Emit after close — should not error.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
     expect(socket.sentFrames.length).toBe(0);
     expect(manager.connectionCount).toBe(0);
@@ -824,7 +820,8 @@ describe("SyncManager", () => {
     expect(nsids).toContain("space.roomy.room.getMessages");
     expect(nsids).toContain("space.roomy.room.getMetadata");
     expect(nsids).toContain("space.roomy.room.getThreads");
-    expect(socket.sentFrames.length).toBe(3);
+    expect(nsids).toContain("space.roomy.room.getLinks");
+    expect(socket.sentFrames.length).toBe(4);
     for (const f of socket.sentFrames) {
       expect(f.header.t).toBe("#invalidate");
       expect(decodeFrameBody(f).params).toEqual({ roomId: ROOM_ID });
@@ -849,9 +846,131 @@ describe("SyncManager", () => {
     manager.destroy();
 
     // Emit after destroy — socket should NOT receive anything.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
     expect(socket.sentFrames.length).toBe(0);
+  });
+
+  test("a cacheEvictionOnly invalidation never reaches a connection", async () => {
+    // These exist for the server-side response cache (whose eviction listener
+    // sees every signal); the client is kept fresh by a diff frame instead, so
+    // sending it a refetch instruction is the exact cost the flag avoids.
+    const router = new MockRouter();
+    const { manager } = makeManager(router as unknown as InvalidationRouter);
+
+    const socket = new MockSocket(USER_A);
+    manager.register(socket as unknown as SyncSocket);
+
+    await sub(socket, { type: "sub", topic: "room", id: ROOM_ID });
+    socket.sentFrames.length = 0;
+
+    router.emitSignals([
+      {
+        kind: "queryInvalidation",
+        signal: {
+          nsid: "space.roomy.room.getMetadata",
+          params: { roomId: ROOM_ID },
+          cacheEvictionOnly: true,
+        },
+      },
+    ]);
+    await flush();
+
+    expect(socket.sentFrames.length).toBe(0);
+
+    manager.destroy();
+  });
+
+  test("a roomActivityDiff frame reaches the room, parent channel, and space topics once", async () => {
+    const router = new MockRouter();
+    const { manager } = makeManager(router as unknown as InvalidationRouter);
+
+    const PARENT = "01KR32FDQCCCEB8FEK76SQST9X" as Ulid;
+    const socket = new MockSocket(USER_A);
+    manager.register(socket as unknown as SyncSocket);
+    await sub(socket, { type: "sub", topic: "room", id: ROOM_ID });
+    await sub(socket, { type: "sub", topic: "space", id: SPACE_ID });
+    socket.sentFrames.length = 0;
+
+    const latestMessage = {
+      id: "01KR32FDQCCCEB8FEK76SQST9Z",
+      content: "hello",
+      author: { did: USER_A, name: "User A", avatar: null },
+      timestamp: "2026-09-21T10:00:00.000Z",
+    };
+    router.emitSignals([
+      {
+        kind: "roomActivityDiff",
+        signal: {
+          spaceId: SPACE_ID,
+          roomId: ROOM_ID,
+          kind: "thread",
+          parentChannelId: PARENT,
+          activity: {
+            latestTimestamp: "2026-09-21T10:00:00.000Z",
+            latestMembers: [{ did: USER_A, name: "User A", avatar: null }],
+            latestMessage,
+          },
+        },
+      },
+    ]);
+    await flush();
+
+    // One frame, not one per matching topic (the connection holds both).
+    expect(socket.sentFrames.length).toBe(1);
+    const frame = socket.sentFrames[0]!;
+    expect(frame.header.t).toBe("#roomActivityDiff");
+
+    // The frame must satisfy the published wire schema — that is the contract
+    // the client's SyncRouter validates before patching its cache.
+    const parsed = schemas.frames.roomActivityDiff.Body(frame.body);
+    expect(parsed instanceof type.errors).toBe(false);
+    if (parsed instanceof type.errors) return;
+    expect(parsed.roomId).toBe(ROOM_ID);
+    expect(parsed.parentChannelId).toBe(PARENT);
+    expect(parsed.activity.latestMessage?.content).toBe("hello");
+
+    manager.destroy();
+  });
+
+  test("roomActivityDiff is withheld from a connection that cannot read the room", async () => {
+    // The frame carries a message preview and its author, so a connection
+    // watching the SPACE topic must not receive the row for a room it has no
+    // access to. An unknown room resolves to no per-space DB, which is the
+    // same "no access" answer the HTTP read path gives.
+    const router = new MockRouter();
+    const { manager } = makeManager(router as unknown as InvalidationRouter);
+
+    const socket = new MockSocket(USER_A);
+    manager.register(socket as unknown as SyncSocket);
+    await sub(socket, { type: "sub", topic: "space", id: SPACE_ID });
+    socket.sentFrames.length = 0;
+
+    router.emitSignals([
+      {
+        kind: "roomActivityDiff",
+        signal: {
+          spaceId: SPACE_ID,
+          roomId: "01KR32FDQCCCEB8FEK76SQST9W" as Ulid,
+          kind: "channel",
+          activity: {
+            latestTimestamp: "2026-09-21T10:00:00.000Z",
+            latestMembers: [{ did: USER_B, name: null, avatar: null }],
+            latestMessage: {
+              id: "01KR32FDQCCCEB8FEK76SQST9V",
+              content: "secret",
+              author: { did: USER_B, name: null, avatar: null },
+              timestamp: "2026-09-21T10:00:00.000Z",
+            },
+          },
+        },
+      },
+    ]);
+    await flush();
+
+    expect(socket.sentFrames.length).toBe(0);
+
+    manager.destroy();
   });
 
   test("multiple events in one batch are all delivered", async () => {
@@ -869,7 +988,7 @@ describe("SyncManager", () => {
     socket.sentFrames.length = 0;
 
     router.emitSignals([
-      messageDiff(ROOM_ID, 1),
+      messageDiff(ROOM_ID),
       queryInvalidation("space.roomy.room.getMetadata", { roomId: ROOM_ID }),
     ]);
     await flush();
@@ -905,7 +1024,7 @@ describe("SyncManager — topic authorization", () => {
     expect(socket.sentFrames.length).toBe(0);
 
     // A message diff for that room must NOT reach the non-member.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
     expect(socket.sentFrames.length).toBe(0);
 
@@ -922,7 +1041,7 @@ describe("SyncManager — topic authorization", () => {
     await sub(socket, { type: "sub", topic: "room", id: ROOM_ID });
     socket.sentFrames.length = 0;
 
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
 
     expect(socket.sentFrames.length).toBe(1);
@@ -952,7 +1071,7 @@ describe("SyncManager — topic authorization", () => {
     await sub(socket, { type: "sub", topic: "room", id: ROOM_ID });
     socket.sentFrames.length = 0;
 
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
 
     expect(socket.sentFrames.length).toBe(1);
@@ -978,7 +1097,7 @@ describe("SyncManager — topic authorization", () => {
     expect(socket.sentFrames.length).toBe(0);
 
     // No content frames either way.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
     expect(socket.sentFrames.length).toBe(0);
 
@@ -1111,7 +1230,7 @@ describe("SyncManager — topic authorization", () => {
     socket.sentFrames.length = 0;
 
     // First diff arrives while USER_A is still a member.
-    router.emitSignals([messageDiff(ROOM_ID, 1)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
     expect(socket.sentFrames.length).toBe(1);
 
@@ -1119,7 +1238,7 @@ describe("SyncManager — topic authorization", () => {
     // (delivery-time re-check), even though the topic is still registered.
     db.seedBan(SPACE_ID, USER_A);
     socket.sentFrames.length = 0;
-    router.emitSignals([messageDiff(ROOM_ID, 2)]);
+    router.emitSignals([messageDiff(ROOM_ID)]);
     await flush();
     expect(socket.sentFrames.length).toBe(0);
 
@@ -1297,7 +1416,8 @@ describe("SyncManager — stream topic", () => {
     await sub(socket, { type: "sub", topic: "stream", id: SPACE_ID, cursor: 0 });
 
     socket.sentFrames.length = 0;
-    // Emitting an empty batch must not throw (previously events[-1]!.idx did).
+    // Emitting an empty batch must not throw (an unguarded `events[-1]!.idx`
+    // read would).
     source.emitLive(SPACE_ID, []);
     await flush();
 
@@ -1361,9 +1481,9 @@ describe("SyncManager — stream topic", () => {
     // the gated read.
     await flush();
 
-    // Re-subscribe while the first loop is suspended (backfilling=true).
-    // Before the M5 fix this reset backfilling=false and kicked off a second
-    // concurrent #backfillStream, producing a duplicate backfill frame.
+    // Re-subscribe while the first loop is suspended (backfilling=true). The
+    // re-subscribe must not reset backfilling=false and kick off a second
+    // concurrent #backfillStream, which would emit a duplicate backfill frame.
     socket.receive({ type: "sub", topic: "stream", id: SPACE_ID, cursor: -1 });
     await flush();
 
@@ -1453,8 +1573,9 @@ describe("SyncManager — stream topic", () => {
     // breaks out of the for-loop. With the identity guard, the post-loop
     // check sees state.streams.get(streamDid) === sub B ≠ sub A and returns
     // BEFORE draining pendingLive — no stale-cursor frames are sent.
-    // (Without the fix, the key-presence guard passes, sub A.pendingLive
-    // is true, and the stale loop drains and delivers stale-cursor frames.)
+    // (A key-presence guard alone would pass here: sub A.pendingLive is true,
+    // so the stale loop would drain and deliver stale-cursor frames. The
+    // identity guard is what stops it.)
     releaseStale({ events: [], cursor: -1 });
     await flush();
 

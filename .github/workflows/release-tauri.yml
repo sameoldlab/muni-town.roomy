@@ -2,12 +2,23 @@ name: 'Build and release tauri'
 
 on:
   workflow_dispatch:
+    inputs:
+      ios_only:
+        description: 'Run only the iOS TestFlight job (skip the desktop/android release)'
+        type: boolean
+        default: true
   push:
     tags:
       - 'v*' # Should match `version` in ./src-tauri/tauri.conf.json
 
 jobs:
   publish-tauri:
+    # A manual dispatch runs EVERY job in the workflow, and this job rejects a
+    # non-tag ref outright: it derives the expected version from
+    # `${GITHUB_REF#refs/tags/v}`, which on a branch evaluates to the branch
+    # name and fails the tag/version assertion. So the release job is entered
+    # only on a tag push, or on a manual run that opts out of `ios_only`.
+    if: ${{ github.event_name == 'push' || !inputs.ios_only }}
     permissions:
       contents: write
     strategy:
@@ -143,4 +154,346 @@ jobs:
           generateReleaseNotes: true
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  # ── iOS → TestFlight ───────────────────────────────────────────────────────
+  # Separate from the matrix above: it needs a macOS runner with Xcode, an
+  # Apple Developer account's signing assets, and it uploads to App Store
+  # Connect rather than creating a GitHub release.
+  #
+  # `tauri ios build` archives and exports an IPA but does NOT upload it, so
+  # the upload is an explicit `altool` step.
+  #
+  # Required secrets:
+  #   APPLE_CERTIFICATE            base64 of the .p12 distribution certificate
+  #                                (`base64 -i cert.p12 | pbcopy`)
+  #   APPLE_CERTIFICATE_PASSWORD   password chosen when exporting the .p12
+  #   APPLE_SIGNING_IDENTITY       e.g. "Apple Distribution: Name (TEAMID)"
+  #   APPLE_API_KEY                App Store Connect API key ID
+  #   APPLE_API_ISSUER             App Store Connect API issuer ID (UUID)
+  #   APPLE_API_KEY_P8_BASE64      base64 of the AuthKey_<KEYID>.p8 file
+  #
+  # `APPLE_DEVELOPMENT_TEAM` is intentionally not required: `bundle > iOS >
+  # developmentTeam` in tauri.conf.json is left unset so local builds don't
+  # bake in a team, and this job passes the team ID through the environment.
+  publish-ios:
+    name: iOS TestFlight
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get app version
+        shell: bash
+        run: echo "APP_VERSION=$(jq -r .version packages/app-lite/src-tauri/tauri.conf.json)" >> $GITHUB_ENV
+
+      - name: Pin Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.16.1
+
+      - name: Setup node
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: 'pnpm'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '.packages/app-lite/src-tauri -> target'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SDK (app-lite imports its dist)
+        run: pnpm turbo run build-lib
+
+      - name: Build frontend
+        run: pnpm --filter app-lite build
+
+      # ── Verify the certificate the iOS path will actually use ─────────────
+      #
+      # `tauri ios build` reads IOS_CERTIFICATE / IOS_CERTIFICATE_PASSWORD /
+      # IOS_MOBILE_PROVISION -- NOT the APPLE_* names, which belong to the
+      # macOS bundler. APPLE_CERTIFICATE appears nowhere in the iOS source
+      # (crates/tauri-cli/src/mobile/ios/{build,mod}.rs), so a secret named
+      # APPLE_CERTIFICATE is silently ignored and the build signs with the
+      # CLI's throwaway self-signed cert
+      # ("Apple Distribution: Tauri (unset)"), then fails at export with
+      # "Cloud signing permission error" + "No profiles for '<id>'".
+      #
+      # The secrets keep their APPLE_* names; this step maps them onto the
+      # IOS_* variables the toolchain reads.
+      #
+      # `ios build` collects every identity in the p12 into a BTreeSet and
+      # takes `.first()` (tauri-macos-sign/src/keychain/identity.rs), ordering
+      # on (organization, common name, ...). A p12 holding BOTH an Apple
+      # Development and an Apple Distribution cert therefore resolves to
+      # Development, which cannot sign a TestFlight build. So this asserts a
+      # Distribution identity exists and that no Development one is present
+      # alongside it.
+      - name: Verify signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          if [ ! -s "$CERT" ]; then
+            echo "::error::APPLE_CERTIFICATE decoded to an empty file."
+            exit 1
+          fi
+
+          # `-info` prints every cert's subject; piping to a single `openssl
+          # x509 -noout` would report only the FIRST cert, hiding the others.
+          # `-nomacver` is used only to list subjects after a password failure,
+          # so a wrong password still shows what is actually in the file.
+          if openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -legacy >/dev/null 2>&1; then
+            SUBJECTS="$(openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -legacy -info 2>&1 | grep -E '^subject=' || true)"
+          elif openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" >/dev/null 2>&1; then
+            SUBJECTS="$(openssl pkcs12 -in "$CERT" -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -info 2>&1 | grep -E '^subject=' || true)"
+          else
+            echo "::error::APPLE_CERTIFICATE_PASSWORD does not match APPLE_CERTIFICATE."
+            echo "openssl reports 'Mac verify error: invalid password?' for this pairing."
+            echo "--- certs present anyway (subjects):"
+            openssl pkcs12 -in "$CERT" -nokeys -nomacver -legacy -info 2>&1 | grep -E '^subject=' || echo "(unreadable)"
+            exit 1
+          fi
+
+          echo "--- certificates in the p12:"
+          echo "$SUBJECTS"
+
+          if ! grep -q "Apple Distribution" <<<"$SUBJECTS"; then
+            echo "::error::APPLE_CERTIFICATE contains no 'Apple Distribution' certificate."
+            echo "Export it from Keychain Access > My Certificates >"
+            echo "'Apple Distribution: ...' (that view is what includes the key)."
+            exit 1
+          fi
+          if grep -q "Apple Development\|Apple Developer\|CN=localhost" <<<"$SUBJECTS"; then
+            echo "::error::APPLE_CERTIFICATE also contains a non-distribution certificate."
+            echo "The iOS toolchain sorts every identity in the p12 and takes the FIRST"
+            echo "(tauri-macos-sign keychain/identity.rs: BTreeSet over"
+            echo " (organization, common name, ...)), so a Development cert makes it"
+            echo "sign with the wrong identity and export fails."
+            echo "Export the Apple Distribution identity ALONE."
+            exit 1
+          fi
+          echo "Certificate OK: exactly one Apple Distribution identity."
+
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          # altool discovers `AuthKey_<KEYID>.p8` under $API_PRIVATE_KEYS_DIR.
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          echo "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          echo "API_PRIVATE_KEYS_DIR=$RUNNER_TEMP/private_keys" >> $GITHUB_ENV
+
+      - name: Init iOS project
+        env:
+          # The IOS_* names, because that is what the iOS toolchain reads.
+          # APPLE_DEVELOPMENT_TEAM is the one APPLE_* name that IS used: it
+          # reaches xcodebuild through the generated project's DEVELOPMENT_TEAM
+          # (the CLI's ios build source never reads it directly — the only team
+          # id it knows is the throwaway "unset" for its dummy cert), so it has
+          # to be set here, at `ios init`, which renders it.
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
+          # `ios build` runs cargo-mobile2, which calls
+          # `agvtool new-version -all <version>` to stamp the build. agvtool
+          # writes CFBundleVersion, and its read-back needs a
+          # CURRENT_PROJECT_VERSION the XcodeGen template does not set, so the
+          # write is applied here and asserted from Info.plist instead.
+          #
+          # App Store Connect rejects an upload that reuses a build number, so
+          # it must change every run. `github.run_number` is monotonic per
+          # workflow, which is what makes it safe here.
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          cd ./packages/app-lite
+          pnpm dlx @tauri-apps/cli@2.12.0 ios init --ci
+          PROJ=src-tauri/gen/apple/app.xcodeproj/project.pbxproj
+
+          # Assert the team actually landed in the project; without it the
+          # build cannot sign and the failure surfaces much later.
+          grep -q "DEVELOPMENT_TEAM = ${APPLE_DEVELOPMENT_TEAM}" "$PROJ" \
+            || { echo "::error::DEVELOPMENT_TEAM was not set to ${APPLE_DEVELOPMENT_TEAM}"; exit 1; }
+
+          # ── Build number ─────────────────────────────────────────────────
+          # Two independent mechanisms rewrite CFBundleVersion, so the value
+          # has to come from the one the toolchain drives rather than from a
+          # value set here:
+          #
+          #   1. cargo-mobile2 stamps the archive itself with
+          #      `agvtool new-version -all <bundle_version[.build_number]>`,
+          #      which is the "Setting version of project app to: ..." block
+          #      in the build log. Anything written here is overwritten there.
+          #   2. xcodebuild's -exportArchive then defaults to
+          #      manageAppVersionAndBuildNumber=YES and rewrites it again
+          #      ("Updated CFBundleVersion ... to 1").
+          #
+          # (2) is disabled below. (1) is driven by `--build-number` on the
+          # build step, which the CLI appends to the configured bundle version
+          # (bundle.iOS.bundleVersion = "1"), yielding "1.<run_number>" — unique
+          # per run, which is what App Store Connect requires.
+          #
+          # `ios init` writes this file and `ios build` merges it with its own
+          # generated options, so a key the CLI does not itself emit (it emits
+          # only method/signingStyle/signingCertificate/provisioningProfiles/
+          # teamID) survives the merge.
+          plutil -replace manageAppVersionAndBuildNumber -bool NO \
+            src-tauri/gen/apple/ExportOptions.plist \
+            || plutil -insert manageAppVersionAndBuildNumber -bool NO \
+                 src-tauri/gen/apple/ExportOptions.plist
+          /usr/libexec/PlistBuddy -c "Print :manageAppVersionAndBuildNumber" \
+            src-tauri/gen/apple/ExportOptions.plist | grep -qx false \
+            || { echo "::error::manageAppVersionAndBuildNumber is not false"; exit 1; }
+          echo "Export will not rewrite the build number."
+
+          # The generated Xcode build phase is emitted with an UNPINNED
+          # `pnpm dlx @tauri-apps/cli ios xcode-script`. Pin it to the same CLI
+          # this job drives: the options-server handshake between the two
+          # changed location in 2.12.0, so a driver/script version skew fails
+          # the build with a spurious "cli-options-server.json" error.
+          files="$(grep -rl 'pnpm dlx @tauri-apps/cli ' src-tauri/gen/apple)"
+          if [ -z "$files" ]; then
+            echo "::error::No generated file references the CLI; ios init output changed."
+            exit 1
+          fi
+          printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 sed -i '' 's|pnpm dlx @tauri-apps/cli |pnpm dlx @tauri-apps/cli@2.12.0 |g'
+          # Fail loudly rather than shipping an unpinned driver/script pair.
+          if grep -rq 'pnpm dlx @tauri-apps/cli ' src-tauri/gen/apple; then
+            echo "::error::Failed to pin the generated xcode-script invocation."
+            exit 1
+          fi
+          echo "Pinned xcode-script to the driver CLI."
+
+      - name: Build iOS archive and IPA
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          # Drives `--build-number`, and therefore the CFBundleVersion stamped
+          # into the archive (see the note on the build command below).
+          BUILD_NUMBER: ${{ github.run_number }}
+          # The toolchain reads IOS_* for signing; APPLE_CERTIFICATE is a
+          # macOS-bundler name and is ignored on the iOS path. The secrets keep
+          # their APPLE_* names and are mapped here.
+          IOS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_MOBILE_PROVISION }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          cd ./packages/app-lite
+          # With IOS_CERTIFICATE + IOS_MOBILE_PROVISION present the CLI writes
+          # CODE_SIGN_STYLE=Manual, CODE_SIGN_IDENTITY, DEVELOPMENT_TEAM and
+          # PROVISIONING_PROFILE_SPECIFIER into the project, so export signs
+          # against a real profile instead of asking Apple to mint a
+          # cloud-managed certificate (which this account refuses:
+          # "Cloud signing permission error").
+          #
+          # The ASC API key is still passed: credentials.is_some() also makes
+          # the CLI skip_codesign for build/archive and force-sign with a
+          # throwaway self-signed cert ("Apple Distribution: Tauri (unset)"),
+          # which is deliberate — it only preserves entitlements until export,
+          # which re-signs with the real certificate.
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          if [ ! -f "$APPLE_API_KEY_PATH" ]; then
+            echo "::error::API key file missing at $APPLE_API_KEY_PATH"
+            exit 1
+          fi
+          # `app-store-connect` is the App Store / TestFlight export method.
+          # NOT `release-testing`: the CLI maps that to Xcode's "ad-hoc"
+          # (ExportMethod::pre_xcode_15_4_name:
+          #     Self::ReleaseTesting => "ad-hoc".to_string()
+          # ), which requires an *Ad Hoc* provisioning profile (device-list
+          # based) and fails with
+          #     Provisioning profile "..." is not an "iOS Ad Hoc" profile.
+          # An App Store distribution profile belongs with app-store-connect.
+          #
+          # `--build-number` drives cargo-mobile2's `agvtool new-version -all`
+          # call, which is what actually stamps CFBundleVersion: the CLI
+          # appends it to bundle.iOS.bundleVersion ("1"), giving "1.<run_number>".
+          # `ios init` cannot set this, because that stamp overwrites it.
+          pnpm dlx @tauri-apps/cli@2.12.0 ios build \
+            --target aarch64 \
+            --export-method app-store-connect \
+            --build-number "$BUILD_NUMBER"
+
+          # Surface what was produced so a failure downstream is unambiguous.
+          find src-tauri/gen/apple/build -name '*.ipa' -o -name '*.xcarchive' | sort
+
+          # The IPA is what gets uploaded, so assert the version on it rather
+          # than on the project. CFBundleVersion must differ per upload or App
+          # Store Connect rejects it as a duplicate.
+          IPA="$(find src-tauri/gen/apple/build -name '*.ipa' | head -n 1)"
+          [ -n "$IPA" ] || { echo "::error::No .ipa produced"; exit 1; }
+          got="$(unzip -p "$IPA" 'Payload/*.app/Info.plist' > "$RUNNER_TEMP/ipa.plist" \
+                 && /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RUNNER_TEMP/ipa.plist")"
+          echo "IPA $IPA"
+          echo "  CFBundleVersion          = $got"
+          echo "  CFBundleShortVersionString = $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RUNNER_TEMP/ipa.plist")"
+          [ "$got" = "1.$BUILD_NUMBER" ] \
+            || { echo "::error::IPA CFBundleVersion is '$got', expected '1.$BUILD_NUMBER'"; exit 1; }
+
+      - name: Upload to TestFlight
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          IPA="$(find packages/app-lite/src-tauri/gen/apple/build -name '*.ipa' | head -n 1)"
+          if [ -z "$IPA" ]; then
+            echo "::error::No .ipa produced — check the archive step above."
+            exit 1
+          fi
+          echo "Uploading $IPA"
+
+          # Capture the output so a known, confusing failure can be translated
+          # into an actionable one. Both `altool --upload-app` and the exit code
+          # are needed, hence the file rather than a pipe.
+          set +e
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --api-key "$APPLE_API_KEY" \
+            --api-issuer "$APPLE_API_ISSUER" \
+            --verbose >"$RUNNER_TEMP/altool.log" 2>&1
+          status=$?
+          set -e
+          tail -n 40 "$RUNNER_TEMP/altool.log"
+
+          if [ "$status" -ne 0 ]; then
+            # An authenticated request that returns zero apps means the App
+            # Store Connect *app record* is missing — a different object from
+            # the Developer Portal App ID, and not something the IPA can supply.
+            if grep -q "Cannot determine the Apple ID from Bundle ID" "$RUNNER_TEMP/altool.log"; then
+              echo "::error::No App Store Connect app record for bundle id 'space.roomy'."
+              echo "The Developer Portal App ID and the App Store Connect app are"
+              echo "separate objects. Create the app record once, then re-run:"
+              echo "  https://appstoreconnect.apple.com -> My Apps -> + -> New App"
+              echo "  Platform: iOS"
+              echo "  Name: Roomy"
+              echo "  Primary Language: English (or your choice)"
+              echo "  Bundle ID: space.roomy"
+              echo "  SKU: any unique string, e.g. roomy-ios"
+              echo "It must use the same bundle id the IPA carries, and the API key"
+              echo "needs at least the App Manager role."
+            fi
+            exit "$status"
+          fi
+          echo "Uploaded to App Store Connect; TestFlight processing runs after this."
 

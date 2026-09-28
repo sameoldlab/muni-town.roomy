@@ -38,6 +38,7 @@ import {
 
 const DISCORD_MESSAGE_ID = newUlid();
 const DISCORD_CHANNEL_ID = "800000000000000001";
+const DISCORD_THREAD_ID = "800000000000000002";
 const DISCORD_USER_DID = Did.assert(`did:discord:${USER_ID}`);
 
 function makeTextBody(content: string): {
@@ -162,6 +163,28 @@ function makeMoveMessagesEvent(options: {
 	} satisfies Event;
 }
 
+/** Build a `space.roomy.message.deleteMessage.v0` event for a room. */
+function makeDeleteMessageEvent(options: {
+	room?: string;
+	messageId?: string;
+	origin?: { snowflake: string; channelId: string; guildId: string };
+}): Event {
+	const extensions: Record<string, unknown> = {};
+	if (options.origin) {
+		extensions["space.roomy.extension.discordMessageOrigin.v0"] = {
+			$type: "space.roomy.extension.discordMessageOrigin.v0",
+			...options.origin,
+		};
+	}
+	return {
+		id: newUlid(),
+		room: Ulid.assert(options.room ?? ROOMY_CHANNEL_ULID),
+		$type: "space.roomy.message.deleteMessage.v0",
+		messageId: Ulid.assert(options.messageId ?? ROOMY_MESSAGE_ULID),
+		extensions,
+	} satisfies Event;
+}
+
 function setup(): {
 	repo: BridgeRepository;
 	roomy: MockRoomyGateway;
@@ -182,11 +205,14 @@ function setup(): {
 	const roomy = new MockRoomyGateway();
 	const discord = new FileDiscordSender();
 	// Faux reply/forward prefixes need the guild + original message content.
+	// The message carries a webhook id because bridged messages are authored
+	// by the channel's webhook, not the bot — which the delete path checks.
 	discord.setGuildId(DISCORD_CHANNEL_ID, GUILD);
 	discord.setMessage(
 		DISCORD_CHANNEL_ID,
 		DISCORD_MESSAGE_ID,
 		"original content",
+		`wh_${DISCORD_CHANNEL_ID}`,
 	);
 	const webhooks = new FileWebhookManager();
 	const profiles = new FileProfileResolver({
@@ -281,16 +307,15 @@ describe("RoomyEventRouter", () => {
 
 	/**
 	 * RER33: a legacy text/markdown body containing raw mention anchor HTML
-	 * (as produced by the composer's tiptap-markdown serializer before
-	 * TASK-59) is bridged as clean text — no `<a` tags, no `data-*`
-	 * attributes reach Discord.
+	 * (as produced by the composer's tiptap-markdown serializer) is bridged as
+	 * clean text — no `<a` tags, no `data-*` attributes reach Discord.
 	 */
 	test("RER33: strips raw mention HTML from legacy text/markdown bodies", async () => {
 		const { roomy, discord, router } = setup();
 		await router.subscribeToSpace(SPACE_A);
 
 		const rawHtml =
-			'<a href="/user/did:plc:mmyj7mk7kh3jqhw6zs4prbuk" class="mention !no-underline" data-id="did:plc:mmyj7mk7kh3jqhw6zs4prbuk" data-label="Meri" data-mention-suggestion-char="@">@Meri</a>';
+			'<a href="/user/did:plc:mmyj7mk7kh3jqhw6zs4prbuk" class="mention !no-underline" data-id="did:plc:mmyj7mk7kh3jqhw6zs4prbuk" data-label="Alice" data-mention-suggestion-char="@">@Alice</a>';
 		const event = makeCreateMessageEvent({
 			id: ROOMY_MESSAGE_ULID,
 			body: makeTextBody(rawHtml),
@@ -300,7 +325,7 @@ describe("RoomyEventRouter", () => {
 
 		expect(discord.sent).toHaveLength(1);
 		const content = discord.sent[0]?.content;
-		expect(content).toBe("@Meri");
+		expect(content).toBe("@Alice");
 		expect(content).not.toContain("<a");
 		expect(content).not.toContain("data-");
 	});
@@ -319,7 +344,7 @@ describe("RoomyEventRouter", () => {
 				mimeType: "text/plain",
 				data: toBytes(
 					new TextEncoder().encode(
-						'<a href="/user/did:plc:abc" data-label="Meri">@Meri</a> hello',
+						'<a href="/user/did:plc:abc" data-label="Alice">@Alice</a> hello',
 					),
 				),
 			},
@@ -328,14 +353,13 @@ describe("RoomyEventRouter", () => {
 		await roomy.fireEvent(SPACE_A, event);
 
 		expect(discord.sent).toHaveLength(1);
-		expect(discord.sent[0]?.content).toBe("@Meri hello");
+		expect(discord.sent[0]?.content).toBe("@Alice hello");
 	});
 
 	/**
 	 * RER35: a markdown autolink (`<https://…>`) in a legacy text/markdown body
-	 * must reach Discord intact as a bare URL — it is a link, not an HTML tag.
-	 * The old `<[^>]*>` stripper deleted it wholesale, which dropped the link
-	 * from the bridged Discord message.
+	 * must reach Discord intact as a bare URL — it is a link, not an HTML tag,
+	 * so the stripper must not delete it wholesale.
 	 */
 	test("RER35: bridges a markdown autolink in legacy markdown as a bare URL", async () => {
 		const { roomy, discord, router } = setup();
@@ -358,8 +382,8 @@ describe("RoomyEventRouter", () => {
 
 	/**
 	 * RER36: HTML-looking text that is neither a tag nor an autolink (e.g.
-	 * "I <3 x") passes through untouched — the narrowed stripper must not
-	 * delete text between `<` and a later `>` the way `<[^>]*>` did.
+	 * "I <3 x") passes through untouched — the stripper matches tag-shaped
+	 * spans only, so text between `<` and a later `>` survives.
 	 */
 	test("RER36: keeps non-tag angle-bracket text in legacy markdown", async () => {
 		const { roomy, discord, router } = setup();
@@ -377,7 +401,7 @@ describe("RoomyEventRouter", () => {
 	});
 
 	/**
-	 * RER02: editMessage updates the previously bridged Discord message.
+	 * RER02: editMessage updates the bridged Discord message.
 	 */
 	test("RER02: bridges editMessage to Discord", async () => {
 		const { roomy, discord, router, repo } = setup();
@@ -408,7 +432,7 @@ describe("RoomyEventRouter", () => {
 	});
 
 	/**
-	 * RER03: deleteMessage removes the previously bridged Discord message and
+	 * RER03: deleteMessage removes the bridged Discord message and
 	 * clears the mapping.
 	 */
 	test("RER03: bridges deleteMessage to Discord and clears mapping", async () => {
@@ -421,14 +445,7 @@ describe("RoomyEventRouter", () => {
 		);
 		await router.subscribeToSpace(SPACE_A);
 
-		const deleteEvent = {
-			id: newUlid(),
-			room: ROOMY_CHANNEL_ULID,
-			$type: "space.roomy.message.deleteMessage.v0" as const,
-			messageId: ROOMY_MESSAGE_ULID,
-			extensions: {},
-		} satisfies Event;
-		await roomy.fireEvent(SPACE_A, deleteEvent);
+		await roomy.fireEvent(SPACE_A, makeDeleteMessageEvent({}));
 
 		expect(discord.deleted).toHaveLength(1);
 		expect(discord.deleted[0]).toEqual({
@@ -445,7 +462,7 @@ describe("RoomyEventRouter", () => {
 	});
 
 	/**
-	 * RER04: addReaction adds the emoji to the previously bridged Discord message.
+	 * RER04: addReaction adds the emoji to the bridged Discord message.
 	 */
 	test("RER04: bridges addReaction to Discord", async () => {
 		const { roomy, discord, router, repo } = setup();
@@ -580,7 +597,7 @@ describe("RoomyEventRouter", () => {
 	/**
 	 * RER35: editMessage with a rich text (blocks+facets) body is decoded and
 	 * bridged to Discord as rendered Discord markdown — the same path the
-	 * app-lite composer uses when editing a richtext message (TASK-64).
+	 * app-lite composer uses when editing a richtext message.
 	 */
 	test("RER35: bridges a rich text editMessage to Discord", async () => {
 		const { roomy, discord, router, repo } = setup();
@@ -617,9 +634,9 @@ describe("RoomyEventRouter", () => {
 
 	/**
 	 * RER36: editMessage for a message in a bridged thread resolves the
-	 * parent channel's webhook and edits the message in the thread channel.
-	 * Regression test for TASK-64: without the parent-channel webhook the
-	 * edit would target the wrong webhook and Discord would 404.
+	 * parent channel's webhook and edits the message in the thread channel:
+	 * without the parent-channel webhook the edit would target the wrong
+	 * webhook and Discord would 404.
 	 */
 	test("RER36: bridges editMessage in a thread via the parent webhook", async () => {
 		const { roomy, discord, router, repo } = setup();
@@ -1324,9 +1341,8 @@ test("RER32: falls back to a plain message when reply target is not bridged", as
 /**
  * RER37: A modern forward — a createMessage carrying a
  * `space.roomy.attachment.forward.v0` embed with an empty body — is bridged
- * to Discord as a faux forward (TASK-110). Previously the bridge skipped it
- * entirely: forward.v0 was unknown to #extractAttachments and a bare forward
- * had nothing else renderable.
+ * to Discord as a faux forward: `forward.v0` is recognised by
+ * #extractAttachments, and a bare forward renders the forward block.
  */
 test("RER37: bridges a bare forward attachment as a faux forward via webhook", async () => {
 	const { roomy, discord, router, repo } = setup();
@@ -1370,7 +1386,7 @@ test("RER37: bridges a bare forward attachment as a faux forward via webhook", a
 
 /**
  * RER38: A modern forward with commentary keeps the commentary AND renders
- * the forward block below it — the commentary is not dropped (TASK-110).
+ * the forward block below it — the commentary is not dropped.
  */
 test("RER38: bridges a forward with commentary as commentary plus faux forward", async () => {
 	const { roomy, discord, router, repo } = setup();
@@ -1407,7 +1423,7 @@ test("RER38: bridges a forward with commentary as commentary plus faux forward",
 
 /**
  * RER39: a reply.v0 and a forward.v0 on one message coexist — the faux reply
- * prefix, the commentary, and the faux forward block all render (TASK-110).
+ * prefix, the commentary, and the faux forward block all render.
  */
 test("RER39: a reply and a forward on one message render both blocks", async () => {
 	const { roomy, discord, router, repo } = setup();
@@ -1464,10 +1480,9 @@ test("RER39: a reply and a forward on one message render both blocks", async () 
 /**
  * RER40: A Roomy reply to a parent that was itself bridged to Discord as a
  * faux reply quotes the DIRECT parent's own text — the grandparent link from
- * the parent's `-# ↪` prefix line must not leak into the snippet. Pre-fix, the
- * snippet was a raw 50-char slice of the parent's Discord content, whose
- * leading marker line consumed the whole window and truncated mid-snowflake
- * (TASK-30).
+ * the parent's `-# ↪` prefix line must not leak into the snippet: the snippet
+ * is the parent's own text, not a raw slice whose leading marker line would
+ * consume the whole window and truncate mid-snowflake.
  */
 test("RER40: reply snippet is the direct parent's own text, not its inherited faux prefix", async () => {
 	const { roomy, discord, router, repo } = setup();
@@ -1478,12 +1493,7 @@ test("RER40: reply snippet is the direct parent's own text, not its inherited fa
 	const grandparentSnowflake = "850000000000000001";
 	const parentOwnText =
 		"The direct parent's very own message text here, long enough to need a quote ellipsis";
-	repo.registerMapping(
-		SPACE_A,
-		"message",
-		parentDiscordId,
-		parentRoomyId,
-	);
+	repo.registerMapping(SPACE_A, "message", parentDiscordId, parentRoomyId);
 	discord.setMessage(
 		DISCORD_CHANNEL_ID,
 		parentDiscordId,
@@ -1521,7 +1531,7 @@ test("RER40: reply snippet is the direct parent's own text, not its inherited fa
  * RER41: A faux forward of an original that was itself bridged to Discord as
  * a faux reply shows the original's own text as the forwarded body — the
  * original's `-# ↪` marker line is stripped, not duplicated under the
- * "Forwarded from" block (TASK-30).
+ * "Forwarded from" block.
  */
 test("RER41: forward body is the original's own text, not its inherited faux prefix", async () => {
 	const { roomy, discord, router, repo } = setup();
@@ -1529,12 +1539,7 @@ test("RER41: forward body is the original's own text, not its inherited faux pre
 	const originalDiscordId = "860000000000000001";
 	const grandparentSnowflake = "870000000000000001";
 	const originalOwnText = "The original message's very own forwarded text";
-	repo.registerMapping(
-		SPACE_A,
-		"message",
-		originalDiscordId,
-		originalRoomyId,
-	);
+	repo.registerMapping(SPACE_A, "message", originalDiscordId, originalRoomyId);
 	discord.setMessage(
 		DISCORD_CHANNEL_ID,
 		originalDiscordId,
@@ -1570,18 +1575,13 @@ test("RER41: forward body is the original's own text, not its inherited faux pre
  * RER42: When a reply's parent has no own text after stripping its faux
  * prefix line (e.g. a forward whose original was deleted, bridged as
  * `-# ↪ Forwarded from …` with an empty body), the faux reply falls back to
- * a link-only prefix — no marker residue (TASK-30).
+ * a link-only prefix — no marker residue.
  */
 test("RER42: reply to a marker-only parent falls back to a link-only prefix", async () => {
 	const { roomy, discord, router, repo } = setup();
 	const parentRoomyId = newUlid();
 	const parentDiscordId = "880000000000000001";
-	repo.registerMapping(
-		SPACE_A,
-		"message",
-		parentDiscordId,
-		parentRoomyId,
-	);
+	repo.registerMapping(SPACE_A, "message", parentDiscordId, parentRoomyId);
 	discord.setMessage(
 		DISCORD_CHANNEL_ID,
 		parentDiscordId,
@@ -1609,6 +1609,263 @@ test("RER42: reply to a marker-only parent falls back to a link-only prefix", as
 	expect(discord.sent[0]?.content).toBe(
 		`-# ↪ https://discord.com/channels/${GUILD}/${DISCORD_CHANNEL_ID}/${parentDiscordId}\nReplying to a marker-only parent`,
 	);
+});
+
+/**
+ * RER43: deleting a message inside a bridged thread deletes it in the thread
+ * while resolving the webhook from the parent channel — threads can't have
+ * their own webhooks.
+ */
+test("RER43: deletes a thread message via the parent channel's webhook", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(SPACE_A, "thread", DISCORD_THREAD_ID, ROOMY_THREAD_ULID);
+	discord.setParentChannelId(DISCORD_THREAD_ID, DISCORD_CHANNEL_ID);
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	discord.setMessage(
+		DISCORD_THREAD_ID,
+		DISCORD_MESSAGE_ID,
+		"in a thread",
+		`wh_${DISCORD_CHANNEL_ID}`,
+	);
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(
+		SPACE_A,
+		makeDeleteMessageEvent({ room: ROOMY_THREAD_ULID }),
+	);
+
+	expect(discord.deleted).toEqual([
+		{
+			channelId: DISCORD_THREAD_ID,
+			messageId: DISCORD_MESSAGE_ID,
+			webhook: {
+				id: `wh_${DISCORD_CHANNEL_ID}`,
+				token: `tok_${DISCORD_CHANNEL_ID}`,
+			},
+		},
+	]);
+	expect(
+		repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID),
+	).toBeUndefined();
+});
+
+/**
+ * RER44: a thread whose parent channel is unknown has no webhook to delete
+ * through, so the delete is skipped and the mapping kept.
+ */
+test("RER44: skips the delete when the thread's parent channel is unknown", async () => {
+	const { roomy, discord, router, repo } = setup();
+	const orphanThread = newUlid();
+	repo.registerMapping(SPACE_A, "thread", DISCORD_THREAD_ID, orphanThread);
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	discord.setMessage(
+		DISCORD_THREAD_ID,
+		DISCORD_MESSAGE_ID,
+		"in a thread",
+		`wh_${DISCORD_CHANNEL_ID}`,
+	);
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(
+		SPACE_A,
+		makeDeleteMessageEvent({ room: orphanThread }),
+	);
+
+	expect(discord.deleted).toHaveLength(0);
+	expect(repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID)).toBe(
+		DISCORD_MESSAGE_ID,
+	);
+});
+
+/**
+ * RER45: a message a Discord user authored belongs to no webhook, so its
+ * delete goes through the bot, not the webhook's endpoint.
+ */
+test("RER45: deletes a Discord-authored message through the bot", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	// No webhook id: a Discord user sent it.
+	discord.setMessage(DISCORD_CHANNEL_ID, DISCORD_MESSAGE_ID, "user message");
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(SPACE_A, makeDeleteMessageEvent({}));
+
+	expect(discord.deleted).toEqual([
+		{
+			channelId: DISCORD_CHANNEL_ID,
+			messageId: DISCORD_MESSAGE_ID,
+			webhook: undefined,
+		},
+	]);
+	expect(
+		repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID),
+	).toBeUndefined();
+});
+
+/**
+ * RER46: when the bot lacks Manage Messages for a user's message, the Roomy
+ * delete is left unmirrored — mapping kept, event not failed.
+ */
+test("RER46: keeps the mapping when the bot can't delete a user's message", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	discord.setMessage(DISCORD_CHANNEL_ID, DISCORD_MESSAGE_ID, "user message");
+	discord.setBotDeleteError("Missing Permissions");
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(SPACE_A, makeDeleteMessageEvent({}));
+
+	expect(discord.deleted).toHaveLength(0);
+	expect(repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID)).toBe(
+		DISCORD_MESSAGE_ID,
+	);
+});
+
+/**
+ * RER47: a bridged message already gone from Discord is skipped — nothing to
+ * delete, mapping kept.
+ */
+test("RER47: skips the delete when the Discord message is gone", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		"810000000000000009",
+		ROOMY_MESSAGE_ULID,
+	);
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(SPACE_A, makeDeleteMessageEvent({}));
+
+	expect(discord.deleted).toHaveLength(0);
+	expect(repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID)).toBe(
+		"810000000000000009",
+	);
+});
+
+/**
+ * RER48: a delete that originated from Discord must not be mirrored back, or
+ * the bridge and Discord would delete each other's copies of a message in a
+ * loop.
+ */
+test("RER48: skips deletes that originated from Discord", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	discord.setMessage(
+		DISCORD_CHANNEL_ID,
+		DISCORD_MESSAGE_ID,
+		"from Discord",
+		`wh_${DISCORD_CHANNEL_ID}`,
+	);
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(
+		SPACE_A,
+		makeDeleteMessageEvent({
+			origin: {
+				snowflake: DISCORD_MESSAGE_ID,
+				channelId: DISCORD_CHANNEL_ID,
+				guildId: GUILD,
+			},
+		}),
+	);
+
+	expect(discord.deleted).toHaveLength(0);
+	expect(repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID)).toBe(
+		DISCORD_MESSAGE_ID,
+	);
+});
+
+/**
+ * RER49: a Discord user's message inside a thread is deleted through the bot,
+ * not the parent channel's webhook — a webhook only authorises the messages it
+ * posted itself, so the thread's resolution must not leak into the endpoint
+ * choice.
+ */
+test("RER49: deletes a user's thread message through the bot", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(SPACE_A, "thread", DISCORD_THREAD_ID, ROOMY_THREAD_ULID);
+	discord.setParentChannelId(DISCORD_THREAD_ID, DISCORD_CHANNEL_ID);
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	// No webhook id: a Discord user sent it.
+	discord.setMessage(DISCORD_THREAD_ID, DISCORD_MESSAGE_ID, "user message");
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(
+		SPACE_A,
+		makeDeleteMessageEvent({ room: ROOMY_THREAD_ULID }),
+	);
+
+	expect(discord.deleted).toEqual([
+		{
+			channelId: DISCORD_THREAD_ID,
+			messageId: DISCORD_MESSAGE_ID,
+			webhook: undefined,
+		},
+	]);
+});
+
+/**
+ * RER50: a failed authorship fetch must not be read as "nothing to delete" —
+ * the delete still goes through the webhook, so a REST hiccup can't silently
+ * drop a Roomy delete.
+ */
+test("RER50: a failed fetch still deletes via the webhook", async () => {
+	const { roomy, discord, router, repo } = setup();
+	repo.registerMapping(
+		SPACE_A,
+		"message",
+		DISCORD_MESSAGE_ID,
+		ROOMY_MESSAGE_ULID,
+	);
+	discord.setGetMessageError("Failed to send request to discord.");
+	await router.subscribeToSpace(SPACE_A);
+
+	await roomy.fireEvent(SPACE_A, makeDeleteMessageEvent({}));
+
+	expect(discord.deleted).toEqual([
+		{
+			channelId: DISCORD_CHANNEL_ID,
+			messageId: DISCORD_MESSAGE_ID,
+			webhook: {
+				id: `wh_${DISCORD_CHANNEL_ID}`,
+				token: `tok_${DISCORD_CHANNEL_ID}`,
+			},
+		},
+	]);
+	expect(
+		repo.getDiscordId(SPACE_A, "message", ROOMY_MESSAGE_ULID),
+	).toBeUndefined();
 });
 
 describe("resolveAttachmentUrl", () => {

@@ -16,7 +16,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { StreamDid } from "@roomy-space/sdk";
 import { closeDb, openDb, openReadStateDb, openSpaceDb } from "../db/db.ts";
-import { _resetHydrationInflight } from "../hydration/userHydration.ts";
 import { Router } from "../invalidation/router.ts";
 import { StreamManager, setStreamManager, _resetStreamManager } from "../streams/StreamManager.ts";
 import { _resetEmbedSweeper } from "../embed/sweeper.ts";
@@ -100,7 +99,6 @@ let db: DbLike;
 
 beforeEach(async () => {
   closeDb();
-  _resetHydrationInflight();
   _resetEmbedSweeper();
   Router.resetInstance();
   _resetStreamManager();
@@ -122,7 +120,6 @@ afterEach(() => {
   setPolar(null);
   _resetStreamManager();
   closeDb();
-  _resetHydrationInflight();
   Router.resetInstance();
 });
 
@@ -155,7 +152,7 @@ describe("reconcileProMembers", () => {
     expect(res.added).toEqual([SUB_A]);
     expect(new Set(await membersInRole())).toEqual(new Set([SUB_A, MANUAL]));
 
-    // LAPSED no longer tracked.
+    // LAPSED is tracked by no grant row once removed.
     const tracked = await openReadStateDb()
       .query("select did from pro_role_grants where did = ?")
       .get<{ did: string }>(LAPSED);

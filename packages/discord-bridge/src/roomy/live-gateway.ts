@@ -12,7 +12,12 @@ import { type Event, sync, transport } from "@roomy-space/sdk";
 import type { BridgeRepository } from "../db/repository.ts";
 import { BRIDGE_RECONNECT_BASE_MS, BRIDGE_RECONNECT_MAX_MS } from "../env.ts";
 import { createLogger } from "../logger.ts";
-import type { RoomyEventCallback, RoomyGateway } from "./gateway.ts";
+import type {
+	BridgeSidebar,
+	BridgeSidebarCategory,
+	RoomyEventCallback,
+	RoomyGateway,
+} from "./gateway.ts";
 import type { SpaceManager } from "./space-manager.ts";
 
 const log = createLogger("live-roomy");
@@ -76,6 +81,33 @@ export class LiveRoomyGateway implements RoomyGateway {
 		});
 	}
 
+	/**
+	 * Read the space's sidebar via `space.roomy.space.getMetadata`, reduced to
+	 * categories + their ordered children.
+	 *
+	 * Complete for this caller by construction: writing the sidebar requires
+	 * space admin (writeAuth's SPACE_MANAGE_TYPES), and an admin's view is the
+	 * whole space — every native channel reads as accessible via the admin
+	 * override, and federated channels are all shown to a receiving-space
+	 * admin. So the merge in room-sync.ts can treat this as the full sidebar
+	 * and preserve what it does not touch. Channels outside the config come
+	 * back under `orphans` (they render either way) and are intentionally not
+	 * turned into a category here.
+	 */
+	async getSidebar(spaceDid: string): Promise<BridgeSidebar> {
+		const meta = await this.#xrpc.query("space.roomy.space.getMetadata", {
+			spaceId: spaceDid,
+		});
+		const categories: BridgeSidebarCategory[] = meta.sidebar.categories.map(
+			(cat) => ({
+				...(cat.id !== undefined ? { id: cat.id } : {}),
+				name: cat.name,
+				children: cat.channels.map((ch) => ch.id),
+			}),
+		);
+		return { categories };
+	}
+
 	async subscribe(
 		spaceDid: string,
 		callback: RoomyEventCallback,
@@ -119,12 +151,12 @@ export class LiveRoomyGateway implements RoomyGateway {
 		// events with idx > cursor, then streams live events. This initial
 		// subscription is tracked by the SDK and replayed on reconnect; the
 		// onOpen handler below re-subscribes with a fresh cursor to override
-		// that replay (see M3).
+		// that replay.
 		connection.subscribe({ kind: "stream", id: spaceDid, cursor });
 
 		// Per-space backfill state. The first frame(s) with hasMore=true are
 		// backfill; once a frame arrives with hasMore=false the backfill is
-		// done and all later frames are live. See L1 for the semantics.
+		// done and all later frames are live.
 		const backfillState = { value: true };
 
 		// On every (re)connect, re-subscribe with the fresh cursor from the
@@ -137,20 +169,24 @@ export class LiveRoomyGateway implements RoomyGateway {
 			// A successful open means the appserver is healthy again — reset the
 			// shared circuit breaker so reconnects are fast from a clean slate.
 			this.#reconnectFailures = 0;
-			// M3: re-enter the backfill phase on every reconnect. The first
+			// Re-enter the backfill phase on every reconnect. The first
 			// open after the initial backfill completed has backfillState
 			// stuck at false; without resetting, a reconnect's backfill
 			// frames (hasMore=true) would be mislabeled isBackfill=false.
 			backfillState.value = true;
 			const freshCursor = this.#repo.getSpaceCursor(spaceDid) ?? -1;
 			// Drop any in-flight processing chain from the previous socket.
-			// Frames on the old connection may still be working through
+			// Frames on that connection may still be working through
 			// callbacks (e.g. a slow profile fetch). A rejected leftover would
 			// serialise new frames behind a dead promise; clearing lets frames
 			// arriving on this fresh connection chain from a clean base.
 			this.#processing.delete(spaceDid);
 			connection.unsubscribe({ kind: "stream", id: spaceDid });
-			connection.subscribe({ kind: "stream", id: spaceDid, cursor: freshCursor });
+			connection.subscribe({
+				kind: "stream",
+				id: spaceDid,
+				cursor: freshCursor,
+			});
 		});
 
 		connection.onFrame((frame: sync.SyncFrame) => {
@@ -190,7 +226,7 @@ export class LiveRoomyGateway implements RoomyGateway {
 		// Open the WebSocket connection. Must be called after subscribe() so
 		// the topic is registered before the socket opens (the connect()
 		// method replays tracked subscriptions on open). If connect() fails,
-		// drop the subscription so a later subscribe() can retry (M2).
+		// drop the subscription so a later subscribe() can retry.
 		try {
 			await connection.connect();
 		} catch (err) {
@@ -217,7 +253,7 @@ export class LiveRoomyGateway implements RoomyGateway {
 	 * persist the cursor. Each callback invocation is wrapped so a single
 	 * failing handler doesn't block the rest of the batch.
 	 *
-	 * `backfillState` carries the per-space backfill flag across frames (L1).
+	 * `backfillState` carries the per-space backfill flag across frames.
 	 */
 	async #processFrame(
 		spaceDid: string,
@@ -228,7 +264,7 @@ export class LiveRoomyGateway implements RoomyGateway {
 		const data = body as unknown as StreamEventsBody;
 		if (!data || !Array.isArray(data.events)) return;
 
-		// L1: `isBackfill` describes the state at the *start* of this frame,
+		// `isBackfill` describes the state at the *start* of this frame,
 		// not the server's signal for the *next* frame. The final backfill
 		// batch still carries historical events, so it should be flagged as
 		// backfill. We only exit the backfill phase after processing a frame
@@ -241,9 +277,7 @@ export class LiveRoomyGateway implements RoomyGateway {
 			// Validate the payload has a $type before passing it to the
 			// callback — skip malformed events without aborting the batch.
 			if (!event || typeof event !== "object" || !("$type" in event)) {
-				log.warn(
-					`Skipping malformed event idx ${entry.idx} for ${spaceDid}`,
-				);
+				log.warn(`Skipping malformed event idx ${entry.idx} for ${spaceDid}`);
 				continue;
 			}
 
@@ -268,7 +302,7 @@ export class LiveRoomyGateway implements RoomyGateway {
 			}
 		}
 
-		// M4: persist the cursor AFTER the callbacks have run so a crash
+		// Persist the cursor AFTER the callbacks have run so a crash
 		// between persisting and delivering doesn't permanently lose events
 		// (at-least-once delivery). Per-event errors are logged above and do
 		// not block forward progress.
@@ -327,8 +361,9 @@ export class LiveRoomyGateway implements RoomyGateway {
 /**
  * Compute the shared reconnect backoff delay for a given failure count.
  *
- * Exponential backoff with full jitter, capped at `max`:
- * `min(base * 2^failures, max) * random()`. Exported for tests.
+ * Exponential backoff with full jitter, capped at `max`, floored at 1ms:
+ * `max(1, floor(min(base * 2^failures, max) * random()))` (a non-finite draw
+ * also floors to 1ms). Exported for tests.
  */
 export function reconnectDelayMs(
 	failures: number,
@@ -336,5 +371,18 @@ export function reconnectDelayMs(
 	max: number,
 ): number {
 	const cap = Math.min(base * 2 ** failures, max);
-	return Math.floor(Math.random() * cap);
+	// Floor at 1ms. A non-positive return is the SDK's documented "stop
+	// reconnecting" signal, not a valid backoff: `SyncConnection` treats
+	// `delay <= 0` (or non-finite) in packages/sdk/src/sync/connection.ts as an
+	// explicit caller opt-out and logs "Not reconnecting", leaving the socket
+	// permanently wedged while every liveness surface still reads healthy.
+	// `Math.random()` can return exactly 0, so an unfloored full-jitter draw
+	// silently disabled auto-reconnect — the same reason the SDK's own default
+	// generator floors its draw.
+	const jitter = Math.floor(Math.random() * cap);
+	// `Math.max` does not absorb NaN, so a non-finite cap — a base of 0 or
+	// NaN (unvalidated env override) with an overflowing 2^failures — would
+	// slip a NaN through the floor and trip the SDK's `!Number.isFinite(delay)`
+	// branch to that very same stop signal. Floor non-finite draws too.
+	return Number.isFinite(jitter) ? Math.max(1, jitter) : 1;
 }

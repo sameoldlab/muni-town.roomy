@@ -19,7 +19,6 @@ import { join } from "node:path";
 import { createAppserver } from "../appserver.ts";
 import { testAuthVerifier } from "../xrpc/auth.ts";
 import { closeDb, openDb, openReadStateDb } from "../db/db.ts";
-import { _resetHydrationInflight } from "../hydration/userHydration.ts";
 import { _resetEmbedSweeper } from "../embed/sweeper.ts";
 import { _resetSearchIndexer } from "../search/indexer.ts";
 import { _resetSearchBackfill } from "../search/backfill.ts";
@@ -34,9 +33,8 @@ const SPACE = "did:web:migration-test-space";
 
 /**
  * Create a read-state DB file at schema v6: `user_thread_activity` WITHOUT the
- * `space_did` column (the pre-v7 shape), version row = 6. This is the exact
- * on-disk state that triggered the "no such column: uta.space_did" production
- * incident.
+ * `space_did` column (the pre-v7 shape), version row = 6. This is the on-disk
+ * state a DB written by the v6 code has when boot encounters it.
  */
 function createV6ReadStateDb(path: string): void {
   const db = new Database(path, { create: true });
@@ -68,7 +66,6 @@ describe("e2e: read-state schema migration on an existing DB", () => {
   afterEach(async () => {
     await handle?.close();
     closeDb();
-    _resetHydrationInflight();
     _resetEmbedSweeper();
     _resetSearchIndexer();
     _resetSearchBackfill();

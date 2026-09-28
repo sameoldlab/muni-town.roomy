@@ -18,8 +18,8 @@ const DISCORD_USER = UserDid.assert("did:discord:9999");
 
 /**
  * Set up the worker-backed global DB (the authoritative `profiles` store).
- * Phase 3: profiles live in the global `profiles` table, so these tests seed
- * and assert against the global DB rather than a monolithic materialised DB.
+ * Profiles live in the global `profiles` table, so these tests seed
+ * and assert against the global DB.
  */
 function freshGlobal(): { globalDb: DbLike } {
   closeDb();
@@ -137,10 +137,10 @@ describe("ensureProfilesForBatch", () => {
   });
 
   test("retries DIDs that have no global profile row (failed fetch recovery)", async () => {
-    // Regression: a DID whose profile fetch previously failed has no row in
-    // the global `profiles` table, so it must be retried, not skipped.
+    // A DID whose profile fetch failed has no row in the global `profiles`
+    // table, so it must be retried, not skipped.
     const { globalDb } = freshGlobal();
-    // NOTE: no profile row for ALICE — profile fetch previously failed.
+    // NOTE: no profile row for ALICE — her profile fetch failed.
 
     const events = [decodedAs(joinSpaceEvent(), 1, ALICE)];
     const getProfiles = mock(async () => [profileFor(ALICE, "alice.test")]);
@@ -262,6 +262,55 @@ describe("ensureProfilesForBatch", () => {
         .get<{ handle: string }>(ALICE))?.handle,
     ).toBe("handle.invalid");
   });
+
+  test("re-fetches an existing row older than the freshness TTL", async () => {
+    // A *valid* (non-handle.invalid) row older than PROFILE_REFRESH_TTL_MS
+    // must be re-fetched, so a display-name/avatar change on the PDS
+    // propagates instead of pinning the first-fetched values forever.
+    const { globalDb } = freshGlobal();
+    await globalDb.run(
+      "insert into profiles (did, handle, name, updated_at) values (?, ?, ?, ?)",
+      // 2 hours ago — past the 30-minute refresh TTL.
+      [ALICE, "alice.test", "old display", Date.now() - 2 * 60 * 60 * 1000],
+    );
+
+    const events = [decodedAs(joinSpaceEvent(), 1, ALICE)];
+    const getProfiles = mock(async () => [profileFor(ALICE, "alice.test")]);
+
+    await ensureProfilesForBatch(globalDb, events, getProfiles);
+
+    // Should fetch despite a valid handle, because the row is TTL-stale.
+    expect(getProfiles).toHaveBeenCalledTimes(1);
+    expect(getProfiles).toHaveBeenCalledWith([ALICE]);
+    // The refreshed name/avatar replace the stale values.
+    expect(
+      (await globalDb
+        .query("select name from profiles where did = ?")
+        .get<{ name: string }>(ALICE))?.name,
+    ).toBe("alice.test display");
+  });
+
+  test("does NOT re-fetch an existing row within the freshness TTL", async () => {
+    const { globalDb } = freshGlobal();
+    await globalDb.run(
+      "insert into profiles (did, handle, name, updated_at) values (?, ?, ?, ?)",
+      // 10 minutes ago — within the 30-minute refresh TTL.
+      [ALICE, "alice.test", "alice display", Date.now() - 10 * 60 * 1000],
+    );
+
+    const events = [decodedAs(joinSpaceEvent(), 1, ALICE)];
+    const getProfiles = mock(async () => [profileFor(ALICE, "alice.test")]);
+
+    await ensureProfilesForBatch(globalDb, events, getProfiles);
+
+    // Fresh row, valid handle — no fetch.
+    expect(getProfiles).toHaveBeenCalledTimes(0);
+    expect(
+      (await globalDb
+        .query("select name from profiles where did = ?")
+        .get<{ name: string }>(ALICE))?.name,
+    ).toBe("alice display");
+  });
 });
 
 describe("defaultGetProfiles", () => {
@@ -371,7 +420,7 @@ describe("defaultGetProfiles", () => {
   });
 });
 
-describe("global profile store (Phase 2)", () => {
+describe("global profile store", () => {
   test("insertProfilesWithExtras writes the global profiles table", async () => {
     const { insertProfilesWithExtras } = await import("./profiles.ts");
     const { globalDb } = freshGlobal();
@@ -410,6 +459,66 @@ describe("global profile store (Phase 2)", () => {
     expect(row?.avatar).toBe("https://cdn.example/bob.png");
   });
 
+  test("Bluesky re-fetch refreshes display fields (null-preserving merge)", async () => {
+    // A re-fetched profile must update a name/avatar that changed on the PDS,
+    // so the merge is null-preserving rather than first-writer-wins (a NULL
+    // still never clobbers an existing value). The profile-refresh TTL is what
+    // drives the re-fetch.
+    const { insertProfilesWithExtras } = await import("./profiles.ts");
+    const { globalDb } = freshGlobal();
+
+    // First fetch pins an old name/avatar (extras empty → Bluesky path).
+    await insertProfilesWithExtras(
+      openDb(),
+      [profileFor(ALICE, "alice.test")],
+      new Map(),
+    );
+    const before = await globalDb
+      .query("select name, avatar from profiles where did = ?")
+      .get<{ name: string | null; avatar: string | null }>(ALICE);
+    expect(before?.name).toBe("alice.test display");
+
+    // Second fetch returns a changed name/avatar (new CID-bearing URL).
+    const refreshed = {
+      did: ALICE,
+      handle: "alice.test",
+      displayName: "Alice Renewed",
+      avatar: "https://cdn.example/alice-renewed.png",
+    } as unknown as ProfileViewDetailed;
+    await insertProfilesWithExtras(openDb(), [refreshed], new Map());
+
+    const after = await globalDb
+      .query("select name, avatar, handle from profiles where did = ?")
+      .get<{ name: string | null; avatar: string | null; handle: string | null }>(ALICE);
+    expect(after?.name).toBe("Alice Renewed");
+    expect(after?.avatar).toBe("https://cdn.example/alice-renewed.png");
+    // Handle preserved across the merge.
+    expect(after?.handle).toBe("alice.test");
+  });
+
+  test("Bluesky merge never clobbers an existing value with a NULL", async () => {
+    const { insertProfilesWithExtras } = await import("./profiles.ts");
+    const { globalDb } = freshGlobal();
+
+    await insertProfilesWithExtras(
+      openDb(),
+      [profileFor(ALICE, "alice.test")],
+      new Map(),
+    );
+    // A sparse Bluesky response with no displayName/avatar must not wipe them.
+    const sparse = {
+      did: ALICE,
+      handle: "alice.other.test",
+    } as unknown as ProfileViewDetailed;
+    await insertProfilesWithExtras(openDb(), [sparse], new Map());
+
+    const row = await globalDb
+      .query("select name, avatar, handle from profiles where did = ?")
+      .get<{ name: string | null; avatar: string | null; handle: string | null }>(ALICE);
+    expect(row?.name).toBe("alice.test display");
+    expect(row?.avatar).toBe("https://cdn.example/alice.test.png");
+  });
+
   test("Roomy record without a handle does not clobber an existing handle", async () => {
     const { insertProfilesWithExtras } = await import("./profiles.ts");
     const { globalDb } = freshGlobal();
@@ -423,7 +532,7 @@ describe("global profile store (Phase 2)", () => {
 
     // Now a Roomy record arrives (extras present) but carries no handle —
     // Roomy profile records don't store a handle. This must NOT wipe the
-    // previously-fetched handle.
+    // handle already on the row.
     const roomyProfile = {
       did: ALICE,
       displayName: "Alice Roomy",
@@ -442,12 +551,12 @@ describe("global profile store (Phase 2)", () => {
   });
 
   test("an empty-string handle from a Roomy record never lands in the column", async () => {
-    // Regression: `happyViewToProfileView` coerced a missing handle to `""`,
-    // so a Roomy-sourced profile reached this writer with `handle: ""`. That
-    // landed in the column on first insert, and because `""` is a *present*
-    // value it then survived every `coalesce(..., profiles.handle)` merge —
-    // the row could never pick up a real handle, and `getProfile` returned
-    // `handle: ""` forever. The writer must normalize `""` to NULL.
+    // `happyViewToProfileView` coerces a missing handle to `""`, so a
+    // Roomy-sourced profile reaches this writer with `handle: ""`. Stored as
+    // is, `""` is a *present* value and would survive every
+    // `coalesce(..., profiles.handle)` merge — the row could never pick up a
+    // real handle, and `getProfile` would return `handle: ""` forever. The
+    // writer must normalize `""` to NULL.
     const { insertProfilesWithExtras } = await import("./profiles.ts");
     const { globalDb } = freshGlobal();
 
@@ -465,8 +574,7 @@ describe("global profile store (Phase 2)", () => {
   });
 
   test("a legacy '' handle self-heals to the next real handle", async () => {
-    // Regression: rows already poisoned with `''` by the old conversion must
-    // recover on the next write without a migration.
+    // A row holding `''` must recover on the next write, without a migration.
     const { insertProfilesWithExtras } = await import("./profiles.ts");
     const { globalDb } = freshGlobal();
 
@@ -523,10 +631,10 @@ describe("handle-less HappyView profiles", () => {
   });
 
   test("getProfilesRoomyFirst merges the Bluesky handle onto the Roomy record", async () => {
-    // Regression: a Roomy-record user's handle is publicly resolvable but
-    // HappyView can't supply it (Roomy records carry no handle), and the
-    // Bluesky fallback only covered DIDs HappyView did NOT have. The handle
-    // has to be merged onto the Roomy profile.
+    // A Roomy-record user's handle is publicly resolvable but HappyView can't
+    // supply it (Roomy records carry no handle), and the Bluesky fallback only
+    // covers DIDs HappyView did NOT have. The handle has to be merged onto the
+    // Roomy profile.
     const realFetch = globalThis.fetch;
     const prevNodeEnv = process.env.NODE_ENV;
     delete process.env.NODE_ENV; // defeat the test-mode short-circuit
@@ -605,8 +713,8 @@ describe("profile fetch negative cache", () => {
     await defaultGetProfiles([ALICE, BOB]);
     expect(appview.calls).toBe(1);
 
-    // BOB resolved to nothing, so this fetch is skipped outright — the
-    // regression: it used to be issued again on every single event.
+    // BOB resolved to nothing, so this fetch is skipped outright rather than
+    // being issued again on every event.
     const second = await defaultGetProfiles([BOB]);
     expect(second).toEqual([]);
     expect(appview.calls).toBe(1);

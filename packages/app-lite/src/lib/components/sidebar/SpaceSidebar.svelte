@@ -19,6 +19,7 @@
   import SidebarCategoryShell from "@roomy/design/components/sidebars/SidebarCategoryShell.svelte";
   import SidebarItemShell from "@roomy/design/components/sidebars/SidebarItemShell.svelte";
   import { resolveBlobUrl } from "$lib/utils";
+  import { shareUrl } from "$lib/share-links";
   import Button, { buttonVariants } from "@roomy/design/components/ui/button/Button.svelte";
   import { cn } from "@roomy/design/utils";
   import {
@@ -43,13 +44,13 @@
   import EditRoomModal from "./EditRoomModal.svelte";
   import { editRoomModal } from "./edit-room.svelte";
   import RestoreRoomModal from "./RestoreRoomModal.svelte";
-  import EditableChannelItem from "./EditableChannelItem.svelte";
+  import EditableChannelItem from "@roomy/design/components/sidebars/EditableChannelItem.svelte";
   import InviteModal from "$lib/components/InviteModal.svelte";
   import CreateRoomModal from "@roomy/design/components/modals/CreateRoomModal.svelte";
-  import ChannelIcon from "./ChannelIcon.svelte";
+  import ChannelIcon from "@roomy/design/components/sidebars/ChannelIcon.svelte";
   import { createSpacesQuery } from "$lib/queries/spaces";
   import { toast } from "@foxui/core";
-  import RoomyMark from "$lib/components/RoomyMark.svelte";
+  import RoomyMark from "@roomy/design/components/marketing/RoomyMark.svelte";
 
   type SidebarChannel =
     typeof schemas.queries.getSpaceMetadata.SidebarChannel.infer;
@@ -188,7 +189,7 @@
 
   function onInvite() {
     if (meta?.joinPolicy.allowPublicJoin) {
-      const url = new URL(page.url.href);
+      const url = shareUrl(page.url);
       url.pathname = `/${spaceId}`;
       navigator.clipboard.writeText(url.href).then(() => {
         toast.success("Invite link copied to clipboard");

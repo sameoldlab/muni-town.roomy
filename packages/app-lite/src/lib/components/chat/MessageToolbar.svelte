@@ -20,6 +20,8 @@
     onRequestDelete: () => void;
     /** Requests the move picker for this message (owned by the route page). */
     onMove: (messages: Message[]) => void;
+    /** Create a space card from this message's single link (undefined hides the action). */
+    onCreateCard?: () => void;
   };
 
   let {
@@ -35,6 +37,7 @@
     onStartEdit,
     onRequestDelete,
     onMove,
+    onCreateCard,
   }: Props = $props();
 
   function onToggleReaction(emoji: string) {
@@ -76,4 +79,5 @@
   {onReply}
   onForward={() => onForward([message])}
   onMove={() => onMove([message])}
+  onCreateCard={onCreateCard}
 />

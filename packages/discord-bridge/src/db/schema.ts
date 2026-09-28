@@ -155,6 +155,120 @@ export const MIGRATIONS: Migration[] = [
       `);
 		},
 	},
+	{
+		version: 7,
+		name: "structure_sync",
+		up(db) {
+			// One-shot guard for the initial Discord→Roomy structure sync
+			// (categories + channel order). A row exists from the moment the
+			// (guild, space) structure sync is CLAIMED — before any event is
+			// sent — so the sync is at-most-once by construction: a crash
+			// mid-sync cannot re-apply it on the next backfill. `applied_at`
+			// is null while a claim is unapplied; see BridgeRepository
+			// .claimStructureSync for why the claim is not rolled back.
+			db.run(`
+        CREATE TABLE structure_sync (
+          guild_id   TEXT NOT NULL,
+          space_did  TEXT NOT NULL,
+          claimed_at INTEGER NOT NULL,
+          applied_at INTEGER,
+          PRIMARY KEY (guild_id, space_did)
+        );
+      `);
+		},
+	},
+	{
+		version: 8,
+		name: "backfill_progress",
+		up(db) {
+			// Durable per-(space, channel) backfill progress so two-phase
+			// backfill survives restarts. Phase 1 (bounded recent window)
+			// writes window_boundary = the oldest message it ingested; the
+			// Phase 2 walk ingests everything strictly below it, resuming
+			// from walk_cursor. phase 'complete' means the channel's whole
+			// history has been ingested (or the pair was only ever short).
+			// Counts are ABSOLUTE (not deltas) so any row refresh can
+			// overwrite safely.
+			db.run(`
+        CREATE TABLE backfill_progress (
+          space_did        TEXT NOT NULL,
+          channel_id       TEXT NOT NULL,
+          guild_id         TEXT,
+          kind             TEXT CHECK (kind IN ('channel', 'thread')),
+          channel_name     TEXT,
+          phase            TEXT NOT NULL CHECK (phase IN ('phase1', 'phase2', 'complete')),
+          messages_synced  INTEGER NOT NULL DEFAULT 0,
+          messages_skipped INTEGER NOT NULL DEFAULT 0,
+          window_boundary  TEXT,
+          walk_cursor      TEXT,
+          updated_at       INTEGER NOT NULL,
+          PRIMARY KEY (space_did, channel_id)
+        );
+        CREATE INDEX idx_backfill_progress_guild ON backfill_progress (guild_id);
+      `);
+		},
+	},
+	{
+		version: 9,
+		name: "backfill_progress_details",
+		up(db) {
+			// parent_id: for thread rows, the Discord id of the parent
+			// channel so the Roomy status panel can nest threads under
+			// channels. window_synced: snapshot of messages_synced at the
+			// phase1→phase2 transition, so the UI can report how much of
+			// the recent window was ingested before the deep walk started.
+			db.run(`
+        ALTER TABLE backfill_progress ADD COLUMN parent_id TEXT;
+        ALTER TABLE backfill_progress ADD COLUMN window_synced INTEGER;
+      `);
+		},
+	},
+	{
+		version: 10,
+		name: "backfill_blocked_phase",
+		up(db) {
+			// A bridged channel the bot cannot read (private channel, missing
+			// VIEW_CHANNEL / READ_MESSAGE_HISTORY) can never be backfilled, but
+			// nothing recorded that: the pair stayed in 'phase1' forever and the
+			// UI reported it as pending work. `blocked` is that terminal state,
+			// with `blocked_reason` carrying why.
+			//
+			// SQLite cannot ALTER a CHECK constraint, so the phase list is
+			// widened by rebuilding the table: create → copy → drop → rename.
+			db.run(`
+        CREATE TABLE backfill_progress_new (
+          space_did        TEXT NOT NULL,
+          channel_id       TEXT NOT NULL,
+          guild_id         TEXT,
+          kind             TEXT CHECK (kind IN ('channel', 'thread')),
+          channel_name     TEXT,
+          phase            TEXT NOT NULL CHECK (phase IN ('phase1', 'phase2', 'complete', 'blocked')),
+          messages_synced  INTEGER NOT NULL DEFAULT 0,
+          messages_skipped INTEGER NOT NULL DEFAULT 0,
+          window_boundary  TEXT,
+          walk_cursor      TEXT,
+          updated_at       INTEGER NOT NULL,
+          parent_id        TEXT,
+          window_synced    INTEGER,
+          blocked_reason   TEXT,
+          PRIMARY KEY (space_did, channel_id)
+        );
+
+        INSERT INTO backfill_progress_new
+          (space_did, channel_id, guild_id, kind, channel_name, phase,
+           messages_synced, messages_skipped, window_boundary, walk_cursor,
+           updated_at, parent_id, window_synced)
+        SELECT space_did, channel_id, guild_id, kind, channel_name, phase,
+               messages_synced, messages_skipped, window_boundary, walk_cursor,
+               updated_at, parent_id, window_synced
+        FROM backfill_progress;
+
+        DROP TABLE backfill_progress;
+        ALTER TABLE backfill_progress_new RENAME TO backfill_progress;
+        CREATE INDEX idx_backfill_progress_guild ON backfill_progress (guild_id);
+      `);
+		},
+	},
 ];
 
 export function runMigrations(db: Database): {

@@ -6,7 +6,18 @@
   import Badge from "@roomy/design/components/ui/badge/Badge.svelte";
   import Button from "@roomy/design/components/ui/button/Button.svelte";
   import InlineMono from "@roomy/design/components/helper/InlineMono.svelte";
-  import { IconCopy } from "@roomy/design/icons";
+  import LoadingSpinner from "@roomy/design/components/helper/LoadingSpinner.svelte";
+  import {
+    IconAlertCircle,
+    IconCheck,
+    IconChevronRight,
+    IconCopy,
+    IconHashtag,
+    IconHourglassHigh,
+    IconHourglassMedium,
+    IconNeedleThread,
+  } from "@roomy/design/icons";
+  import { createSpaceMetadataQuery } from "$lib/queries/space-metadata";
   import { createMembersQuery } from "$lib/queries/members";
   import { createFeatureFlagsQuery } from "$lib/queries/feature-flags";
   import { createMembershipStatusQuery } from "$lib/queries/membership-status";
@@ -122,6 +133,154 @@
         appId: string;
       }
     | { type: "error_checking" } = $state({ type: "checking" });
+
+  // Per-channel backfill progress from the bridge REST surface. Polled while
+  // the space is bridged; survives restarts because the bridge persists the
+  // rows (phase, counts, cursor) in SQLite.
+  type BackfillProgressEntry = {
+    spaceDid: string;
+    channelId: string;
+    guildId: string | null;
+    kind: "channel" | "thread" | null;
+    channelName: string | null;
+    phase: "phase1" | "phase2" | "complete" | "blocked";
+    messagesSynced: number;
+    messagesSkipped: number;
+    cursor: string | null;
+    // Thread rows only: Discord id of the parent channel (panel nesting).
+    parentId: string | null;
+    // Recent-window size at the phase1→phase2 transition (bridge snapshot).
+    windowSynced: number | null;
+    // Blocked rows only: why the bridge can't read this channel.
+    blockedReason: string | null;
+    roomyId: string | null;
+    running: boolean;
+    updatedAt: number;
+  };
+  let backfillChannels = $state<BackfillProgressEntry[]>([]);
+  let backfillError = $state(false);
+
+  // The panel mirrors the space's sidebar: categories (by position) → channels
+  // (in order) → active threads nested under their parent, then orphan
+  // channels (+ their threads), then anything the sidebar doesn't know yet —
+  // channels before threads. The bridge's up-front enumeration makes the panel
+  // listable immediately; archived threads appear only once the background walk
+  // discovers them and lands at the end.
+  const spaceMetaQuery = createSpaceMetadataQuery(() => spaceId, {
+    enabled: () => !!spaceId,
+  });
+
+  const sidebarSlots = $derived.by(() => {
+    const cats = spaceMetaQuery.data?.sidebar.categories ?? [];
+    const orphans = spaceMetaQuery.data?.sidebar.orphans ?? [];
+    const slots: Array<{ roomyId: string; parentRoomId: string | null }> = [];
+    for (const cat of [...cats].sort((a, b) => a.position - b.position)) {
+      for (const ch of cat.channels) {
+        slots.push({ roomyId: ch.id, parentRoomId: null });
+        for (const thread of ch.activeThreads ?? []) {
+          slots.push({ roomyId: thread.id, parentRoomId: ch.id });
+        }
+      }
+    }
+    for (const ch of orphans) {
+      slots.push({ roomyId: ch.id, parentRoomId: null });
+      for (const thread of ch.activeThreads ?? []) {
+        slots.push({ roomyId: thread.id, parentRoomId: ch.id });
+      }
+    }
+    return slots;
+  });
+
+  const orderedBackfillRows = $derived.by(() => {
+    type Row = {
+      entry: BackfillProgressEntry;
+      parentRoomId: string | null;
+    };
+    const rows: Row[] = [];
+    const roomKey = (e: BackfillProgressEntry) => e.roomyId ?? e.channelId;
+    const entryByRoom = new Map(backfillChannels.map((e) => [roomKey(e), e]));
+    const placed = new Set<string>();
+
+    // Sidebar order first (channels + their active threads).
+    for (const slot of sidebarSlots) {
+      const entry = entryByRoom.get(slot.roomyId);
+      if (!entry) continue;
+      rows.push({ entry, parentRoomId: slot.parentRoomId });
+      placed.add(entry.channelId);
+    }
+    // Everything else (structure not synced yet, archived threads the
+    // background walk just found): channels first, then threads, each group in
+    // API order (newest update first) — a thread never leads the list while a
+    // channel is still pending. Threads nest under their parent entry when it
+    // has one of its own.
+    const rest = backfillChannels.filter((e) => !placed.has(e.channelId));
+    const leftovers = [
+      ...rest.filter((e) => e.kind !== "thread"),
+      ...rest.filter((e) => e.kind === "thread"),
+    ];
+    for (const entry of leftovers) {
+      const parent = entry.parentId
+        ? backfillChannels.find((e) => e.channelId === entry.parentId)
+        : undefined;
+      rows.push({ entry, parentRoomId: parent ? roomKey(parent) : null });
+    }
+    return rows;
+  });
+
+  // Threads nest under the rendered parent channel; a thread whose parent
+  // has no entry of its own stays top-level.
+  const backfillChildren = $derived.by(() => {
+    const map = new Map<string, BackfillProgressEntry[]>();
+    const roomIds = new Set(
+      orderedBackfillRows.map((r) => r.entry.roomyId ?? r.entry.channelId),
+    );
+    for (const row of orderedBackfillRows) {
+      if (!row.parentRoomId || !roomIds.has(row.parentRoomId)) continue;
+      const list = map.get(row.parentRoomId) ?? [];
+      list.push(row.entry);
+      map.set(row.parentRoomId, list);
+    }
+    return map;
+  });
+
+  const topLevelBackfillRows = $derived(
+    orderedBackfillRows.filter((r) => !r.parentRoomId),
+  );
+
+  const backfillSummary = $derived.by(() => {
+    let complete = 0;
+    let pending = 0;
+    let running = 0;
+    let blocked = 0;
+    for (const e of backfillChannels) {
+      if (e.phase === "complete") complete++;
+      // A blocked channel isn't work in flight — the bridge can't read it —
+      // so it never counts as pending.
+      else if (e.phase === "blocked") blocked++;
+      else pending++;
+      if (e.running) running++;
+    }
+    return { complete, pending, running, blocked };
+  });
+
+  let backfillOpen = $state(true);
+
+  async function updateBackfillProgress() {
+    try {
+      const resp = await fetch(
+        `${env.PUBLIC_DISCORD_BRIDGE}/backfill/progress?spaceDid=${spaceId}`,
+      );
+      if (!resp.ok) {
+        backfillError = true;
+        return;
+      }
+      const data: { channels: BackfillProgressEntry[] } = await resp.json();
+      backfillChannels = data.channels;
+      backfillError = false;
+    } catch {
+      backfillError = true;
+    }
+  }
 
   async function updateBridgeStatus() {
     if (!spaceId) return;
@@ -248,6 +407,34 @@
     };
   });
 
+  // Poll backfill progress at a tighter cadence while bridged. Re-runs when
+  // bridgeStatus flips to loaded (it's read here), so the timer only exists
+  // once the space is actually bridged.
+  $effect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    const updateProgress = () => {
+      if (
+        document.visibilityState === "visible" &&
+        bridgeStatus.type === "loaded" &&
+        bridgeStatus.guildId
+      ) {
+        updateBackfillProgress();
+        clearInterval(interval);
+        interval = setInterval(updateProgress, 5000);
+      } else {
+        clearInterval(interval);
+      }
+    };
+    updateProgress();
+    document.addEventListener("visibilitychange", updateProgress);
+
+    return () => {
+      document.removeEventListener("visibilitychange", updateProgress);
+      clearInterval(interval);
+    };
+  });
+
   onMount(() => {
     // Surface the live bridge connection status badge in the navbar, next to
     // the "Discord Bridge" settings title.
@@ -268,6 +455,172 @@
   {:else if bridgeStatus.type === "error_checking"}
     <Badge variant="red">error connecting to bridge</Badge>
   {/if}
+{/snippet}
+
+{#snippet backfillStatusPanel()}
+  <section
+    class="rounded-lg border border-base-200 dark:border-base-800 px-4 py-3"
+  >
+    {#if backfillError}
+      <p class="text-sm text-base-600 dark:text-base-400">
+        Couldn't load backfill progress right now.
+      </p>
+    {:else if backfillChannels.length === 0}
+      <h2 class="text-sm font-semibold text-base-900 dark:text-base-100">
+        Backfill status
+      </h2>
+      <p class="mt-1 text-sm text-base-600 dark:text-base-400">
+        No channels backfilled yet — history syncs shortly after bridging.
+      </p>
+    {:else}
+      <!-- Collapsible summary line: overall state up top, detail below. -->
+      <button
+        type="button"
+        class="flex w-full items-center justify-between gap-3 text-left"
+        onclick={() => (backfillOpen = !backfillOpen)}
+        aria-expanded={backfillOpen}
+      >
+        <span class="text-sm font-semibold text-base-900 dark:text-base-100">
+          Backfill status
+        </span>
+        <span class="flex items-center gap-2 text-xs text-base-500 dark:text-base-400">
+          {#if backfillSummary.pending === 0 && backfillSummary.blocked === 0}
+            <span class="font-medium text-green-600 dark:text-green-400">
+              all synced
+            </span>
+          {:else}
+            <span class="flex items-center gap-1">
+              <span>{backfillSummary.complete} complete</span>
+              {#if backfillSummary.pending > 0}
+                <span>· {backfillSummary.pending} pending</span>
+              {/if}
+              {#if backfillSummary.blocked > 0}
+                <span class="text-red-600 dark:text-red-400">
+                  · {backfillSummary.blocked} unreadable
+                </span>
+              {/if}
+            </span>
+            {#if backfillSummary.running > 0}
+              <LoadingSpinner size={12} />
+            {/if}
+          {/if}
+          <IconChevronRight
+            font-size={14}
+            class={backfillOpen
+              ? "rotate-90 text-base-500 dark:text-base-400"
+              : "text-base-500 dark:text-base-400"}
+            style="transition: transform 120ms"
+          />
+        </span>
+      </button>
+
+      {#if backfillOpen}
+        <ul class="mt-2 space-y-1.5">
+          {#each topLevelBackfillRows as row (row.entry.spaceDid + row.entry.channelId)}
+            {@render progressRow(row.entry, false)}
+            {#each backfillChildren.get(row.entry.roomyId ?? row.entry.channelId) ?? [] as child (child.spaceDid + child.channelId)}
+              {@render progressRow(child, true)}
+            {/each}
+          {/each}
+        </ul>
+      {/if}
+    {/if}
+  </section>
+{/snippet}
+
+{#snippet progressRow(entry: BackfillProgressEntry, nested: boolean)}
+  <li
+    class={nested
+      ? "ms-7 flex items-center justify-between gap-4 text-sm"
+      : "flex items-center justify-between gap-4 text-sm"}
+  >
+    <span class="flex min-w-0 items-center gap-2">
+      {#if entry.kind === "thread"}
+        <IconNeedleThread
+          class="shrink-0 text-base-400 dark:text-base-500"
+          font-size={15}
+        />
+      {:else}
+        <IconHashtag
+          class="shrink-0 text-base-400 dark:text-base-500"
+          font-size={15}
+        />
+      {/if}
+      <span class="truncate text-base-900 dark:text-base-100">
+        {entry.channelName ?? entry.channelId}
+      </span>
+    </span>
+    <span class="flex shrink-0 items-center gap-2 whitespace-nowrap">
+      <span class="text-xs tabular-nums text-base-500 dark:text-base-400">
+        {entry.messagesSynced} synced
+      </span>
+      <!--
+        Row state is icon-only; the accessible name spells it out. The synced
+        count is the one number that stays.
+          blocked           → alert / "can't backfill: <reason>"
+          running (phase 1) → spinner / "backfilling recent history"
+          running (phase 2) → spinner / "deep backfill in progress"
+          complete          → check / "complete"
+          deep backfill queued (recent window in or not) → hourglass-high
+          queued, not started yet → hourglass-medium
+
+        `blocked` is terminal and outranks `running`: the pair is never in
+        flight once the bridge has recorded that it cannot read the channel.
+      -->
+      {#if entry.phase === "blocked"}
+        <span
+          class="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400"
+          role="img"
+          aria-label={entry.blockedReason
+            ? `can't backfill: ${entry.blockedReason}`
+            : "can't backfill: the bridge can't read this channel"}
+          title={entry.blockedReason ?? "the bridge can't read this channel"}
+        >
+          <IconAlertCircle font-size={14} />
+        </span>
+      {:else if entry.running}
+        <span
+          class="flex items-center gap-1.5 text-xs text-base-500 dark:text-base-400"
+          role="img"
+          aria-label={entry.phase === "phase2"
+            ? "deep backfill in progress"
+            : "backfilling recent history"}
+          title={entry.phase === "phase2"
+            ? "deep backfill in progress"
+            : "backfilling recent history"}
+        >
+          <LoadingSpinner size={12} />
+        </span>
+      {:else if entry.phase === "complete"}
+        <span
+          class="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400"
+          role="img"
+          aria-label="complete"
+          title="complete"
+        >
+          <IconCheck font-size={14} />
+        </span>
+      {:else if entry.phase === "phase2"}
+        <span
+          class="flex items-center gap-1.5 text-xs text-base-500 dark:text-base-400"
+          role="img"
+          aria-label="deep backfill queued"
+          title="deep backfill queued"
+        >
+          <IconHourglassHigh font-size={14} />
+        </span>
+      {:else}
+        <span
+          class="flex items-center gap-1.5 text-xs text-base-500 dark:text-base-400"
+          role="img"
+          aria-label="queued"
+          title="queued"
+        >
+          <IconHourglassMedium font-size={14} />
+        </span>
+      {/if}
+    </span>
+  </li>
 {/snippet}
 
 {#snippet proMembershipPanel()}
@@ -395,6 +748,8 @@
       </p>
 
       {@render proMembershipPanel()}
+
+      {@render backfillStatusPanel()}
     </div>
   </form>
 {:else}

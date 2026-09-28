@@ -32,6 +32,7 @@ export { default as IconUserPlus } from "~icons/ph/user-plus-bold";
 export { default as IconArrowUturnLeft } from "~icons/ph/arrow-u-up-left-bold";
 export { default as IconCopy } from "~icons/ph/clipboard-bold";
 export { default as IconMove } from "~icons/ph/arrows-left-right-bold";
+export { default as IconLink } from "~icons/ph/link-simple-bold";
 export { default as IconCheckSquare } from "~icons/ph/check-square-bold";
 
 // Close / Remove
@@ -60,6 +61,8 @@ export { default as IconForward } from "~icons/ph/arrow-u-down-right-bold";
 // Status
 export { default as IconAlertCircle } from "~icons/ph/warning-circle-bold";
 export { default as IconLoading } from "~icons/ph/spinner-bold";
+export { default as IconHourglassHigh } from "~icons/ph/hourglass-simple-high-bold";
+export { default as IconHourglassMedium } from "~icons/ph/hourglass-simple-medium-bold";
 
 // Layout
 export { default as IconBars } from "~icons/ph/list-bold";

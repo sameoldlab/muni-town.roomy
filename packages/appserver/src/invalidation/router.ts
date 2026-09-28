@@ -30,7 +30,6 @@ import { log } from "../log.ts";
 
 export class Router implements IInvalidationRouter {
   readonly #listeners = new Set<InvalidationListener>();
-  #seq = 0;
 
   // ─── Singleton accessor ──────────────────────────────────────────
 
@@ -99,14 +98,12 @@ export class Router implements IInvalidationRouter {
       await syncMentionsIndex(globalDb, events, { spaceDb, replyToAuthors });
     }
 
-    // Collect per-event signals, stamping each diff with its seq as it is
-    // produced (the seq is the client's gap-detection cursor, so it must be
-    // assigned in event order, before any dedup reordering).
+    // Collect per-event signals; deduplicate below across the batch.
     const collected: InvalidationEvent[] = [];
     for (const event of events) {
-      const signals = await inferSignals(event, undefined, messageSnapshots, replyToAuthors);
-      this.#stampSeq(signals);
-      collected.push(...signals);
+      collected.push(
+        ...(await inferSignals(event, undefined, messageSnapshots, replyToAuthors)),
+      );
     }
 
     // Deduplicate identical signals across the batch. A `sendEvents` call
@@ -195,13 +192,6 @@ export class Router implements IInvalidationRouter {
    */
   emit(signals: readonly InvalidationEvent[]): void {
     if (signals.length === 0 || this.#listeners.size === 0) return;
-    // Stamp a globally-monotonic seq on any diff signals, just like
-    // onEventsApplied does. Without this, signals emitted outside the event
-    // pipeline (e.g. the embed sweeper's enrichment diffs) carry seq 0,
-    // which the client reads as a server seq reset and triggers a spurious
-    // refetch on every card-enrichment diff. Assigning seq here keeps the
-    // counter coherent across ALL sources.
-    this.#stampSeq(signals);
     // One `emit` call is one coalescing scope, exactly like one
     // `onEventsApplied` batch — a caller that hands us the same invalidation
     // N times (e.g. one per enriched message) must not broadcast it N times.
@@ -213,24 +203,6 @@ export class Router implements IInvalidationRouter {
         log.error("[InvalidationRouter] listener threw:", err);
       }
     }
-  }
-
-  /** Stamp a monotonically-increasing seq on every messageDiff/roomMetadataDiff. */
-  #stampSeq(signals: readonly InvalidationEvent[]): void {
-    for (const signal of signals) {
-      if (
-        signal.kind === "messageDiff" ||
-        signal.kind === "roomMetadataDiff" ||
-        signal.kind === "mentionDiff"
-      ) {
-        signal.signal.seq = ++this.#seq;
-      }
-    }
-  }
-
-  /** Current sequence number (for testing / diagnostics). */
-  get currentSeq(): number {
-    return this.#seq;
   }
 }
 
@@ -260,15 +232,38 @@ export function dedupeSignals(
 ): InvalidationEvent[] {
   if (signals.length < 2) return [...signals];
   const seen = new Set<string>();
+  /** Index of the kept activity diff for each (space, room) — see below. */
+  const activityAt = new Map<string, number>();
   const out: InvalidationEvent[] = [];
   for (const signal of signals) {
-    if (signal.kind !== "queryInvalidation") {
+    if (signal.kind === "queryInvalidation") {
+      const key = `${signal.signal.nsid}\u0000${signal.signal.affectedUser ?? ""}\u0000${canonicalParams(signal.signal.params)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push(signal);
       continue;
     }
-    const key = `${signal.signal.nsid}\u0000${signal.signal.affectedUser ?? ""}\u0000${canonicalParams(signal.signal.params)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    // `roomActivityDiff` is a superseding STATE SNAPSHOT — the board row as it
+    // stands after this message — not an incremental op. A batch of N messages
+    // in one room therefore emits N snapshots of which only the last is true
+    // (the room's newest activity wins), so keep the last per (space, room),
+    // replacing the earlier one IN PLACE to preserve emission order.
+    //
+    // This is safe for exactly the reason `roomMetadataDiff` is exempt: that
+    // frame carries a DELTA, where dropping one would silently lose an
+    // increment, whereas dropping a superseded snapshot loses nothing.
+    if (signal.kind === "roomActivityDiff") {
+      const { spaceId, roomId } = signal.signal;
+      const key = `${spaceId}\u0000${roomId}`;
+      const at = activityAt.get(key);
+      if (at === undefined) {
+        activityAt.set(key, out.length);
+        out.push(signal);
+      } else {
+        out[at] = signal;
+      }
+      continue;
+    }
     out.push(signal);
   }
   return out;

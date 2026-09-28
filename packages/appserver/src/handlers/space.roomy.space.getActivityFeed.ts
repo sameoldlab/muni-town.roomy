@@ -11,7 +11,6 @@
 
 import { createAccessMemo, roomAccessMany, type RoomAccess } from "../auth/access.ts";
 import { openReadStateDb, openSpaceDb } from "../db/db.ts";
-import { hydrateUserMembership } from "../hydration/userHydration.ts";
 import {
   selectActivityFeed,
   type ActivityFeedItem,
@@ -43,7 +42,6 @@ export const getActivityFeedHandler: QueryHandler<
   })!;
   const cursor = optionalString(params, "cursor") ?? null;
 
-  await hydrateUserMembership(userDid);
   const mainDb = openReadStateDb();
 
   // Per-request memo: the feed spans multiple spaces/rooms but each
@@ -66,7 +64,8 @@ export const getActivityFeedHandler: QueryHandler<
   // Each feed item carries its spaceId, so open that item's per-space DB.
   // Group items by space and batch the access checks per space (roomAccessMany)
   // instead of one roomAccess round-trip per item — the feed can span many
-  // spaces, and each item was previously a separate per-space worker round-trip.
+  // spaces, so a per-item check would cost a worker round-trip per space per
+  // item.
   const bySpace = new Map<string, string[]>();
   for (const item of feed) {
     const list = bySpace.get(item.spaceId) ?? [];

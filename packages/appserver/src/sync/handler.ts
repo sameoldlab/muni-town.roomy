@@ -23,6 +23,7 @@ import type {
   InvalidationEvent,
   InvalidationRouter,
   QueryNsid,
+  RoomActivityDiff,
 } from "../invalidation/types.ts";
 import { allowsPublicJoin, roomAccess, spaceAccess } from "../auth/access.ts";
 import { federatedRoomAccess } from "../auth/federation.ts";
@@ -57,6 +58,7 @@ function topicsForSignal(signal: InvalidationEvent["signal"]): Topic[] {
         return [];
       case "space.roomy.space.getMetadata":
       case "space.roomy.space.getThreads":
+      case "space.roomy.space.getLinks":
       case "space.roomy.space.getRoles":
       case "space.roomy.space.getMembers":
       case "space.roomy.space.getInvites":
@@ -71,6 +73,7 @@ function topicsForSignal(signal: InvalidationEvent["signal"]): Topic[] {
       case "space.roomy.room.getMetadata":
       case "space.roomy.room.getMessages":
       case "space.roomy.room.getThreads":
+      case "space.roomy.room.getLinks":
         return qi.params["roomId"]
           ? [topicKey("room", qi.params["roomId"])]
           : [];
@@ -116,6 +119,19 @@ interface ConnectionState {
   topics: Set<Topic>;
   /** Per-stream subscription state (keyed by stream DID). */
   streams: Map<string, StreamSubscription>;
+  /**
+   * Monotonic counter for the diff frames this connection receives.
+   *
+   * Delivery is selective — a connection gets a diff only for the rooms and
+   * mentions it is subscribed to, and a per-user frame only for itself — so a
+   * process-global counter would advance for frames this connection never
+   * sees. The client reads a gap as "I missed frames" and refetches the room
+   * it is viewing, which turns another room's traffic into a refetch storm.
+   * Stamping at delivery, per connection, keeps the delivered diffs
+   * contiguous, which is what the gap detector needs (`#messageDiff` and
+   * `#roomMetadataDiff` share this one counter).
+   */
+  seq: number;
   /** Authenticated DID of the connected user. */
   did: string;
   /** Whether the connection is still open. */
@@ -222,6 +238,7 @@ export class SyncManager {
       connId,
       topics: new Set(),
       streams: new Map(),
+      seq: 0,
       did: socket.did,
       isOpen: true,
       send: (frame) => {
@@ -480,6 +497,8 @@ export class SyncManager {
         this.#routeMentionDiff(event.signal);
       } else if (event.kind === "roomMetadataDiff") {
         this.#routeRoomMetadataDiff(event.signal);
+      } else if (event.kind === "roomActivityDiff") {
+        this.#routeRoomActivityDiff(event.signal);
       } else if (event.kind === "queryInvalidation") {
         this.#routeQueryInvalidation(event.signal);
       }
@@ -489,7 +508,6 @@ export class SyncManager {
   #routeMessageDiff(
     signal: InvalidationEvent["signal"] & {
       roomId: string;
-      seq: number;
       ops: unknown[];
     },
   ): void {
@@ -497,32 +515,88 @@ export class SyncManager {
     const connIds = this.#topicIndex.get(topic);
     if (!connIds) return;
 
-    const frame = messageFrame("#messageDiff", {
-      roomId: signal.roomId,
-      seq: signal.seq,
-      ops: signal.ops,
-    });
-
     // Delivery-time re-check: a connection may only receive content frames
     // for rooms it can still read. Sub-time checks alone leave a window — a
     // user banned/removed mid-connection would keep receiving message content
     // until they reconnect. The access decision is memoized with a short TTL
     // (see #canReceiveRoomContent) so the hot path doesn't do a DB round-trip
     // per frame per connection.
-    void this.#deliverMessageDiff(signal.roomId, connIds, frame);
+    void this.#deliverRoomFrame(signal.roomId, connIds, (conn) =>
+      messageFrame("#messageDiff", {
+        roomId: signal.roomId,
+        seq: ++conn.seq,
+        ops: signal.ops,
+      }),
+    );
   }
 
-  async #deliverMessageDiff(
+  /**
+   * Deliver a room-scoped content frame to the connections that may still read
+   * the room. Shared by `#messageDiff` (message bodies) and
+   * `#roomActivityDiff` (message previews) — both carry message content, so
+   * both need the same delivery-time re-check.
+   *
+   * `buildFrame` is called per connection because `#messageDiff` carries that
+   * connection's seq for gap detection (see `ConnectionState.seq`); a frame
+   * with no per-connection field (e.g. `#roomActivityDiff`) just returns a
+   * shared instance.
+   */
+  async #deliverRoomFrame(
     roomId: string,
     connIds: Set<number>,
-    frame: Frame,
+    buildFrame: (conn: ConnectionState) => Frame,
   ): Promise<void> {
     for (const connId of connIds) {
       const conn = this.#connections.get(connId);
       if (!conn?.isOpen) continue;
       if (!(await this.#canReceiveRoomContent(roomId, conn.did))) continue;
-      conn.send(frame);
+      conn.send(buildFrame(conn));
     }
+  }
+
+  /**
+   * Deliver a room-activity patch to every connection watching one of the
+   * boards it reorders: the room itself, its parent channel (threads only —
+   * the parent's board and `recentThreads` both list the thread), and the
+   * space (the space index board).
+   *
+   * One frame per connection, not one per topic: a client typically has all
+   * three topics at once, and the frame is identical for each.
+   *
+   * Delivery is gated on room read access, exactly like `#messageDiff`. The
+   * frame carries a message preview and its author, so a connection watching
+   * the space topic must not receive the row for a room it cannot read — and
+   * the check (memoised per user+room) also stops a revoked user from
+   * continuing to receive previews mid-connection.
+   */
+  #routeRoomActivityDiff(signal: RoomActivityDiff): void {
+    const connIds = new Set<number>();
+    const topics = [topicKey("room", signal.roomId), topicKey("space", signal.spaceId)];
+    if (signal.parentChannelId) {
+      topics.push(topicKey("room", signal.parentChannelId));
+    }
+    for (const topic of topics) {
+      for (const connId of this.#topicIndex.get(topic) ?? []) connIds.add(connId);
+    }
+    if (connIds.size === 0) return;
+
+    // No `seq` on this frame, so it is identical for every connection and the
+    // one instance is shared (only `#messageDiff`/`#mention`/
+    // `#roomMetadataDiff` carry a connection's counter).
+    const frame = messageFrame("#roomActivityDiff", {
+      spaceId: signal.spaceId,
+      roomId: signal.roomId,
+      kind: signal.kind,
+      ...(signal.name != null ? { name: signal.name } : {}),
+      ...(signal.parentChannelId != null
+        ? { parentChannelId: signal.parentChannelId }
+        : {}),
+      ...(signal.parentChannelName != null
+        ? { parentChannelName: signal.parentChannelName }
+        : {}),
+      activity: signal.activity,
+    });
+    void this.#deliverRoomFrame(signal.roomId, connIds, () => frame);
   }
 
   #routeMentionDiff(
@@ -530,7 +604,6 @@ export class SyncManager {
       did: string;
       spaceId: string;
       roomId: string;
-      seq: number;
       ops: unknown[];
     },
   ): void {
@@ -538,18 +611,18 @@ export class SyncManager {
     const connIds = this.#topicIndex.get(topic);
     if (!connIds) return;
 
-    const frame = messageFrame("#mention", {
-      did: signal.did,
-      spaceId: signal.spaceId,
-      roomId: signal.roomId,
-      seq: signal.seq,
-      ops: signal.ops,
-    });
-
     for (const connId of connIds) {
       const conn = this.#connections.get(connId);
       if (conn?.isOpen) {
-        conn.send(frame);
+        conn.send(
+          messageFrame("#mention", {
+            did: signal.did,
+            spaceId: signal.spaceId,
+            roomId: signal.roomId,
+            seq: ++conn.seq,
+            ops: signal.ops,
+          }),
+        );
       }
     }
   }
@@ -558,7 +631,6 @@ export class SyncManager {
     signal: InvalidationEvent["signal"] & {
       spaceId: string;
       roomId: string;
-      seq: number;
       delta: number;
       users: ReadonlyArray<string>;
       parentChannelId?: string;
@@ -571,23 +643,24 @@ export class SyncManager {
     // users with a read_positions row for this room should see the unread
     // bump. A user may have multiple connections open (multiple tabs).
     for (const user of signal.users) {
-      const frame = messageFrame("#roomMetadataDiff", {
-        spaceId: signal.spaceId,
-        roomId: signal.roomId,
-        delta: signal.delta,
-        seq: signal.seq,
-        ...(signal.parentChannelId ? { parentChannelId: signal.parentChannelId } : {}),
-        ...(signal.roomUnreadDeltas?.get(user)
-          ? { roomUnreadDelta: signal.roomUnreadDeltas.get(user) }
-          : {}),
-        ...(signal.threadUnreadDeltas?.get(user)
-          ? { threadUnreadDelta: signal.threadUnreadDeltas.get(user) }
-          : {}),
-      });
       for (const conn of this.#connections.values()) {
         if (!conn.isOpen) continue;
         if (conn.did !== user) continue;
-        conn.send(frame);
+        conn.send(
+          messageFrame("#roomMetadataDiff", {
+            spaceId: signal.spaceId,
+            roomId: signal.roomId,
+            delta: signal.delta,
+            seq: ++conn.seq,
+            ...(signal.parentChannelId ? { parentChannelId: signal.parentChannelId } : {}),
+            ...(signal.roomUnreadDeltas?.get(user)
+              ? { roomUnreadDelta: signal.roomUnreadDeltas.get(user) }
+              : {}),
+            ...(signal.threadUnreadDeltas?.get(user)
+              ? { threadUnreadDelta: signal.threadUnreadDeltas.get(user) }
+              : {}),
+          }),
+        );
       }
     }
   }
@@ -597,8 +670,15 @@ export class SyncManager {
       nsid: QueryNsid;
       params: Record<string, string>;
       affectedUser?: UserDid;
+      cacheEvictionOnly?: boolean;
     },
   ): void {
+    // Cache-only signals exist for the server-side response cache (which the
+    // eviction listener handles). The client is being kept fresh by a diff
+    // frame instead, so telling it to refetch is exactly the cost this flag
+    // exists to avoid.
+    if (signal.cacheEvictionOnly) return;
+
     const topics = topicsForSignal(signal);
 
     // getSpaces has no specific topic — broadcast to ALL connections
@@ -657,12 +737,14 @@ export class SyncManager {
       "space.roomy.space.getSpaces",
       "space.roomy.space.getMetadata",
       "space.roomy.space.getThreads",
+      "space.roomy.space.getLinks",
       "space.roomy.space.getRoles",
       "space.roomy.space.getMembers",
       "space.roomy.space.getInvites",
       "space.roomy.room.getMetadata",
       "space.roomy.room.getMessages",
       "space.roomy.room.getThreads",
+      "space.roomy.room.getLinks",
       "space.roomy.message.getMessage",
     ];
 
@@ -726,16 +808,17 @@ export class SyncManager {
 
   /**
    * Send #invalidate for all room-scoped queries to one connection.
-   * Called when a client subscribes to a room topic that it was
-   * previously unsubscribed from. This ensures the client re-fetches
-   * fresh data rather than serving stale TanStack cache entries that
-   * accumulated while it wasn't subscribed.
+   * Called when a client subscribes to a room topic while not already
+   * subscribed to it. This ensures the client re-fetches fresh data rather
+   * than serving stale TanStack cache entries that accumulated while it was
+   * unsubscribed.
    */
   #sendRoomInvalidation(state: ConnectionState, roomId: string): void {
     const roomNsids: Array<{ nsid: QueryNsid }> = [
       { nsid: "space.roomy.room.getMessages" },
       { nsid: "space.roomy.room.getMetadata" },
       { nsid: "space.roomy.room.getThreads" },
+      { nsid: "space.roomy.room.getLinks" },
     ];
     for (const { nsid } of roomNsids) {
       state.send(
