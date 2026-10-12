@@ -1,7 +1,7 @@
 # Native Push — Plugin Distribution, Upstream Edits, and Rollout
 
 **Date:** 2026-10-01 — **§4 rewritten as a staged plan 2026-10-09**
-**Status:** Defects A and B fixed in the fork; C and the rollout steps below stand. macOS APNs is in scope, staged in §4.
+**Status:** Defects A, B and D fixed in the fork; C and the rollout steps below stand. macOS APNs is in scope, staged in §4.
 **Related:** `native-push-plan.md` (the implemented transports and client wiring this follows on from), `web-push-plan.md`.
 **Audience:** the agent (or human) planning the upstream/plugin edits and the production rollout.
 
@@ -49,7 +49,7 @@ ios-src = "ios"
 
 ---
 
-## 2. Fork mechanics (fork: `muni-town/tauri-plugin-mobile-push`, consumed via `git` + `rev`)
+## 2. Fork mechanics (consumed via `git` + `rev`)
 
 ### Fork target
 
@@ -58,13 +58,18 @@ a personal account, since this is a load-bearing dependency of a shipped app and
 the fork belongs where the build does. The `rev` pin makes any later move a
 one-line dependency change.
 
+A fix is developed on a personal fork so it can be reviewed, then pushed to the
+org fork by hand. The SHA does not change across that move, so `Cargo.toml`
+names the org fork and the `rev` pin is what keeps the boundary a one-line URL
+change.
+
 ### Consuming it — no crates.io publish
 
 `packages/app-lite/src-tauri/Cargo.toml:38` is:
 
 ```toml
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-tauri-plugin-mobile-push = { git = "https://github.com/muni-town/tauri-plugin-mobile-push", rev = "6ac0683c7b0b45794a392452bc2d8e7db73042cd" }
+tauri-plugin-mobile-push = { git = "https://github.com/muni-town/tauri-plugin-mobile-push", rev = "86e1e4868d2c1ebe13f59151c98848fc1417ec00" }
 ```
 
 - **Pin `rev`, not `branch`.** A git dependency carries no semver, so `rev` is the
@@ -93,7 +98,12 @@ rebuild and commit `dist` or the import resolves to stale output.
 
 **Net effect: one dependency swapped, not two.**
 
-### `Cargo.lock` recorded no entry, and has been regenerated
+### The `rev` pin now carries the iOS fix
+
+Defect D no longer waits on a patch: it landed as commit
+`86e1e4868d2c1ebe13f59151c98848fc1417ec00`, developed on the personal fork's
+`little-fox/ios-delegate-at-init` branch and pushed to the org fork's `main`.
+The `rev` in §2 pins it and `Cargo.lock` records it.
 
 `packages/app-lite/src-tauri/Cargo.lock` is tracked in git, last touched by
 `2279a7b2d` (the desktop-updater PR) — i.e. **before** the push PR. It contained
@@ -190,7 +200,9 @@ code installed during startup still sees the notification that launched the app.
 Android's tap payload comes from the activity lifecycle — the FCM SDK copies the
 message `data` onto the launch intent — with `load` covering the cold start and
 `onNewIntent` the running app; the extras are cleared so a re-delivered intent
-emits once.
+emits once. On iOS this replay is only reached once someone has requested a
+token: the delegate that would call it is installed on demand, so an ordinary
+relaunch delivers no tap at all — see Defect D.
 
 ### Defect C — no desktop/macOS implementation at all
 
@@ -201,6 +213,61 @@ table lists Desktop as "No-op".
 
 So macOS is **not** a matter of flipping cfg flags; there is no APNs
 implementation for macOS to enable. Writing it is stage 0 in §4.
+
+### Defect D — iOS installs the notification-center delegate only on demand
+
+The Android half of Defect B is complete: `load`/`onNewIntent` put the tap on
+the Kotlin plugin's `emitEvent` path as soon as the activity exists, and the
+Rust registry replays an early one. iOS has a second gate in front of the same
+registry, and it is shut on every relaunch.
+
+`ios/Sources/MobilePushPlugin.swift` sets
+`UNUserNotificationCenter.current().delegate = PushNotificationHandler.shared`
+inside `setupApnsDelegateInternal()`, which only `getDeviceToken` calls. That
+delegate is the object iOS hands a notification tap to; Apple's contract is
+that it "must set the value of this property before your app finishes
+launching", and a tap that launched the app is delivered to it exactly once, so
+a late install drops that tap rather than delaying it.
+
+Nothing in the client calls `getToken()` on a relaunch. The single runtime
+caller is `ensureNativeSubscription` (`native-push.ts`), reached from the
+settings page's "Enable notifications" button (and the dev-only
+`window.roomyPush`); the login-time re-register
+(`subscribeIfAlreadyPermitted` → `registerNativeToken`) sends the token already
+recovered from `localStorage` and never touches the plugin. So the delegate is
+installed only in a process where the user enabled notifications or the app
+requested a token — and every other launch, including every cold start, has no
+delegate when the OS delivers the tap. The Rust-side `PENDING` replay Defect B
+added is never reached for a tap, because nothing calls `emit` in the first
+place.
+
+The ordering that makes this fatal: the plugin registers its `setup` hook
+through `PluginBuilder::setup`, which Tauri runs at `RunEvent::Ready` — after
+`UIApplicationMain` and `application:didFinishLaunchingWithOptions:` have
+returned, so the delegate install is on the wrong side of the deadline Apple
+documents. Installing it from the Swift plugin's `init_plugin_mobile_push`
+entry point instead lands before `UIApplicationMain` (it is called from
+`register_ios_plugin` while the app is being built) and needs nothing from the
+app delegate, so it is available that early. The AppDelegate method injection
+stays in `setupApnsDelegateInternal`, called from `getDeviceToken`: it does need
+`UIApplication.shared.delegate` (Tao creates the class during launch) and only
+a token request needs those callbacks.
+
+Fixed: the delegate install is split out into
+`installNotificationCenterDelegate()` and called both from
+`init_plugin_mobile_push` and from `setupApnsDelegateInternal` (which keeps its
+lazy behaviour, so a path that reaches a process where the early install did
+not stick is no worse off). It is a commit on the fork —
+`86e1e4868d2c1ebe13f59151c98848fc1417ec00`, on
+`muni-town/tauri-plugin-mobile-push` `main` — and the `rev` in §2 points at it.
+
+Verification on a device or simulator: launch the app, enable notifications,
+force-quit, tap a notification — the app opens on the room the notification
+names, and the same holds for the `?message=<id>` anchor on a `message` push.
+Without a device, the two halves this defect is not — that the payload is
+readable and that the installed listener routes it, cold start included — are
+covered by `packages/app-lite/src/lib/push-route.spec.ts` and
+`native-push.spec.ts`.
 
 ### What already works
 
@@ -278,11 +345,12 @@ cannot be exercised without hardware and a paid membership.
 **Goal.** Turn gate 4 from "unknown work" into "a known quantity with a compiling
 prototype", before anything in the app depends on it.
 
-**Where.** The fork, `meri-leeworthy/tauri-plugin-mobile-push` (the personal fork
-has push access; the `muni-town` org fork is read-only for this integration —
-§2). The macOS arm is a *new* module beside `desktop.rs`, not a rewrite of it:
-the existing `#[cfg(desktop)]` module keeps serving Windows and Linux, where
-there is no push service to talk to and the current stub answers correctly.
+**Where.** The personal fork, `meri-leeworthy/tauri-plugin-mobile-push`, which
+this integration can push to for review; the `muni-town` org fork is where a
+reviewed commit is pushed by hand (§2). The macOS arm is a *new* module beside
+`desktop.rs`, not a rewrite of it: the existing `#[cfg(desktop)]` module keeps
+serving Windows and Linux, where there is no push service to talk to and the
+current stub answers correctly.
 
 **What.** `src/desktop.rs` is 13 lines and its own comment says the commands
 "return stub values on desktop". The macOS implementation has to supply:
@@ -725,9 +793,10 @@ prunes on `gone`).
 ## 7. Decisions
 
 1. **Fork location:** `muni-town/tauri-plugin-mobile-push`, consumed via `git` +
-   `rev` (§2). Work lands on a personal fork first and is pushed to the org fork
-   by hand; the `rev` pin is what makes moving the dependency on that boundary a
-   one-line change.
+   `rev` (§2). A fix is developed on the personal fork
+   (`meri-leeworthy/tauri-plugin-mobile-push`) so it can be reviewed, and pushed
+   to the org fork by hand; the SHA does not change, so the pinned `rev` is what
+   makes moving the dependency on that boundary a one-line URL change.
 2. **Android fix ownership:** fixed in the fork (the upstream route), not by
    moving the token path into this repo. The fork was required either way.
 3. **npm fork:** not needed — the JS surface is unchanged (§2).
