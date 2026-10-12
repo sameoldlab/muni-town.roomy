@@ -194,6 +194,39 @@ if [ "$built_commit" = "unknown" ]; then
 else
   echo "Build identity: commit ${built_commit} (served as /build.json)"
 fi
+
+# ── Social-unfurl verification ──────────────────────────────────────────
+# Every route is `ssr = false`, so the served HTML is `app.html` and the
+# per-page `<svelte:head>` output (SeoMeta) is only produced once the client
+# bundle runs. Crawlers and chat embedders (Twitter/X, Discord, Slack,
+# iMessage) fetch the raw HTML and never run it, so an og:image present only
+# at runtime is invisible — the link unfurls with no image. The tags must
+# therefore exist statically in app.html, which the adapter copies verbatim
+# into index.html. Assert the shipped artifact carries them (same contract as
+# the verifications above: test what deploys, not the intention) so a refactor
+# that moves them back into a component cannot ship unfurlless links silently.
+if [ ! -f build-staging/index.html ]; then
+  echo "ERROR: build-staging/index.html is missing — nothing to serve." >&2
+  exit 1
+fi
+# Match the actual tags, not the words: the explanatory comment in app.html
+# names og:image, so a bare substring grep would pass after the tag itself was
+# deleted. Require `<meta property="og:image" ...>` (and the absolute URL) so
+# the check can only pass on a real, unfurlable tag.
+for tag in \
+  '<meta property="og:image" content="https://roomy.space/roomy-og.png"' \
+  '<meta property="og:title"' \
+  '<meta name="twitter:card" content="summary_large_image"' \
+  '<meta name="twitter:image"'; do
+  if ! grep -qF "$tag" build-staging/index.html; then
+    echo "ERROR: '${tag}' is absent from the built index.html." >&2
+    echo "       Routes are ssr=false, so this shell is what crawlers see." >&2
+    echo "       Keep the static og/* tags in src/app.html — a tag emitted" >&2
+    echo "       only by <svelte:head> never reaches the served HTML." >&2
+    exit 1
+  fi
+done
+echo "Social unfurl verified: static og/* + twitter:* present in index.html"
 echo "Done! OAuth metadata written to build-staging/oauth-client-metadata.json"
 
 # ── Publish atomically ──────────────────────────────────────────────────

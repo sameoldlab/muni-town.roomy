@@ -8,6 +8,59 @@
       name="description"
       content="A community platform integrated with the AT Protocol"
     />
+    <!--
+      Open Graph / social-unfurl defaults.
+
+      These live HERE, statically, and not only in the per-page SeoMeta
+      component, because every route sets `ssr = false` (adapter-static): the
+      served HTML is this shell, and a page's `<svelte:head>` output is
+      produced by the client bundle. Crawlers and chat embeds (Twitter/X,
+      Discord, Slack, iMessage, Facebook) fetch raw HTML and never run that
+      bundle, so tags emitted only at runtime are invisible to them — the
+      unfurl would show no image at all. A template is copied verbatim into
+      the build, which is why the static `description` above already works
+      this way; these follow that same convention.
+
+      Absolute URL is required (og:image must not be relative) and matches
+      SeoMeta's runtime default, so the crawler-visible value and the value
+      the client sets agree.
+
+      Per-page overrides (space avatar, room name) cannot reach a crawler
+      without server rendering, so these are the site defaults every URL
+      unfurls with. SeoMeta still emits its own og/twitter tags at runtime for
+      client-side navigation; Svelte's head block appends rather than
+      reconciling with the static tags (the static `description` above already
+      coexists with SeoMeta's the same way), which is harmless here — a
+      crawler that does not run the bundle sees only these.
+    -->
+    <meta property="og:site_name" content="Roomy" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Roomy" />
+    <meta
+      property="og:description"
+      content="Cozy community spaces; cultivate your digital gardens."
+    />
+    <meta property="og:image" content="https://roomy.space/roomy-og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Roomy — your community needs its own space"
+    />
+
+    <!-- Twitter/X card: summary_large_image renders the 1200x630 image full
+         width in the timeline; without the card type X shows a bare link. -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Roomy" />
+    <meta
+      name="twitter:description"
+      content="Cozy community spaces; cultivate your digital gardens."
+    />
+    <meta name="twitter:image" content="https://roomy.space/roomy-og.png" />
+    <meta
+      name="twitter:image:alt"
+      content="Roomy — your community needs its own space"
+    />
     <meta name="keywords" content="p2p, roomy, chat, decentralized" />
     <link rel="manifest" href="/manifest.json" />
 
