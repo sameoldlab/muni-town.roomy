@@ -102,11 +102,11 @@ import { createLiveKitRoomLister } from "./voice/livekitClient.ts";
 import { startVoiceReconciler } from "./voice/reconciler.ts";
 import { processLiveKitWebhook } from "./voice/webhook.ts";
 import { processTestWebhook } from "./voice/testWebhook.ts";
-import { startPushDispatcher, pushDispatcherStats, _resetPushDispatcher } from "./push/dispatcher.ts";
+import { startPushDispatcher, stopPushDispatcher, pushDispatcherStats } from "./push/dispatcher.ts";
 import { startSearchIndexer, stopSearchIndexer, searchIndexerStats } from "./search/indexer.ts";
 import { startSearchBackfill, stopSearchBackfill, searchBackfillStats } from "./search/backfill.ts";
 import { schemas } from "@roomy-space/sdk";
-import { initHappyView, type HappyViewConfig } from "./happyview.ts";
+import { initHappyView, setHappyView, type HappyViewConfig } from "./happyview.ts";
 import { initQdrant } from "./qdrant.ts";
 import { initPolar } from "./billing/polar.ts";
 import {
@@ -114,7 +114,6 @@ import {
   PRO_MEMBERS_RECONCILE_INTERVAL_MS,
 } from "./billing/proMembersReconcile.ts";
 import { getArbiterConfig, type ArbiterConfig } from "./arbiter/config.ts";
-import type { GetProfilesFn } from "./materialization/profiles.ts";
 
 import { proxyBlob } from "./blob.ts";
 import { log } from "./log.ts";
@@ -165,10 +164,6 @@ export interface AppserverOptions {
    *  (`HAPPYVIEW_ENDPOINT` / `HAPPYVIEW_DID`). When `null`, HappyView is
    *  disabled and profile fetching uses Bluesky only. */
   happyView?: HappyViewConfig | null;
-  /** Custom profile fetcher for materialization. When set, replaces the
-   *  HappyView-first / Bluesky fallback pipeline entirely. Tests pass a
-   *  no-op stub to keep E2E runs hermetic (no api.bsky.app calls). */
-  getProfiles?: GetProfilesFn;
   /** Arbiter server config. When unset, reads from env (`ARBITER_URL` /
    *  `ARBITER_DID`). When `null`, the arbiter is disabled and new spaces are
    *  self-provisioned (legacy did:plc path). */
@@ -671,9 +666,8 @@ export async function createAppserver(
   // Initialize the process-wide singleton. When `opts.happyView` is unset,
   // reads from env (`HAPPYVIEW_ENDPOINT` / `HAPPYVIEW_DID`). When `null`,
   // HappyView is explicitly disabled.
-  const happyView = opts.happyView === undefined
-    ? initHappyView()
-    : (opts.happyView as HappyViewConfig | null);
+  if (opts.happyView === undefined) initHappyView();
+  else setHappyView(opts.happyView);
 
   // ─── LiveKit config ─────────────────────────────────────────────────
   // Process-wide singleton, like HappyView. Unconfigured is a supported
@@ -842,8 +836,6 @@ export async function createAppserver(
   const streamManager = new StreamManager(mainDb, {
     invalidationRouter,
     appserverUrl: serviceEndpoint,
-    happyView,
-    getProfiles: opts.getProfiles,
     arbiter,
     ownDid,
   });
@@ -1361,6 +1353,7 @@ export async function createAppserver(
       return stopEmbedSweeper()
         .then(() => stopSearchIndexer())
         .then(() => stopSearchBackfill())
+        .then(() => stopPushDispatcher())
         .finally(() => {
         // Graceful stop: wait for in-flight requests to complete so their
         // DB awaits resolve (or reject into the fetch guard's catch) before
@@ -1390,11 +1383,6 @@ export async function createAppserver(
           stopVoiceReconciler?.();
         } catch (e) {
           log.error("appserver close: stopVoiceReconciler failed", e);
-        }
-        try {
-          _resetPushDispatcher();
-        } catch (e) {
-          log.error("appserver close: _resetPushDispatcher failed", e);
         }
         try {
           if (cacheUnsub) cacheUnsub();
