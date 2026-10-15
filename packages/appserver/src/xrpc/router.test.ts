@@ -159,3 +159,95 @@ describe("XrpcRouter schema validation", () => {
     expect(await res.json()).toEqual({ anything: 123 });
   });
 });
+
+
+describe("XrpcRouter stream routes", () => {
+  type StreamTestHandler = (
+    req: Request,
+    ctx: { params: Record<string, unknown>; authenticate: () => Promise<AuthCtx> },
+  ) => Promise<Response>;
+
+  function buildStream(
+    handler: StreamTestHandler,
+    verifier: (req: Request) => Promise<AuthCtx> = async () => ({ did: null }),
+  ): XrpcRouter {
+    const r = new XrpcRouter(verifier);
+    r.stream("test.stream", { handler: handler as never });
+    return r;
+  }
+
+  test("hands the handler the raw request and parsed params", async () => {
+    let seen: { auth: string | null; params: Record<string, unknown> } | undefined;
+    const router = buildStream(async (req, ctx) => {
+      seen = { auth: req.headers.get("authorization"), params: ctx.params };
+      return new Response("ok");
+    });
+    const res = await call(router, "http://x/xrpc/test.stream?topic=abc", {
+      headers: { authorization: "Bearer token" },
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ auth: "Bearer token", params: { topic: "abc" } });
+  });
+
+  test("authenticate() runs the router's verifier on the same request", async () => {
+    let verifiedAuthorization: string | null = null;
+    let resolved: AuthCtx | undefined;
+    const router = buildStream(
+      async (_req, ctx) => {
+        resolved = await ctx.authenticate();
+        return new Response("ok");
+      },
+      async (req) => {
+        verifiedAuthorization = req.headers.get("authorization");
+        return { did: "did:plc:alice" };
+      },
+    );
+    await call(router, "http://x/xrpc/test.stream", {
+      headers: { authorization: "Bearer token" },
+    });
+    expect(verifiedAuthorization).toBe("Bearer token");
+    expect(resolved).toEqual({ did: "did:plc:alice" });
+  });
+
+  test("does not authenticate unless the handler asks, so it can refuse first", async () => {
+    let verifierCalls = 0;
+    const router = buildStream(
+      async () => new Response(null, { status: 503 }),
+      async () => {
+        verifierCalls += 1;
+        return { did: null };
+      },
+    );
+    const res = await call(router, "http://x/xrpc/test.stream");
+    expect(res.status).toBe(503);
+    expect(verifierCalls).toBe(0);
+  });
+
+  test("requires GET", async () => {
+    const router = buildStream(async () => new Response("ok"));
+    const res = await call(router, "http://x/xrpc/test.stream", { method: "POST" });
+    expect(res.status).toBe(405);
+  });
+
+  test("passes the handler's streaming response through untouched", async () => {
+    const router = buildStream(
+      async () =>
+        new Response("event: ready\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const res = await call(router, "http://x/xrpc/test.stream");
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    expect(await res.text()).toBe("event: ready\n\n");
+  });
+
+  test("maps an XrpcError thrown by the handler like any other route", async () => {
+    const { XrpcError } = await import("./errors.ts");
+    const router = buildStream(async () => {
+      throw new XrpcError(418, "Teapot", "short and stout");
+    });
+    const res = await call(router, "http://x/xrpc/test.stream");
+    expect(res.status).toBe(418);
+    expect(((await res.json()) as { error: string }).error).toBe("Teapot");
+  });
+});

@@ -20,6 +20,9 @@
  *  - `apns`/`fcm` register a platform device token in `endpoint` and carry no
  *    keys. Keys sent alongside one are dropped rather than stored, so a row's
  *    columns describe exactly one transport.
+ *  - `sse` is refused. A stream device authenticates by opening
+ *    `space.roomy.push.stream`; there is no row to store (see
+ *    `push/transports/sse.ts`).
  *
  * An unknown `kind` is rejected: it would be stored and then counted as a
  * failure by the dispatcher on every delivery, which hides a typo behind a
@@ -68,6 +71,16 @@ export const registerSubscriptionHandler: ProcedureHandler<
       400,
       "InvalidRequest",
       `Field 'kind' must be one of: ${PUSH_TRANSPORT_KINDS.join(", ")}`,
+    );
+  }
+  // An SSE device has nothing to register: its destination is the open
+  // stream, found in memory at delivery time. A stored row could never match
+  // a stream, so refuse it rather than keep dead rows and stats noise.
+  if (kind === "sse") {
+    throw new XrpcError(
+      400,
+      "InvalidRequest",
+      "Kind 'sse' does not register; open space.roomy.push.stream instead",
     );
   }
 

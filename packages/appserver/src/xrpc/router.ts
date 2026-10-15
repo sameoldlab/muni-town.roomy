@@ -113,6 +113,14 @@ export class XrpcRouter {
     return this;
   }
 
+  stream(
+    nsid: string,
+    def: Omit<import("./types.ts").StreamDef, "kind">,
+  ): this {
+    this.#routes.set(nsid, { kind: "stream", ...def });
+    return this;
+  }
+
   /**
    * Return the list of registered NSIDs with their route kind.
    * Used by the perf harness to auto-discover endpoints.
@@ -319,6 +327,19 @@ export class XrpcRouter {
             return new Response("Expected WebSocket upgrade", { status: 426 });
           }
           return undefined;
+        }
+
+        if (route.kind === "stream") {
+          if (req.method !== "GET") {
+            return Response.json(
+              { error: "MethodNotAllowed", message: "Streams require GET" },
+              { status: 405 },
+            );
+          }
+          return await route.handler(req, {
+            params: rawParams,
+            authenticate: () => this.#auth(req),
+          });
         }
       } catch (err) {
         log.error(`[xrpc] ${req.method} ${url.pathname} failed:`, err instanceof Error ? err.message : err);

@@ -26,6 +26,9 @@ export const SubscriptionKeys = type({
 });
 
 export const Input = type({
+  // webpush: the push-service URL. apns/fcm: the device token. sse: a random
+  // install id (22-64 of `A-Za-z0-9_-`); the appserver composes the real
+  // endpoint from it and returns it in the output.
   endpoint: "string",
   "kind?": "'webpush' | 'apns' | 'fcm' | 'sse'",
   "keys?": SubscriptionKeys,
@@ -36,5 +39,14 @@ export const Input = type({
   "expirationTime?": "number | null",
 });
 
-/** Void: handler returns nothing. The wire payload is empty. */
-export const Output = type({});
+/**
+ * Empty for every kind but `sse`. An `sse` registration sends only a random
+ * install id as `endpoint` and gets back the endpoint the appserver composed
+ * from it (`did#installId`) plus a device secret. The secret authenticates the
+ * stream and is returned exactly once: the server keeps only its hash, so a
+ * client that loses it re-registers to get a new one.
+ */
+export const Output = type({
+  "endpoint?": "string",
+  "deviceSecret?": "string",
+});

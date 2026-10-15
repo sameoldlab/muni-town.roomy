@@ -25,6 +25,7 @@ import type { DbLike } from "../db/types.ts";
 import { openGlobalDb, openSpaceDb } from "../db/db.ts";
 import { createHash } from "node:crypto";
 import { log } from "../log.ts";
+import { selectPushTargets } from "./targets.ts";
 import { evaluatePush, resolveAuthorName } from "./evaluate.ts";
 // Transport registration: importing a transport module installs it in
 // `PUSH_TRANSPORTS`. Every transport the appserver ships must be imported here
@@ -38,7 +39,6 @@ import { PUSH_TRANSPORTS, type PushTarget } from "./transports/types.ts";
 import { WorkerLease } from "../workers/lease.ts";
 import {
   pruneSubscriptionByEndpoint,
-  selectSubscriptions,
 } from "../queries/pushSubscriptions.ts";
 import {
   markNotified,
@@ -155,6 +155,17 @@ export async function stopPushDispatcher(): Promise<void> {
   dispatcherLease = undefined;
 }
 
+
+/**
+ * Whether this process currently holds the dispatcher lease and so owns push
+ * delivery. The SSE stream route accepts connections only while this is true:
+ * the dispatcher delivers on exactly one replica, and an SSE delivery is a
+ * write to an in-memory connection, so the connection must live on that
+ * replica. Synchronous and cheap; the lease flag is renewed on a timer.
+ */
+export function holdsPushDispatcher(): boolean {
+  return dispatcherLease?.held ?? false;
+}
 
 export function pushDispatcherStats(): {
   queueDepth: number;
@@ -387,7 +398,7 @@ export async function deliverPayload(
   userDid: string,
   payload: PushPayload,
 ): Promise<void> {
-  const subs = await selectSubscriptions(db, userDid);
+  const subs = await selectPushTargets(db, userDid);
   if (subs.length === 0) return;
   const body = JSON.stringify(payload);
   const topic = roomTopic(payload.roomId);

@@ -45,7 +45,7 @@ import { decodeContent, decodeRichTextBody } from "../db/content.ts";
 import { RICHTEXT_MIME, blocksToPlaintext } from "@roomy-space/sdk";
 import { roomAccess } from "../auth/access.ts";
 import { resolveLevel } from "../queries/pushPreferences.ts";
-import { selectSubscriptions } from "../queries/pushSubscriptions.ts";
+import { selectPushTargets } from "./targets.ts";
 import { upsertNotificationState } from "../queries/notificationState.ts";
 import { hasUserParticipatedInSpace } from "../queries/userRoomParticipation.ts";
 import { resolveMessageIcon } from "./avatars.ts";
@@ -248,8 +248,9 @@ export async function evaluatePush(
       continue;
     }
 
-    // Only enqueue if the user has at least one subscription.
-    const subs = await selectSubscriptions(readStateDb, did);
+    // Only enqueue if the user has somewhere to deliver: a stored
+    // subscription or a live SSE stream.
+    const subs = await selectPushTargets(readStateDb, did);
     if (subs.length === 0) {
       log.debug(`[push-evaluate] skip ${did.slice(0, 20)}…: no push subscriptions registered`);
       continue;
