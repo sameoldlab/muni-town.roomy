@@ -68,6 +68,21 @@ export async function deleteSubscription(
 }
 
 /** All subscriptions for a user (one row per browser/device). */
+/** How many SSE rows an account has; pass `exceptEndpoint` to exclude one. */
+export async function countSseSubscriptions(
+  db: DbLike,
+  userDid: string,
+  exceptEndpoint: string | null,
+): Promise<number> {
+  const row = await db.get<{ n: number }>(
+    exceptEndpoint === null
+      ? "select count(*) as n from push_subscriptions where user_did = ? and kind = 'sse'"
+      : "select count(*) as n from push_subscriptions where user_did = ? and kind = 'sse' and endpoint <> ?",
+    exceptEndpoint === null ? [userDid] : [userDid, exceptEndpoint],
+  );
+  return row?.n ?? 0;
+}
+
 export async function selectSubscriptions(
   db: DbLike,
   userDid: string,

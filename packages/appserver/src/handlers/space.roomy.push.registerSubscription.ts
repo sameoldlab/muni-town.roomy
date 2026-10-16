@@ -20,6 +20,10 @@
  *  - `apns`/`fcm` register a platform device token in `endpoint` and carry no
  *    keys. Keys sent alongside one are dropped rather than stored, so a row's
  *    columns describe exactly one transport.
+ *  - `sse` registers a client the account owner asked for notifications on.
+ *    The client sends only a random client id; the appserver composes the
+ *    endpoint (`did#clientId`) from the verified DID. No credential is
+ *    minted or returned: the stream authenticates with a borrowed JWT.
  *
  * An unknown `kind` is rejected: it would be stored and then counted as a
  * failure by the dispatcher on every delivery, which hides a typo behind a
@@ -27,7 +31,11 @@
  */
 
 import { openReadStateDb } from "../db/db.ts";
-import { upsertSubscription } from "../queries/pushSubscriptions.ts";
+import {
+  countSseSubscriptions,
+  upsertSubscription,
+} from "../queries/pushSubscriptions.ts";
+import { isSseClientId, sseEndpoint } from "../push/transports/sseEndpoint.ts";
 import {
   PUSH_TRANSPORT_KINDS,
   isPushTransportKind,
@@ -42,6 +50,9 @@ interface RegisterSubscriptionBody {
   keys?: unknown;
   expirationTime?: unknown;
 }
+
+/** Most SSE clients one account may register. */
+export const MAX_SSE_SUBSCRIPTIONS_PER_USER = 10;
 
 export const registerSubscriptionHandler: ProcedureHandler<
   RegisterSubscriptionBody,
@@ -69,6 +80,37 @@ export const registerSubscriptionHandler: ProcedureHandler<
       "InvalidRequest",
       `Field 'kind' must be one of: ${PUSH_TRANSPORT_KINDS.join(", ")}`,
     );
+  }
+  if (kind === "sse") {
+    if (!isSseClientId(body.endpoint)) {
+      throw new XrpcError(
+        400,
+        "InvalidRequest",
+        "Field 'endpoint' must be a client id of 22-64 letters, digits, '-' or '_' for kind 'sse'",
+      );
+    }
+    const db = openReadStateDb();
+    const endpoint = sseEndpoint(userDid, body.endpoint);
+    const existing = await countSseSubscriptions(db, userDid, endpoint);
+    if (existing === 0) {
+      const devices = await countSseSubscriptions(db, userDid, null);
+      if (devices >= MAX_SSE_SUBSCRIPTIONS_PER_USER) {
+        throw new XrpcError(
+          400,
+          "TooManyDevices",
+          "This account has reached its limit of registered stream clients",
+        );
+      }
+    }
+    await upsertSubscription(db, {
+      userDid,
+      endpoint,
+      kind: "sse",
+      p256dh: "",
+      auth: "",
+      expirationTime: null,
+    });
+    return {};
   }
 
   let p256dh: string | undefined;
